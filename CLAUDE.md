@@ -19,3 +19,13 @@ Growth/scaling reference (not relevant yet): `SCALING.md`.
 ## Stack
 
 Node.js + TypeScript, Fastify, GraphQL (Yoga or Mercurius), PostgreSQL + Prisma, Jest + ts-jest, Docker Compose for local dev.
+
+## Git Workflow
+
+- **Branch per feature.** No direct commits to `main` or `develop`. Before starting a new feature, create a branch from an up-to-date `develop`.
+- **Naming:** `feature/short-descriptive-name` (e.g. `feature/auth-jwt`, `feature/transactions-crud`). For fixes: `fix/short-name`. For chores/setup: `chore/short-name`.
+- **One logical commit per TDD step** (not one giant commit at the end of the feature). Message format: `type: short description` (e.g. `feat: add transaction resolver`, `test: cover negative amount validation`, `refactor: extract cents conversion helper`).
+- **When a feature is ready:** open a PR from the feature branch into `develop` and stop. Do not merge, do not push further commits, do not start the next task — wait for review.
+- **After review:** if changes are requested, address them on the same branch and push. If approved, the merge is done by the human — never by Claude.
+- **Merges into `main`** (from `develop`) are always done by the human, outside of Claude's scope entirely.
+- **Never assume approval.** If there is no explicit "approved" or "LGTM", stay on the current branch and wait.
