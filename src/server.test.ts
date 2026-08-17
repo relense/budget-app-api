@@ -7,6 +7,7 @@ const testEnv: Env = {
   PORT: 4000,
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/budget_app',
   CORS_ORIGIN: 'http://localhost:19006',
+  JWT_SECRET: 'a'.repeat(32),
 };
 
 function fakePrisma(queryRaw: () => Promise<unknown>) {

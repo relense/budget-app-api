@@ -4,6 +4,7 @@ import { loadEnv } from './env.js';
 const validEnv = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/budget_app',
   CORS_ORIGIN: 'http://localhost:19006',
+  JWT_SECRET: 'a'.repeat(32),
 };
 
 describe('loadEnv', () => {
@@ -45,5 +46,15 @@ describe('loadEnv', () => {
 
   it('rejects an unrecognized NODE_ENV value', () => {
     expect(() => loadEnv({ ...validEnv, NODE_ENV: 'staging' })).toThrow(/NODE_ENV/);
+  });
+
+  it('throws when JWT_SECRET is missing', () => {
+    const { JWT_SECRET: _JWT_SECRET, ...rest } = validEnv;
+
+    expect(() => loadEnv(rest)).toThrow(/JWT_SECRET/);
+  });
+
+  it('throws when JWT_SECRET is too short', () => {
+    expect(() => loadEnv({ ...validEnv, JWT_SECRET: 'too-short' })).toThrow(/JWT_SECRET/);
   });
 });
