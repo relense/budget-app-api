@@ -1,14 +1,19 @@
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import fastify, { type FastifyInstance } from 'fastify';
 import { type ValidationRule, NoSchemaIntrospectionCustomRule } from 'graphql';
 import depthLimit from 'graphql-depth-limit';
 import { createYoga, type Plugin } from 'graphql-yoga';
 import { schema } from './graphql/schema.js';
 import type { Env } from './lib/env.js';
+import { verifyAccessToken } from './lib/jwt.js';
 import type { PrismaClient } from './lib/prisma.js';
+import { registerAuthRoutes } from './routes/auth.js';
+import type { AuthService } from './services/auth/authService.js';
 
 const MAX_QUERY_DEPTH = 10;
+const BEARER_PREFIX = 'Bearer ';
 
 function useValidationRules(rules: ValidationRule[]): Plugin {
   return {
@@ -21,9 +26,17 @@ function useValidationRules(rules: ValidationRule[]): Plugin {
 export interface BuildServerOptions {
   env: Env;
   prisma: Pick<PrismaClient, '$queryRaw'>;
+  authService: Pick<
+    AuthService,
+    'requestOtp' | 'verifyOtp' | 'refreshSession' | 'logout' | 'logoutAll'
+  >;
 }
 
-export async function buildServer({ env, prisma }: BuildServerOptions): Promise<FastifyInstance> {
+export async function buildServer({
+  env,
+  prisma,
+  authService,
+}: BuildServerOptions): Promise<FastifyInstance> {
   const app = fastify({ logger: env.NODE_ENV !== 'test' });
   const isProduction = env.NODE_ENV === 'production';
 
@@ -31,6 +44,9 @@ export async function buildServer({ env, prisma }: BuildServerOptions): Promise<
   await app.register(cors, {
     origin: env.CORS_ORIGIN.split(',').map((origin) => origin.trim()),
   });
+  await app.register(rateLimit, { global: false });
+
+  await registerAuthRoutes(app, { authService, jwtSecret: env.JWT_SECRET });
 
   app.get('/health', async (_request, reply) => {
     try {
@@ -47,6 +63,14 @@ export async function buildServer({ env, prisma }: BuildServerOptions): Promise<
     graphqlEndpoint: '/graphql',
     graphiql: !isProduction,
     maskedErrors: isProduction,
+    context: async ({ request }) => {
+      const authHeader = request.headers.get('authorization');
+      const token = authHeader?.startsWith(BEARER_PREFIX)
+        ? authHeader.slice(BEARER_PREFIX.length)
+        : null;
+      const payload = token ? await verifyAccessToken(token, env.JWT_SECRET) : null;
+      return { userId: payload?.userId ?? null };
+    },
     plugins: [
       useValidationRules(
         isProduction
