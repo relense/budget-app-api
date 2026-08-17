@@ -1,0 +1,16 @@
+{
+  "autocompact_percentage_override": 75,
+  "BASH_MAX_OUTPUT_LENGTH": "150000",
+  "permissions": {
+    "deny": [
+      "Read(**/node_modules/**)",
+      "Read(**/dist/**)",
+      "Read(**/.next/**)",
+      "Read(**/coverage/**)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)"
+    ]
+  }
+}
