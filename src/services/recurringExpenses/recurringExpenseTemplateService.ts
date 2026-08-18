@@ -54,6 +54,23 @@ function assertValidBudgetType(budgetType: BudgetType): asserts budgetType is Re
   }
 }
 
+/**
+ * Public so recurringExpenseInstanceService can validate a template input
+ * up front — before a separate, unrelated write (auto-activating the
+ * category for a month) that must not happen if this input turns out to be
+ * invalid. Read-only: does not persist anything.
+ */
+export async function assertValidTemplateInput(
+  client: Pick<PrismaClient, 'category'>,
+  userId: string,
+  input: RecurringExpenseTemplateInput,
+): Promise<void> {
+  assertValidAmount(input.amountCents);
+  assertValidDueDay(input.dueDay);
+  assertValidBudgetType(input.budgetType);
+  await assertOwnedCategory(client, userId, input.categoryId);
+}
+
 /** Public so recurringExpenseInstanceService can reuse the same ownership check. */
 export async function assertOwnedTemplate(
   client: Pick<PrismaClient, 'recurringExpenseTemplate'>,
@@ -79,10 +96,7 @@ export function createRecurringExpenseTemplateService({ prisma }: RecurringExpen
   }
 
   async function createTemplate(userId: string, input: RecurringExpenseTemplateInput) {
-    assertValidAmount(input.amountCents);
-    assertValidDueDay(input.dueDay);
-    assertValidBudgetType(input.budgetType);
-    await assertOwnedCategory(prisma, userId, input.categoryId);
+    await assertValidTemplateInput(prisma, userId, input);
 
     return prisma.recurringExpenseTemplate.create({
       data: {

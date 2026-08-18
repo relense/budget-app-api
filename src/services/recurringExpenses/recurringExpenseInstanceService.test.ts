@@ -115,6 +115,49 @@ describe('createTemplateForMonth', () => {
     expect(prisma.recurringExpenseTemplates).toHaveLength(0);
   });
 
+  it('throws invalid_amount without creating a CategoryMonth (validates the template input before auto-activating the category)', async () => {
+    const { prisma, instanceService, housing } = await setup();
+
+    await expect(
+      instanceService.createTemplateForMonth(
+        'user-1',
+        { name: 'Rent', amountCents: -1, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+        '2026-08',
+        90000,
+      ),
+    ).rejects.toMatchObject({ reason: 'invalid_amount' });
+    expect(prisma.recurringExpenseTemplates).toHaveLength(0);
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
+  it('throws invalid_due_day without creating a CategoryMonth', async () => {
+    const { prisma, instanceService, housing } = await setup();
+
+    await expect(
+      instanceService.createTemplateForMonth(
+        'user-1',
+        { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 32 },
+        '2026-08',
+        90000,
+      ),
+    ).rejects.toMatchObject({ reason: 'invalid_due_day' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
+  it('throws invalid_budget_type without creating a CategoryMonth', async () => {
+    const { prisma, instanceService, housing } = await setup();
+
+    await expect(
+      instanceService.createTemplateForMonth(
+        'user-1',
+        { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'savings' as never, dueDay: 1 },
+        '2026-08',
+        90000,
+      ),
+    ).rejects.toMatchObject({ reason: 'invalid_budget_type' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
   it('throws category_not_found for a category belonging to another user', async () => {
     const { instanceService, otherUsersCategory } = await setup();
 

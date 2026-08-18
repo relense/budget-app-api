@@ -1,7 +1,7 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
 import type { CategoryMonthService } from '../categories/categoryMonthService.js';
 import type { TransactionService } from '../categories/transactionService.js';
-import { assertOwnedTemplate } from './recurringExpenseTemplateService.js';
+import { assertOwnedTemplate, assertValidTemplateInput } from './recurringExpenseTemplateService.js';
 import type {
   RecurringExpenseTemplateInput,
   RecurringExpenseTemplateService,
@@ -32,7 +32,12 @@ export interface MarkRecurringPaidInput {
 export interface RecurringExpenseInstanceServiceDeps {
   prisma: Pick<
     PrismaClient,
-    'recurringExpenseTemplate' | 'recurringExpenseInstance' | 'transaction' | 'budgetMonth' | 'categoryMonth'
+    | 'category'
+    | 'recurringExpenseTemplate'
+    | 'recurringExpenseInstance'
+    | 'transaction'
+    | 'budgetMonth'
+    | 'categoryMonth'
   >;
   budgetMonthService: Pick<BudgetMonthService, 'findBudgetMonthId'>;
   categoryMonthService: Pick<CategoryMonthService, 'ensureActiveForCategory'>;
@@ -113,12 +118,24 @@ export function createRecurringExpenseInstanceService({
    * createRecurringExpenseTemplate's GraphQL return type is the template
    * itself, not the instance, per plan.md's schema sketch.
    *
-   * ensureActiveForCategory runs *before* the template is created (using
-   * input.categoryId directly — no template needed for that call) so a
-   * locked target month or a missing categoryMonthlyBudgetCents fails before
-   * any row is written, rather than after the template is already committed.
-   * Without this ordering, that failure would leave an orphaned template
-   * attached to no instance and no month.
+   * Ordering matters here, in two steps:
+   *  1. Validate the template's own input (assertValidTemplateInput — a
+   *     read-only check, writes nothing) *before* any write happens at all.
+   *     Catches invalid amountCents/dueDay/budgetType or an unowned category
+   *     up front, so none of them can leave a write behind.
+   *  2. Only then call ensureActiveForCategory (which, on first activation,
+   *     genuinely persists a CategoryMonth) *before* creating the template
+   *     row — so a locked target month or a missing
+   *     categoryMonthlyBudgetCents fails before the template is committed,
+   *     rather than after.
+   * Residual risk: templateService.createTemplate could still fail for a
+   * non-deterministic reason (e.g. a dropped connection) after
+   * ensureActiveForCategory has already committed a new CategoryMonth —
+   * these two writes aren't in one transaction (they're issued by
+   * separately-constructed services, each bound to its own prisma client).
+   * Accepted for now: every deterministic/reachable-from-bad-input failure
+   * mode is closed by step 1; this narrows the remaining window to a true
+   * infra failure, not something a client can trigger with input alone.
    */
   async function createTemplateForMonth(
     userId: string,
@@ -126,6 +143,7 @@ export function createRecurringExpenseInstanceService({
     month: string,
     categoryMonthlyBudgetCents?: number,
   ) {
+    await assertValidTemplateInput(prisma, userId, input);
     const categoryMonth = await categoryMonthService.ensureActiveForCategory(
       userId,
       input.categoryId,
