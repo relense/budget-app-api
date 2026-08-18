@@ -7,6 +7,7 @@ export type CategoryMonthServiceErrorReason =
   | 'category_month_not_found'
   | 'category_month_already_active'
   | 'category_month_has_transactions'
+  | 'category_month_budget_required'
   | 'month_locked'
   | 'invalid_budget'
   | 'invalid_month';
@@ -118,6 +119,55 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     }
   }
 
+  /**
+   * Idempotent, unlike addCategoryToMonth: returns the existing category_month
+   * if the category is already active that month, only creates one (and only
+   * then requires an explicit budget — never derived from anything) if it
+   * isn't. For callers (recurring expenses) where "already active" is a
+   * success case, not an error — see plan.md's step 4 design notes.
+   */
+  async function ensureActiveForCategory(
+    userId: string,
+    categoryId: string,
+    month: string,
+    monthlyBudgetCents?: number,
+  ) {
+    assertValidMonth(month);
+    await assertOwnedCategory(prisma, userId, categoryId);
+
+    const monthId = await budgetMonthService.resolveBudgetMonthId(userId, month);
+    await assertMonthNotLocked(monthId);
+
+    const existing = await prisma.categoryMonth.findFirst({ where: { categoryId, monthId } });
+    if (existing) return existing;
+
+    if (monthlyBudgetCents === undefined) {
+      throw new CategoryMonthServiceError('category_month_budget_required');
+    }
+    assertValidBudget(monthlyBudgetCents);
+
+    try {
+      return await prisma.$transaction(async (tx) => {
+        await assertOwnedCategory(tx, userId, categoryId);
+        return tx.categoryMonth.create({
+          data: { userId, categoryId, monthId, monthlyBudgetCents },
+        });
+      });
+    } catch (error) {
+      if (error instanceof CategoryServiceError) {
+        throw error;
+      }
+      if (hasPrismaErrorCode(error, 'P2002')) {
+        // Lost a race to a concurrent create for the same (categoryId,
+        // monthId) — fine here, "ensure active" is idempotent by design,
+        // just return the winner instead of erroring.
+        const winner = await prisma.categoryMonth.findFirst({ where: { categoryId, monthId } });
+        if (winner) return winner;
+      }
+      throw error;
+    }
+  }
+
   async function removeCategoryFromMonth(userId: string, categoryMonthId: string): Promise<void> {
     const categoryMonth = await findOwnedCategoryMonth(userId, categoryMonthId);
     await assertMonthNotLocked(categoryMonth.monthId);
@@ -165,6 +215,7 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     listByMonth,
     findManyByIds,
     addCategoryToMonth,
+    ensureActiveForCategory,
     removeCategoryFromMonth,
     updateCategoryMonthBudget,
   };

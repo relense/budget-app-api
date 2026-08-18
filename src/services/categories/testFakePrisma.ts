@@ -96,7 +96,9 @@ interface FakeDelegates {
   };
   categoryMonth: {
     findUnique(args: { where: { id: string } }): Promise<FakeCategoryMonth | null>;
-    findFirst(args: { where: { categoryId: string } }): Promise<FakeCategoryMonth | null>;
+    findFirst(args: {
+      where: Partial<Pick<FakeCategoryMonth, 'categoryId' | 'monthId'>>;
+    }): Promise<FakeCategoryMonth | null>;
     findMany(args: {
       where:
         | Partial<Pick<FakeCategoryMonth, 'userId' | 'categoryId' | 'monthId'>>
@@ -213,7 +215,13 @@ export function createFakePrisma(): FakePrismaClient {
         return categoryMonths.find((cm) => cm.id === where.id) ?? null;
       },
       async findFirst({ where }) {
-        return categoryMonths.find((cm) => cm.categoryId === where.categoryId) ?? null;
+        return (
+          categoryMonths.find((cm) => {
+            if (where.categoryId !== undefined && cm.categoryId !== where.categoryId) return false;
+            if (where.monthId !== undefined && cm.monthId !== where.monthId) return false;
+            return true;
+          }) ?? null
+        );
       },
       async findMany({ where }) {
         if ('id' in where) {
