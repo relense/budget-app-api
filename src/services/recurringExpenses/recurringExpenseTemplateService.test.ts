@@ -99,6 +99,20 @@ describe('createTemplate', () => {
       }),
     ).rejects.toMatchObject({ reason: 'invalid_due_day' });
   });
+
+  it('rejects a budgetType of savings — not meaningful for a recurring obligation', async () => {
+    const { service } = setup();
+
+    await expect(
+      service.createTemplate('user-1', {
+        name: 'Rent',
+        amountCents: 80000,
+        categoryId: 'cat-housing',
+        budgetType: 'savings' as never,
+        dueDay: 1,
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_budget_type' });
+  });
 });
 
 describe('updateTemplate', () => {
@@ -147,6 +161,27 @@ describe('updateTemplate', () => {
         dueDay: 1,
       }),
     ).rejects.toMatchObject({ reason: 'template_not_found' });
+  });
+
+  it('rejects a budgetType of savings — not meaningful for a recurring obligation', async () => {
+    const { service } = setup();
+    const template = await service.createTemplate('user-1', {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: 'cat-housing',
+      budgetType: 'need',
+      dueDay: 1,
+    });
+
+    await expect(
+      service.updateTemplate('user-1', template.id, {
+        name: 'Rent',
+        amountCents: 80000,
+        categoryId: 'cat-housing',
+        budgetType: 'savings' as never,
+        dueDay: 1,
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_budget_type' });
   });
 });
 

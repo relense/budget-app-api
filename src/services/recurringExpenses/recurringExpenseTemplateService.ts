@@ -1,4 +1,5 @@
 import { assertOwnedCategory } from '../categories/categoryService.js';
+import type { BudgetType } from '../categories/categoryService.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 
 /** Narrower than Category's BudgetType — 'savings' doesn't apply to a recurring obligation. */
@@ -8,13 +9,15 @@ export interface RecurringExpenseTemplateInput {
   name: string;
   amountCents: number;
   categoryId: string;
-  budgetType: RecurringBudgetType;
+  /** Widened to accept 'savings' at the boundary — assertValidBudgetType rejects it at runtime. */
+  budgetType: BudgetType;
   dueDay: number;
 }
 
 export type RecurringExpenseTemplateServiceErrorReason =
   | 'invalid_amount'
   | 'invalid_due_day'
+  | 'invalid_budget_type'
   | 'template_not_found'
   | 'template_has_active_instances';
 
@@ -38,6 +41,12 @@ function assertValidAmount(amountCents: number): void {
 function assertValidDueDay(dueDay: number): void {
   if (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31) {
     throw new RecurringExpenseTemplateServiceError('invalid_due_day');
+  }
+}
+
+function assertValidBudgetType(budgetType: BudgetType): asserts budgetType is RecurringBudgetType {
+  if (budgetType !== 'need' && budgetType !== 'want') {
+    throw new RecurringExpenseTemplateServiceError('invalid_budget_type');
   }
 }
 
@@ -68,6 +77,7 @@ export function createRecurringExpenseTemplateService({ prisma }: RecurringExpen
   async function createTemplate(userId: string, input: RecurringExpenseTemplateInput) {
     assertValidAmount(input.amountCents);
     assertValidDueDay(input.dueDay);
+    assertValidBudgetType(input.budgetType);
     await assertOwnedCategory(prisma, userId, input.categoryId);
 
     return prisma.recurringExpenseTemplate.create({
@@ -86,6 +96,7 @@ export function createRecurringExpenseTemplateService({ prisma }: RecurringExpen
     await assertOwnedTemplate(prisma, userId, id);
     assertValidAmount(input.amountCents);
     assertValidDueDay(input.dueDay);
+    assertValidBudgetType(input.budgetType);
     await assertOwnedCategory(prisma, userId, input.categoryId);
 
     return prisma.recurringExpenseTemplate.update({
