@@ -120,7 +120,7 @@ There's no separate "current month" pointer column: the month a user sees is alw
 - name
 - icon
 - color
-- budget_type (nullable; 'preciso' | 'quero' | 'poupanca' — your 50/30/20 classification; required only when `direction = 'expense'`, not meaningful for `'income'`)
+- budget_type (nullable; 'need' | 'want' | 'savings' — your 50/30/20 classification; required only when `direction = 'expense'`, not meaningful for `'income'`)
 - direction ('expense' | 'income') — fixed once transactions exist under this category; `updateCategory` blocks a direction change if any transaction references it (via `category_month`, see below), since that would make historical transactions inconsistent with their category
 - deleted_at (nullable) — soft delete; only settable once the category has no active (non-deleted) `category_month` row for any month, past or future. In practice, a category that was ever active in a now-locked past month can never be deleted from the catalog, since a locked month's rows are immutable — intentional (preserves referential integrity on historical records), flagged here since it's a direct but non-obvious consequence of the locking design below.
 
@@ -159,7 +159,7 @@ There is no `activate`/bundle-into-`createCategory` behavior: `createCategory` i
 - name
 - amount_cents (integer — cents) — the current default value; new instances (below) inherit this at generation/carry-forward time unless the user overrides that one instance
 - category_id (fk)
-- budget_type ('preciso' | 'quero')
+- budget_type ('need' | 'want')
 - due_day
 - deleted_at (nullable) — soft delete
 
@@ -250,9 +250,9 @@ Everything else as GraphQL types, queries and mutations:
 
 ```graphql
 enum BudgetType {
-  PRECISO
-  QUERO
-  POUPANCA
+  NEED
+  WANT
+  SAVINGS
 }
 enum Direction {
   EXPENSE
@@ -431,7 +431,7 @@ type Mutation {
 >
 > `Category`, `CategoryMonth`, and `Transaction` above reflect the finalized Build Order step 3 design (grilled and confirmed) — trust these three. **`RecurringExpense` still reflects the old flat model and is stale** — it needs the same template/instance split (`RecurringExpense` → a template type plus a `RecurringExpenseMonth`/instance type using the same `month_id`-over-raw-string pattern as `CategoryMonth`) once Build Order step 4 gets its own "grill me" pass. Don't trust the `RecurringExpense` type, `RecurringExpenseInput`, or the recurring-expense `Mutation` fields below as final.
 
-Note about enum casing: GraphQL convention is UPPER_CASE enum values (`PRECISO`, `EXPENSE`), but your DB/Excel domain uses lowercase (`preciso`, `expense`). Map between the two in the resolver/service layer — don't let the DB casing leak into the GraphQL schema or vice versa. The `GLOSSARY.md` lowercase values are the DB representation.
+Note about enum casing: GraphQL convention is UPPER_CASE enum values (`NEED`, `EXPENSE`), but the DB uses lowercase (`need`, `expense`). Map between the two in the resolver/service layer — don't let the DB casing leak into the GraphQL schema or vice versa. The `GLOSSARY.md` lowercase values are the DB representation. (`budgetType`'s three values were originally Portuguese — `preciso`/`quero`/`poupança`, matching the Excel tracker — translated to English `need`/`want`/`savings` in the codebase; the 50/30/20 meaning is unchanged.)
 
 Note: any relation field on a list — `CategoryMonth.transactions`, `SavingsFund.movements`, but also the reverse direction like `Transaction.categoryMonth`, `Transaction.recurringExpense`, `RecurringExpense.category` — is a potential N+1. The rule from the Architecture Decision above (DataLoader on every relation-traversing resolver) applies to all of them, not just the two most obvious ones.
 

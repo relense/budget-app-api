@@ -1,6 +1,6 @@
 import type { PrismaClient } from '../../lib/prisma.js';
 
-export type BudgetType = 'preciso' | 'quero' | 'poupanca';
+export type BudgetType = 'need' | 'want' | 'savings';
 export type Direction = 'expense' | 'income';
 
 export interface CategoryInput {

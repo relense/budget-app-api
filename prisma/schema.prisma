@@ -55,9 +55,9 @@ model RefreshToken {
 }
 
 enum BudgetType {
-  preciso
-  quero
-  poupanca
+  need
+  want
+  savings
 
   @@map("budget_type")
 }

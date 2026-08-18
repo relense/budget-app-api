@@ -22,7 +22,7 @@ async function setup() {
     name: 'Groceries',
     icon: 'cart',
     color: '#00FF00',
-    budgetType: 'preciso',
+    budgetType: 'need',
     direction: 'expense',
   });
   const incomeCategory = await categoryService.createCategory('user-1', {

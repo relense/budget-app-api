@@ -16,7 +16,7 @@ describe('createCategory', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
 
@@ -26,7 +26,7 @@ describe('createCategory', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
       deletedAt: null,
     });
@@ -52,7 +52,7 @@ describe('createCategory', () => {
       name: 'Salary',
       icon: 'wallet',
       color: '#0000FF',
-      budgetType: 'poupanca',
+      budgetType: 'savings',
       direction: 'income',
     });
 
@@ -82,21 +82,21 @@ describe('listCatalog', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
     await categoryService.createCategory('user-2', {
       name: 'Rent',
       icon: 'home',
       color: '#FF0000',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
     const deleted = await categoryService.createCategory('user-1', {
       name: 'Old',
       icon: 'x',
       color: '#000000',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
     await categoryService.deleteCategory('user-1', deleted.id);
@@ -114,21 +114,21 @@ describe('findManyByIds', () => {
       name: 'A',
       icon: 'a',
       color: '#111111',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
     const b = await categoryService.createCategory('user-1', {
       name: 'B',
       icon: 'b',
       color: '#222222',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
     await categoryService.createCategory('user-1', {
       name: 'C',
       icon: 'c',
       color: '#333333',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
 
@@ -145,7 +145,7 @@ describe('updateCategory', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
 
@@ -153,11 +153,11 @@ describe('updateCategory', () => {
       name: 'Food',
       icon: 'cart-2',
       color: '#00AA00',
-      budgetType: 'quero',
+      budgetType: 'want',
       direction: 'expense',
     });
 
-    expect(updated).toMatchObject({ name: 'Food', icon: 'cart-2', color: '#00AA00', budgetType: 'quero' });
+    expect(updated).toMatchObject({ name: 'Food', icon: 'cart-2', color: '#00AA00', budgetType: 'want' });
   });
 
   it('throws category_not_found for another user\'s category', async () => {
@@ -166,7 +166,7 @@ describe('updateCategory', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
 
@@ -175,7 +175,7 @@ describe('updateCategory', () => {
         name: 'Food',
         icon: 'cart',
         color: '#00FF00',
-        budgetType: 'preciso',
+        budgetType: 'need',
         direction: 'expense',
       }),
     ).rejects.toMatchObject({ reason: 'category_not_found' });
@@ -187,7 +187,7 @@ describe('updateCategory', () => {
       name: 'Misc',
       icon: 'tag',
       color: '#FFFFFF',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
 
@@ -195,7 +195,7 @@ describe('updateCategory', () => {
       name: 'Misc',
       icon: 'tag',
       color: '#FFFFFF',
-      budgetType: 'poupanca',
+      budgetType: 'savings',
       direction: 'income',
     });
 
@@ -209,7 +209,7 @@ describe('updateCategory', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
     prisma.categoryMonths.push({
@@ -250,7 +250,7 @@ describe('updateCategory', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
     prisma.categoryMonths.push({
@@ -279,7 +279,7 @@ describe('updateCategory', () => {
       name: 'Food',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'quero',
+      budgetType: 'want',
       direction: 'expense',
     });
 
@@ -294,7 +294,7 @@ describe('deleteCategory', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
 
@@ -309,7 +309,7 @@ describe('deleteCategory', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
     prisma.categoryMonths.push({
@@ -334,7 +334,7 @@ describe('deleteCategory', () => {
       name: 'Groceries',
       icon: 'cart',
       color: '#00FF00',
-      budgetType: 'preciso',
+      budgetType: 'need',
       direction: 'expense',
     });
 

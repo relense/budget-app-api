@@ -15,7 +15,7 @@ function nextTimestamp(): Date {
   return new Date(lastTimestampMs);
 }
 
-export type FakeBudgetType = 'preciso' | 'quero' | 'poupanca';
+export type FakeBudgetType = 'need' | 'want' | 'savings';
 export type FakeDirection = 'expense' | 'income';
 
 export interface FakeCategory {

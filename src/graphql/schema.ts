@@ -33,9 +33,9 @@ function formatDate(date: Date): string {
 export const schema = createSchema<GraphQLContext>({
   typeDefs: /* GraphQL */ `
     enum BudgetType {
-      PRECISO
-      QUERO
-      POUPANCA
+      NEED
+      WANT
+      SAVINGS
     }
 
     enum Direction {
@@ -250,7 +250,7 @@ export const schema = createSchema<GraphQLContext>({
       },
     },
     Category: {
-      budgetType: (parent: { budgetType: 'preciso' | 'quero' | 'poupanca' | null }) =>
+      budgetType: (parent: { budgetType: 'need' | 'want' | 'savings' | null }) =>
         budgetTypeToGraphQL(parent.budgetType),
       direction: (parent: { direction: 'expense' | 'income' }) => directionToGraphQL(parent.direction),
     },

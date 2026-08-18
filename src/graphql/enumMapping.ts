@@ -1,18 +1,18 @@
 import type { BudgetType, Direction } from '../services/categories/categoryService.js';
 
-export type GraphQLBudgetType = 'PRECISO' | 'QUERO' | 'POUPANCA';
+export type GraphQLBudgetType = 'NEED' | 'WANT' | 'SAVINGS';
 export type GraphQLDirection = 'EXPENSE' | 'INCOME';
 
 const BUDGET_TYPE_TO_DB: Record<GraphQLBudgetType, BudgetType> = {
-  PRECISO: 'preciso',
-  QUERO: 'quero',
-  POUPANCA: 'poupanca',
+  NEED: 'need',
+  WANT: 'want',
+  SAVINGS: 'savings',
 };
 
 const BUDGET_TYPE_TO_GRAPHQL: Record<BudgetType, GraphQLBudgetType> = {
-  preciso: 'PRECISO',
-  quero: 'QUERO',
-  poupanca: 'POUPANCA',
+  need: 'NEED',
+  want: 'WANT',
+  savings: 'SAVINGS',
 };
 
 const DIRECTION_TO_DB: Record<GraphQLDirection, Direction> = {
