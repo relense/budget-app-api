@@ -53,3 +53,105 @@ model RefreshToken {
   @@index([userId])
   @@map("refresh_tokens")
 }
+
+enum BudgetType {
+  need
+  want
+  savings
+
+  @@map("budget_type")
+}
+
+enum Direction {
+  expense
+  income
+
+  @@map("direction")
+}
+
+// One row per user per real calendar month (YYYY-MM, e.g. "2026-03" and
+// "2027-03" are distinct rows) — not a recurring 1-12 bucket. `locked`/
+// `lockedAt` are inert until Build Order step 5 wires up the locking
+// mutation; the columns exist now so category_month/recurring instances
+// have a real FK target instead of a raw month string. See plan.md's
+// "Month Lifecycle" section.
+model BudgetMonth {
+  id       String    @id @default(uuid()) @db.Uuid
+  userId   String    @map("user_id") @db.Uuid
+  month    String
+  locked   Boolean   @default(false)
+  lockedAt DateTime? @map("locked_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  categoryMonths CategoryMonth[]
+
+  @@unique([userId, month])
+  @@map("budget_months")
+}
+
+// Pure catalog — transversal across months, no month-awareness at all.
+// Month-scoped state (is it active, what's its budget) lives on
+// CategoryMonth, not here.
+model Category {
+  id         String      @id @default(uuid()) @db.Uuid
+  userId     String      @map("user_id") @db.Uuid
+  name       String
+  icon       String
+  color      String
+  budgetType BudgetType? @map("budget_type")
+  direction  Direction
+  deletedAt  DateTime?   @map("deleted_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  categoryMonths CategoryMonth[]
+
+  @@index([userId])
+  @@map("categories")
+}
+
+// The real join: a category is "active" in a month iff a row exists here
+// for it. Hard-deleted, not soft-deleted (see plan.md's "Month Lifecycle"
+// section) — deletion is only allowed once no Transaction references it.
+model CategoryMonth {
+  id                 String @id @default(uuid()) @db.Uuid
+  userId             String @map("user_id") @db.Uuid
+  categoryId         String @map("category_id") @db.Uuid
+  monthId            String @map("month_id") @db.Uuid
+  monthlyBudgetCents Int    @map("monthly_budget_cents")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  category    Category    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  budgetMonth BudgetMonth @relation(fields: [monthId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+
+  @@unique([categoryId, monthId])
+  @@index([userId, monthId]) // serves listByMonth/transactions' where: { userId, monthId } filter directly; userId is a leading prefix so this also covers plain userId lookups
+  @@map("category_month")
+}
+
+// Hard-deleted, not soft-deleted (see plan.md's "Month Lifecycle" section)
+// — no undo, no batching, single or bulk delete is immediate and permanent.
+model Transaction {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  categoryMonthId String   @map("category_month_id") @db.Uuid
+  amountCents     Int      @map("amount_cents")
+  date            DateTime @db.Date
+  merchant        String?
+  note            String?
+  direction       Direction
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  categoryMonth CategoryMonth @relation(fields: [categoryMonthId], references: [id], onDelete: Restrict)
+
+  @@index([userId, date])
+  @@index([categoryMonthId])
+  @@map("transactions")
+}

@@ -27,8 +27,8 @@ A recurring or expected source of income for a given month (e.g. salary, freelan
 **Money values** (`amountCents`, `monthlyBudgetCents`, `targetAmountCents`, etc.)
 Always an integer number of cents, never a float. The `Cents` suffix on every money field name is deliberate and mandatory — a field just called `amount` on a new type would be a naming mistake. The ×100 / ÷100 conversion for display and input happens only in the frontend, at the UI edge — never in the API or DB layer.
 
-**budgetType** (DB: `preciso` | `quero` | `poupanca`)
-The 50/30/20 classification (Need / Want / Savings) from the original Excel tracker. Applies to Categories and Recurring Expenses, not to individual Transactions (a transaction inherits its category's budgetType). The lowercase values here are the DB representation; the GraphQL schema exposes them UPPER_CASE (`PRECISO` etc.) per GraphQL convention — the resolver/service layer maps between the two.
+**budgetType** (DB: `need` | `want` | `savings`)
+The 50/30/20 classification (Need / Want / Savings) from the original Excel tracker (originally `preciso`/`quero`/`poupança` in the Excel — translated to English for the codebase; the underlying 50/30/20 meaning is unchanged). Applies to Categories and Recurring Expenses, not to individual Transactions (a transaction inherits its category's budgetType). The lowercase values here are the DB representation; the GraphQL schema exposes them UPPER_CASE (`NEED` etc.) per GraphQL convention — the resolver/service layer maps between the two.
 
 **direction** (DB: `expense` | `income`)
 Whether money is leaving or entering. Applies to Categories and Transactions. Same DB-lowercase / GraphQL-UPPER_CASE mapping as `budgetType`.

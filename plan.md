@@ -102,39 +102,76 @@ Going with GraphQL from the start, since the API is being built once and used by
 - revoked (boolean)
 - created_at
 
-**categories**
+**budget_months** (one row per user per real calendar month — YYYY-MM, e.g. `"2026-03"`, `"2027-03"` are distinct rows; the app naturally accumulates one of these per month a user has ever had, spanning as many years as they've used it. This is *not* a recurring 1-12 bucket. Tracks lock state; see "Month Lifecycle" below for the full mechanism. Created starting this Build Order step, not step 5 — `category_month`'s FK needs something to point to — but `locked`/`locked_at` sit inert, never set true, until step 5 wires up actual locking.)
+
+- id (pk)
+- user_id (fk)
+- month (YYYY-MM, unique per user)
+- locked (boolean, default false)
+- locked_at (nullable)
+- created_at
+
+There's no separate "current month" pointer column: the month a user sees is always derived as the earliest month, in chronological order, that isn't locked yet for that user (see "Month Lifecycle" below). If a `budget_months` row doesn't exist yet for a (user, month) pair that's about to be referenced (e.g. adding a category to a month for the first time), the service layer upserts it lazily rather than requiring step 5's full provisioning/carry-forward logic to exist first. Still open: what creates the very *first* `budget_months` row for a brand-new user (e.g. at signup vs. lazily on first request) — decide during that Build Order step, not guessed here.
+
+**categories** (pure catalog — transversal across months, no month-awareness at all: no fields or relations referencing a specific month)
 
 - id (pk)
 - user_id (fk)
 - name
 - icon
 - color
-- monthly_budget_cents (nullable, integer — cents)
-- budget_type ('preciso' | 'quero' | 'poupanca') — your 50/30/20 classification
-- direction ('expense' | 'income')
+- budget_type (nullable; 'need' | 'want' | 'savings' — your 50/30/20 classification; required only when `direction = 'expense'`, not meaningful for `'income'`)
+- direction ('expense' | 'income') — fixed once transactions exist under this category; `updateCategory` blocks a direction change if any transaction references it (via `category_month`, see below), since that would make historical transactions inconsistent with their category
+- deleted_at (nullable) — soft delete; only settable once the category has no active (non-deleted) `category_month` row for any month, past or future. In practice, a category that was ever active in a now-locked past month can never be deleted from the catalog, since a locked month's rows are immutable — intentional (preserves referential integrity on historical records), flagged here since it's a direct but non-obvious consequence of the locking design below.
 
-**transactions**
+**category_month** (the real join — a category is "active" in a given month iff a row exists here for it; this is where all month-specific state lives, not on `categories`. **Hard-deleted, not soft-deleted** — revised from the original soft-delete design; see the callout below.)
 
 - id (pk)
-- user_id (fk)
+- user_id (fk) — denormalized for direct scoping, same pattern as `savings_movements.user_id` below
 - category_id (fk)
-- recurring_expense_id (nullable, fk) — set when this transaction was created via `markRecurringPaid`; this is what `paidThisMonth` actually checks against (a transaction in the same category this month isn't enough — it must be linked to this specific recurring item)
-- amount_cents (integer — always store money as integer cents, never float; FE multiplies/divides by 100 for display/input)
+- month_id (fk → `budget_months`)
+- monthly_budget_cents (integer — cents; this month's budget for this category. When created via carry-forward from the previous month — step 5 — it inherits that previous month's value by default. When created fresh, with no prior month to carry forward from — the only path that exists in this Build Order step — it must be explicitly provided; there's no zero-default fallback.)
+
+`@@unique([category_id, month_id])` — a real DB constraint, not app-level find-or-reactivate logic. A concurrent second attempt to add the same category to the same month simply fails the constraint. There's no "reactivation" concept: removing a category from a month is a hard delete, so adding it back later is a plain insert, identical to adding it the first time — nothing to distinguish "fresh" from "reactivated."
+
+**Deleting a `category_month` row is only allowed when zero transactions reference it for that month** — if any exist, the delete is rejected and the user has to delete those transactions first. Because a deletable `category_month` row always has zero transactions, hard-deleting it is safe: no live transaction can ever end up pointing at a row that's being removed. Enforce this at the DB level too (`onDelete: Restrict` on `transactions.category_month_id`, not just an app-level pre-check) as a backstop. Removing from a month can optionally also remove the following month's row in the same action, never a past month's (locked/immutable once that month is locked — see "Month Lifecycle" below).
+
+There is no `activate`/bundle-into-`createCategory` behavior: `createCategory` is a pure catalog insert, nothing else. Activating a category for a month (creating its `category_month` row) is always a separate, explicit action — either the month's carry-forward flow (step 5) or a manual "add category to month" call (this step).
+
+**transactions** (**hard-deleted, not soft-deleted** — revised from the original soft-delete design; see the callout below)
+
+- id (pk)
+- user_id (fk) — kept as a direct column for defense-in-depth scoping even though it's now reachable transitively via `category_month_id → category_month.category_id → categories.user_id` (two joins away) — same reasoning as `savings_movements.user_id`
+- category_month_id (fk → `category_month`, **not** `category_id` directly) — this structurally enforces that a transaction can only exist against a category that was actually active in that specific month; there's no app-level "is this category active this month" check needed, the FK can't reference a `category_month` row that doesn't exist. The transversal view of a category (all its transactions across every month it's ever been active) is still one join away: `transactions → category_month → categories`.
+- recurring_expense_instance_id (nullable, fk → `recurring_expense_instances`, not the template) — set when this transaction was created via `markRecurringPaid`; this is what `paidThisMonth` actually checks against (a transaction in the same category this month isn't enough — it must be linked to this specific instance)
+- amount_cents (integer, always positive — always store money as integer cents, never float; the sign/meaning comes from `direction`, not the number; FE multiplies/divides by 100 for display/input)
 - date
 - merchant (nullable)
 - note (nullable)
-- direction ('expense' | 'income')
+- direction ('expense' | 'income') — **not client-supplied**: derived and stored from `category_month.categories.direction` at write time, since a transaction can only ever point at one category with one fixed direction. Kept as a denormalized read field for query convenience (filter/sort without an extra join), but `TransactionInput` has no `direction` field at all.
 
-**recurring_expenses** ("Contas")
+> **Revised: no soft delete, no undo, anywhere in this flow (`categories`' catalog-level soft delete is unaffected — see below).** `category_month` and `transactions` are hard-deleted, full stop — no `deleted_at`, no `delete_batch_id`, no undo window, single or bulk. This supersedes the "Soft delete + undo" paragraph of the Month Lifecycle design below as it applied to these two entities specifically. Reasoning: keeping `transactions` soft-deleted while `category_month` is hard-deleted would create a dangling-reference trap — a soft-deleted transaction kept around for undo could end up pointing at a `category_month_id` that no longer exists once that row is actually removed. Simplest fix is to not have that class of row at all: nothing here is recoverable after deletion, the same way the rest of this data model didn't have undo before this session's "Month Lifecycle" design introduced it. `categories` (the catalog) keeps its own `deleted_at` soft delete, untouched by this — nothing dangles off a soft-deleted catalog row, since `category_month` is always either present-and-valid or hard-deleted-and-gone, never soft-deleted-but-still-referenced. Whether `recurring_expense_instances` (structurally analogous to `category_month`) gets the same treatment is still open — decide during step 4's own "grill me" pass, not assumed here.
+
+**recurring_expense_templates** ("Contas" — the recurring definition itself, e.g. "Rent, 800€, day 1"; transversal like `categories`, no month-awareness)
 
 - id (pk)
 - user_id (fk)
 - name
-- amount_cents (integer — cents)
+- amount_cents (integer — cents) — the current default value; new instances (below) inherit this at generation/carry-forward time unless the user overrides that one instance
 - category_id (fk)
-- budget_type ('preciso' | 'quero')
+- budget_type ('need' | 'want')
 - due_day
-- _(no `paid_this_month` column — `paidThisMonth` is computed by checking if a linked Transaction exists for the current month, not stored; see Build Order step 4)_
+- deleted_at (nullable) — soft delete
+
+**recurring_expense_instances** (one row per template per month it's carried into — this is what a Transaction actually links to, and what `paidThisMonth` checks against; same `month_id`-over-raw-string pattern as `category_month`, for the same reason)
+
+- id (pk)
+- user_id (fk)
+- template_id (fk)
+- month_id (fk → `budget_months`)
+- amount_cents (integer — cents) — snapshotted from the template at generation time; can diverge from the template if the user edits just this instance (see "Recurring value edits" in Month Lifecycle below)
+- deleted_at (nullable) — soft delete; this is how "remove this recurring expense from a month" works. Scoped to one month, with an option to also remove the following month's instance in the same action, never a past/locked month. There's no separate "pause" state: an instance simply isn't created for a month the user doesn't carry it into.
+- _(no `paid_this_month` column — `paidThisMonth` is computed by checking if a Transaction exists with this instance's id as `recurring_expense_instance_id`, not stored; see Build Order)_
 
 **savings_funds**
 
@@ -148,6 +185,7 @@ Going with GraphQL from the start, since the API is being built once and used by
 - end_date (nullable)
 - monthly_target_cents (nullable, integer — cents)
 - achieved (boolean)
+- deleted_at (nullable) — soft delete; cascades to a soft-delete of its movements (below), since a movement has no meaning without its fund
 
 **savings_movements**
 
@@ -157,6 +195,7 @@ Going with GraphQL from the start, since the API is being built once and used by
 - amount_cents (integer — cents)
 - type ('deposit' | 'withdraw')
 - date
+- deleted_at (nullable) — soft delete
 
 **income_sources**
 
@@ -165,16 +204,37 @@ Going with GraphQL from the start, since the API is being built once and used by
 - name
 - expected_amount_cents (integer — cents)
 - actual_amount_cents (nullable, integer — cents)
-- month (YYYY-MM)
+- month_id (fk → `budget_months`) — same pattern as `category_month`/`recurring_expense_instances`, for the same reason: one real per-user-per-calendar-month row backing every month reference in the schema, not a raw `YYYY-MM` string repeated (and potentially drifting) in every table that needs one
+- deleted_at (nullable) — soft delete
 
 > Debts, taxes (IVA/IRS/SS), and the annual roll-up view from your Excel are real features but backlog for after Phase 1-3 are working end to end — don't let them expand the API surface before the core loop (categories → transactions → budget available) is solid and deployed.
 
-> **Referential integrity on delete** (decide per relation, don't let it default silently):
+> **Referential integrity on delete** — resolved (superseding the "still open" note this used to carry; decide any remaining specifics during each entity's Build Order step, not here):
 >
-> - Deleting a **category** that still has transactions or recurring expenses: block it with a clear error (safest — avoids orphaned or silently-deleted financial records). A "delete category and all its data" flow, if wanted, should be a separate explicit action.
-> - Deleting a **savings fund**: cascade-delete its movements (a movement has no meaning without its fund).
-> - Deleting a **recurring expense**: keep the transactions it already generated (they're real spending that happened) but null out their `recurring_expense_id`. Set the FK `onDelete: SetNull` for this.
->   These are starting decisions to confirm during the "grill me" pass, not immutable — but the point is they must be _decided_, not left to Prisma's default.
+> - Deleting a **category** from the global catalog: only allowed once no `category_month` row references it, for any month, past or future (see `categories.deleted_at` above — the catalog entry itself is still soft-deleted, only `category_month` and `transactions` are hard-deleted). "Remove category from month" (a `category_month` hard delete, blocked if any transactions reference it that month) is the day-to-day action; catalog deletion is rare, and effectively locked out for any category with real history, since a locked past month's `category_month` row can never be removed.
+> - Deleting a **savings fund**: soft-delete cascades to a soft-delete of its movements (a movement has no meaning without its fund) — no hard `onDelete` FK behavior needed now that everything is soft-deleted.
+> - Deleting a **recurring expense instance**: soft-deleted for that one month, optionally also the following month in the same action, never a past one. Because the instance row still exists (soft-deleted, not gone), a linked Transaction's `recurring_expense_instance_id` stays valid — no FK-nulling needed, unlike the old hard-delete design this replaces. (Whether this stays soft-deleted or moves to the same hard-delete pattern as `category_month` is still open — decide during step 4's "grill me" pass.)
+> - All of the above only apply to **unlocked** months. A locked month's rows (`category_month`, instances, transactions) are immutable — no create/update/delete against a locked month, enforced in the service layer, not just the UI. In this Build Order step `locked` is always false (step 5 wires up the mutation that sets it), but the guard is written now, not bolted on later.
+
+## Month Lifecycle: Activation, Carry-Forward, and Locking
+
+A significant piece of design beyond the original flat data model above — resolved during the "grill me" pass for Build Order step 3, but deliberately scoped to its own later Build Order step (step 5, after Categories+Transactions and Recurring Expenses both exist) rather than crammed into step 3, since it touches both of those entities plus introduces `budget_months`.
+
+**Category & recurring-expense activation is per-month, not global.** A category or recurring expense being "active" for a month means a `category_month` / `recurring_expense_instances` row exists for it in that month. There's no "pause" state — not carrying something forward simply means no row gets created for the new month.
+
+**Recurring template value edits — propagation rule.** Editing a recurring expense's `amount_cents` from within a given (unlocked) month always updates that month's instance immediately, then prompts: *"apply this to future months too?"*
+- **No** (e.g. a gas bill that's different every month): only this instance changes. The template and every other instance — past or future — are untouched.
+- **Yes** (e.g. a rent increase): the template's `amount_cents` updates, and every currently-existing **unlocked** future instance updates to match. Locked (past) instances are never touched regardless of the answer — they're historical record. If it's ever ambiguous whether a given instance counts as "future," default to "only affects months not yet locked."
+
+**Bulk delete of a category's transactions** is always scoped to the single month currently being viewed — there's no "delete everything across months" action, ever. For `transactions` specifically (see the revised delete rule in the Data Model above), a bulk delete is immediate and permanent, same as a single-row delete — there's no batching or undo to coordinate.
+
+**Soft delete + undo — revised, no longer applies to `category_month` or `transactions`.** The original design here (still true for `categories`, recurring templates and instances, savings funds and movements, income sources) was: nothing hard-deleted, every table gets `deleted_at`, undo clears it within a short window (10min-1h, TBD), bulk actions share a `delete_batch_id` so undo restores the whole batch. **`category_month` and `transactions` are now the exception**: both are hard-deleted, no `deleted_at`, no undo, no batching, single or bulk — see the Data Model callout above for why (a soft-deleted transaction could otherwise dangle on a hard-deleted `category_month`). The rest of this paragraph's mechanism is unchanged for the entities it still applies to.
+
+**Carry-forward, on locking a month.** When a month gets locked (below), the user is shown a checkbox list of the just-locked month's active categories and recurring expenses and picks which ones carry into the new month; anything left unchecked simply isn't activated there. **Planning horizon is capped at one month ahead** — a user can never activate/plan further out than the immediate next month. Planning further ahead than that is a candidate future paid-tier feature, not phase 1.
+
+**Month locking.** Months don't close automatically by calendar date. The month a user sees is always the earliest one, in chronological order, that isn't locked yet (see `budget_months` in the Data Model above — there's no separate "current month" pointer, it's derived). If that month is calendar-wise already in the past, the UI shows a banner: *"Lock month and create new"* (or *"Lock and show current month"* if a later month has already been pre-created — e.g. a paid-tier user who planned further ahead). This gives the user time to add/fix missing transactions from the ended month before it closes. Locking is always explicit — a user can keep editing an "old" month indefinitely, even if the calendar has moved on, until they choose to lock it. Locking a month: makes it immutable (see the referential-integrity callout above), runs the carry-forward flow described above, and makes the next month the new "current" one.
+
+**Auto-lock cascade for empty months.** If a user hasn't opened the app in a while, there can be several unlocked months stacked up between the last locked one and the real current month. They're shown the oldest of these first for explicit review/lock. Once that one's locked, the system walks forward through the rest automatically: any month with zero transactions gets auto-locked without prompting (nothing to review), and the walk stops — requiring explicit review again — the moment it hits a month that actually has data, or the real current month, whichever comes first. Exact definition of "empty" (transactions only, or also untouched recurring instances/activations) — decide precisely during this Build Order step.
 
 ## API Schema (Phase 1, GraphQL)
 
@@ -190,9 +250,9 @@ Everything else as GraphQL types, queries and mutations:
 
 ```graphql
 enum BudgetType {
-  PRECISO
-  QUERO
-  POUPANCA
+  NEED
+  WANT
+  SAVINGS
 }
 enum Direction {
   EXPENSE
@@ -208,10 +268,16 @@ type Category {
   name: String!
   icon: String!
   color: String!
-  monthlyBudgetCents: Int
-  budgetType: BudgetType!
+  budgetType: BudgetType # null when direction is INCOME; required (enforced service-side) when EXPENSE
   direction: Direction!
-  transactions(month: String): [Transaction!]!
+}
+
+type CategoryMonth {
+  id: ID!
+  month: String! # YYYY-MM, denormalized from the linked BudgetMonth for convenience
+  monthlyBudgetCents: Int!
+  category: Category!
+  transactions: [Transaction!]! # this month's transactions for this category
 }
 
 type Transaction {
@@ -220,8 +286,8 @@ type Transaction {
   date: String!
   merchant: String
   note: String
-  direction: Direction!
-  category: Category!
+  direction: Direction! # denormalized from categoryMonth.category.direction, not client-settable
+  categoryMonth: CategoryMonth!
   recurringExpense: RecurringExpense
 }
 
@@ -260,25 +326,23 @@ type IncomeSource {
   name: String!
   expectedAmountCents: Int!
   actualAmountCents: Int
-  month: String!
+  month: String! # YYYY-MM, denormalized from the linked BudgetMonth (month_id) — same pattern as CategoryMonth.month
 }
 
 input CategoryInput {
   name: String!
   icon: String!
   color: String!
-  monthlyBudgetCents: Int
-  budgetType: BudgetType!
+  budgetType: BudgetType # required service-side only when direction is EXPENSE
   direction: Direction!
 }
 
 input TransactionInput {
-  categoryId: ID!
-  amountCents: Int!
+  categoryMonthId: ID!
+  amountCents: Int! # must be positive; direction is derived server-side from the category, not accepted here
   date: String!
   merchant: String
   note: String
-  direction: Direction!
 }
 
 input RecurringExpenseInput {
@@ -317,23 +381,28 @@ input IncomeSourceInput {
 }
 
 type Query {
-  categories: [Category!]!
+  categories: [Category!]! # full catalog, every category regardless of month — the "reuse an existing category" picker
+  categoryMonths(month: String!): [CategoryMonth!]! # this is "which categories are active this month" — a month has an array of categories, not the reverse
   # month filters everywhere in this schema use "YYYY-MM" — same format as IncomeSource.month.
   # Reject anything else at the input-validation layer (see the Dates convention above).
-  transactions(month: String, categoryId: ID): [Transaction!]! # ordered date DESC, createdAt DESC
+  transactions(month: String!, categoryId: ID): [Transaction!]! # ordered date DESC, createdAt DESC; unpaginated — a month's transactions is a bounded ~100-row list, not the unbounded case pagination is for (see Production Readiness)
   recurringExpenses: [RecurringExpense!]!
   savingsFunds: [SavingsFund!]!
   incomeSources(month: String): [IncomeSource!]!
 }
 
 type Mutation {
-  createCategory(input: CategoryInput!): Category!
-  updateCategory(id: ID!, input: CategoryInput!): Category!
-  deleteCategory(id: ID!): Boolean!
+  createCategory(input: CategoryInput!): Category! # pure catalog insert, no activation
+  updateCategory(id: ID!, input: CategoryInput!): Category! # blocks a direction change if any transaction references this category
+  deleteCategory(id: ID!): Boolean! # blocked unless inactive in every month, past and future
+
+  addCategoryToMonth(categoryId: ID!, month: String!, monthlyBudgetCents: Int!): CategoryMonth! # the only activation path in this step; budget always explicit (carry-forward's budget-inheritance path is step 5)
+  removeCategoryFromMonth(categoryMonthId: ID!): Boolean! # hard delete; blocked if any transactions reference it that month (delete those first); the "also apply to next month" option is step 5
+  updateCategoryMonthBudget(categoryMonthId: ID!, monthlyBudgetCents: Int!): CategoryMonth! # this month's budget only, no template to propagate to
 
   createTransaction(input: TransactionInput!): Transaction!
   updateTransaction(id: ID!, input: TransactionInput!): Transaction!
-  deleteTransaction(id: ID!): Boolean!
+  deleteTransaction(id: ID!): Boolean! # hard delete, immediate and permanent, no undo
 
   createRecurringExpense(input: RecurringExpenseInput!): RecurringExpense!
   updateRecurringExpense(
@@ -358,23 +427,26 @@ type Mutation {
 }
 ```
 
-> The schema above is illustrative, not final — treat it as the starting shape to interview around (per the "grill me" rule), not a spec to implement verbatim. `initialBalanceCents` is settable only at creation (`CreateSavingsFundInput`) and deliberately absent from `UpdateSavingsFundInput`, since `currentAmountCents` is derived from it plus the sum of movements — allowing it to change after movements exist would silently corrupt the balance. Still open for that discussion: whether `deleteCategory` should be blocked or cascade when transactions still reference the category (see the referential-integrity note below).
+> The schema above is illustrative, not final — treat it as the starting shape to interview around (per the "grill me" rule), not a spec to implement verbatim. `initialBalanceCents` is settable only at creation (`CreateSavingsFundInput`) and deliberately absent from `UpdateSavingsFundInput`, since `currentAmountCents` is derived from it plus the sum of movements — allowing it to change after movements exist would silently corrupt the balance.
+>
+> `Category`, `CategoryMonth`, and `Transaction` above reflect the finalized Build Order step 3 design (grilled and confirmed) — trust these three. **`RecurringExpense` still reflects the old flat model and is stale** — it needs the same template/instance split (`RecurringExpense` → a template type plus a `RecurringExpenseMonth`/instance type using the same `month_id`-over-raw-string pattern as `CategoryMonth`) once Build Order step 4 gets its own "grill me" pass. Don't trust the `RecurringExpense` type, `RecurringExpenseInput`, or the recurring-expense `Mutation` fields below as final.
 
-Note about enum casing: GraphQL convention is UPPER_CASE enum values (`PRECISO`, `EXPENSE`), but your DB/Excel domain uses lowercase (`preciso`, `expense`). Map between the two in the resolver/service layer — don't let the DB casing leak into the GraphQL schema or vice versa. The `GLOSSARY.md` lowercase values are the DB representation.
+Note about enum casing: GraphQL convention is UPPER_CASE enum values (`NEED`, `EXPENSE`), but the DB uses lowercase (`need`, `expense`). Map between the two in the resolver/service layer — don't let the DB casing leak into the GraphQL schema or vice versa. The `GLOSSARY.md` lowercase values are the DB representation. (`budgetType`'s three values were originally Portuguese — `preciso`/`quero`/`poupança`, matching the Excel tracker — translated to English `need`/`want`/`savings` in the codebase; the 50/30/20 meaning is unchanged.)
 
-Note: any relation field on a list — `Category.transactions`, `SavingsFund.movements`, but also the reverse direction like `Transaction.category`, `Transaction.recurringExpense`, `RecurringExpense.category` — is a potential N+1. The rule from the Architecture Decision above (DataLoader on every relation-traversing resolver) applies to all of them, not just the two most obvious ones.
+Note: any relation field on a list — `CategoryMonth.transactions`, `SavingsFund.movements`, but also the reverse direction like `Transaction.categoryMonth`, `Transaction.recurringExpense`, `RecurringExpense.category` — is a potential N+1. The rule from the Architecture Decision above (DataLoader on every relation-traversing resolver) applies to all of them, not just the two most obvious ones.
 
 ## Build Order (suggested milestones for Claude Code sessions)
 
 0. **Ground truth first**: commit `CLAUDE.md`, `GLOSSARY.md`, `plan.md`, and `SCALING.md` to the repo root before writing any code — these are read by Claude Code and define the vocabulary and rules the schema is built from. (They already exist; this step is just "they're in the repo before step 1 starts.")
 1. **Project scaffold**: Fastify + TypeScript, GraphQL Yoga/Mercurius wired in, Prisma init, PostgreSQL running locally (Docker recommended), CORS configured, `@fastify/helmet`, Zod-validated env vars at startup, `GET /health` route, graceful shutdown + crash handlers wired up, a trivial `Query.ping` to confirm the whole chain works
 2. **Auth (OTP)**: `otp_codes` + `refresh_tokens` tables, email sending wired up (start with logging the code to console in dev, swap in Resend/Postmark before anything real), request-otp/verify-otp/refresh/logout routes, JWT context builder for GraphQL resolvers
-3. **Categories + Transactions**: types, queries, mutations, scoped by user; DataLoader for `Category.transactions`
-4. **Recurring expenses**: CRUD + `markRecurringPaid` (creates a Transaction linked via `recurringExpenseId`); compute `paidThisMonth` by checking if a Transaction with that `recurringExpenseId` exists for the current month, instead of a stored boolean that needs a scheduled reset job — flag this decision to Claude Code explicitly
-5. **Savings funds + movements**: CRUD + `addSavingsMovement` updating `currentAmountCents`; DataLoader for `SavingsFund.movements`
-6. **Income sources**: CRUD
-7. **Seed script**: your real categories/funds from the Excel, for realistic test data
-8. **Basic tests**: at minimum, auth boundary tests (user A can't read user B's data) and one DataLoader batching check — this is the one thing worth testing before going live
+3. **Categories + Transactions**: `budget_months` table lands here (schema-only — `locked` stays inert until step 5), plus `categories` (pure catalog, no month-awareness, soft-deleted), `category_month` (the join — row existence = active, budget lives here not on `categories`, **hard-deleted**, `@@unique([categoryId, monthId])`, blocked from deletion while any transaction references it that month), and `transactions` (FK to `category_month`, not `category` directly — structurally enforces "category must be active that month"; **hard-deleted**, no undo). `createCategory` is a pure catalog insert; `addCategoryToMonth`/`removeCategoryFromMonth`/`updateCategoryMonthBudget` are the only activation path in this step (budget always explicit — carry-forward's inheritance path is step 5). DataLoader for `CategoryMonth.transactions`. See "Month Lifecycle" above for the full reasoning, including why `category_month`/`transactions` dropped the soft-delete-and-undo design that still applies to every other entity in this plan.
+4. **Recurring expenses**: CRUD on `recurring_expense_templates` (transversal, no month-awareness, same shape as `categories`) + generation of `recurring_expense_instances` (FK to `budget_months` via `month_id`, same pattern as `category_month`); `markRecurringPaid` creates a Transaction linked via `recurringExpenseInstanceId` (not the template); compute `paidThisMonth` by checking if a Transaction with that instance id exists, instead of a stored boolean that needs a scheduled reset job — flag this decision to Claude Code explicitly. Template-edit propagation ("apply to future months?") is also step 5, since it needs the locking mechanism to know which future instances are still unlocked. This step still needs its own "grill me" pass — the `RecurringExpense` GraphQL type is flagged stale in the API Schema section below.
+5. **Month lifecycle**: carry-forward flow (with budget-inheritance for `category_month`), month locking + the auto-lock cascade for empty months, recurring-template edit propagation, soft-delete + undo (with `delete_batch_id` batching) for the entities that still have it — not `category_month` or `transactions`, which are hard-deleted from step 3 onward (see "Month Lifecycle" above). Depends on steps 3 and 4 both being done.
+6. **Savings funds + movements**: CRUD + `addSavingsMovement` updating `currentAmountCents`; DataLoader for `SavingsFund.movements`; `deleted_at` soft-delete from the start, cascading to movements.
+7. **Income sources**: CRUD; `deleted_at` soft-delete from the start.
+8. **Seed script**: your real categories/funds from the Excel, for realistic test data
+9. **Basic tests**: at minimum, auth boundary tests (user A can't read user B's data) and one DataLoader batching check — this is the one thing worth testing before going live
 
 Once the API is solid: **Phase 2** picks up the mobile app plan (screens, design reference, keypad UI etc. — already scoped separately) but wired to this API instead of local SQLite. **Phase 3** is the website as a thin client on top of the same API.
 
@@ -385,8 +457,8 @@ Once the API is solid: **Phase 2** picks up the mobile app plan (screens, design
 - **Disable introspection/playground in production**: GraphQL servers expose a schema introspection query and often a GraphiQL/playground UI by default — great for dev, but in production it hands anyone your entire API schema for free. Both GraphQL Yoga and Mercurius let you turn this off based on `NODE_ENV`.
 - **Query depth/complexity limits**: without this, a malicious (or just badly written) deeply nested query can force the server to do disproportionate work — a GraphQL-specific denial-of-service angle that REST doesn't have. `graphql-depth-limit` or a complexity-scoring plugin covers this cheaply.
 - **Rate limiting**: critical on `/auth/request-otp` especially — without it, someone can spam a user's inbox or brute-force codes. `@fastify/rate-limit` covers this cheaply
-- **Pagination**: cursor-based pagination on `transactions` and any other list that grows unbounded — add this from the start, painful to retrofit once there's real data
-- **Idempotency**: mutations like `createTransaction` / `addSavingsMovement` should tolerate client retries without creating duplicates (e.g. an idempotency key from the client, or dedupe on a short time window)
+- **Pagination**: `transactions(month, categoryId)` is deliberately unpaginated as of Build Order step 3 — a single month's transactions is a bounded, small list (~100 tops, per the user), not the unbounded case this warning is about. Still applies to any future list that isn't month-scoped (e.g. an eventual "all history" view) — add pagination there from the start when it's built, don't retrofit.
+- **Idempotency**: deferred as of Build Order step 3 — `createTransaction` has no retry-dedup mechanism yet. Revisit if/when the mobile or web app surfaces a real duplicate-on-retry issue (flaky connection double-submits, etc.) rather than guarding against a hypothetical now. `addSavingsMovement` isn't built yet (step 6); reconsider idempotency for it when that step starts.
 - **Backups**: confirm your chosen hosting provider does automated Postgres backups before real users' data lives there — and do one test restore before you actually need it for real, a backup nobody has ever restored from is an assumption, not a guarantee.
 - **Secrets management**: env vars via the hosting platform's secret store, never committed `.env` files with real values
 - **GDPR**: this is financial data — once it's public you'll need a privacy policy and a way for a user to export/delete their data (right to erasure). Not needed for solo dev/testing, needed before real signups.
@@ -399,7 +471,20 @@ Once the API is solid: **Phase 2** picks up the mobile app plan (screens, design
 - Offline support / sync conflict resolution
 - Open Banking / bank account integration — separate concern entirely (PSD2, an aggregator like GoCardless Bank Account Data or Tink, its own OAuth flow with the bank). Worth revisiting only with real user demand, given the regulatory and cost overhead.
 - GraphQL subscriptions / real-time updates (revisit only if a concrete need shows up)
-- Soft-delete / audit trail on financial records (hard delete is fine for phase 1; revisit if you ever want "undo" or a full history of edits to transactions)
+- Full audit trail / field-level edit history on financial records (soft-delete + short-window undo applies to some entities from Build Order step 4 onward — see "Month Lifecycle" above — but `transactions`/`category_month` are hard-deleted with no undo at all, and a full history of every edit ever made to a transaction is a separate, bigger feature regardless, still backlog)
+- Planning horizon beyond one month ahead (capped at next-month-only for phase 1 — see "Month Lifecycle" above; candidate future paid-tier feature)
+
+## Data Monetization Policy (future — no phase 1 work)
+
+No user data is ever sold or shared in a form that's linkable back to a specific individual — not even in pseudonymized/internal-ID form. There's deliberately no consent/opt-in toggle for this: the policy is unconditional, so there's nothing a toggle would be granting consent to.
+
+Before any data monetization could ever happen, it would need to pass through a dedicated anonymization pipeline — a separate future initiative with its own design work, not an extension of the soft-delete mechanics above. That pipeline would need to define, when it's actually scoped:
+
+- what gets aggregated and at what granularity (e.g. category-level spend trends across many users, never a single user's transaction stream)
+- how re-identification risk is minimized (k-anonymity-style thresholds, no reversible ID mapping back to a user row, no small-cohort aggregates that could fingerprint one person)
+- what governs whether/when this ever actually ships
+
+Until that pipeline exists and is explicitly built, no data monetization happens, full stop.
 
 ## Local Setup
 
