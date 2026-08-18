@@ -50,5 +50,6 @@ model RefreshToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([tokenHash])
+  @@index([userId])
   @@map("refresh_tokens")
 }
