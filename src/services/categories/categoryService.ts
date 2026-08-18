@@ -28,6 +28,25 @@ export interface CategoryServiceDeps {
   prisma: Pick<PrismaClient, 'category' | 'categoryMonth' | 'transaction'>;
 }
 
+/**
+ * The single ownership-check implementation, shared by categoryService
+ * (bound to its own prisma) and categoryMonthService (which needs to run
+ * it against a transactional client too, so it can't just call a method
+ * pre-bound to a different client) — parameterized on the client instead
+ * of duplicated per caller.
+ */
+export async function assertOwnedCategory(
+  client: Pick<PrismaClient, 'category'>,
+  userId: string,
+  id: string,
+) {
+  const category = await client.category.findUnique({ where: { id } });
+  if (!category || category.userId !== userId || category.deletedAt) {
+    throw new CategoryServiceError('category_not_found');
+  }
+  return category;
+}
+
 export function createCategoryService({ prisma }: CategoryServiceDeps) {
   function assertValidBudgetType(direction: Direction, budgetType?: BudgetType): void {
     if (direction === 'expense' && !budgetType) {
@@ -38,15 +57,6 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
   /** budgetType isn't meaningful for income categories — normalize it away rather than trust the caller. */
   function normalizeBudgetType(direction: Direction, budgetType?: BudgetType): BudgetType | null {
     return direction === 'income' ? null : (budgetType ?? null);
-  }
-
-  /** Public so other services (e.g. categoryMonthService) can enforce the same ownership check. */
-  async function getOwnedCategory(userId: string, id: string) {
-    const category = await prisma.category.findUnique({ where: { id } });
-    if (!category || category.userId !== userId || category.deletedAt) {
-      throw new CategoryServiceError('category_not_found');
-    }
-    return category;
   }
 
   async function listCatalog(userId: string) {
@@ -75,7 +85,7 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
   }
 
   async function updateCategory(userId: string, id: string, input: CategoryInput) {
-    const existing = await getOwnedCategory(userId, id);
+    const existing = await assertOwnedCategory(prisma, userId, id);
     assertValidBudgetType(input.direction, input.budgetType);
 
     if (input.direction !== existing.direction) {
@@ -106,7 +116,7 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
   }
 
   async function deleteCategory(userId: string, id: string): Promise<void> {
-    await getOwnedCategory(userId, id);
+    await assertOwnedCategory(prisma, userId, id);
 
     const existingCategoryMonth = await prisma.categoryMonth.findFirst({ where: { categoryId: id } });
     if (existingCategoryMonth) {
@@ -119,7 +129,6 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
   return {
     listCatalog,
     findManyByIds,
-    getOwnedCategory,
     createCategory,
     updateCategory,
     deleteCategory,

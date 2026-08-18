@@ -1,5 +1,5 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
-import { CategoryServiceError } from './categoryService.js';
+import { assertOwnedCategory, CategoryServiceError } from './categoryService.js';
 import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 
@@ -23,12 +23,12 @@ export interface CategoryMonthServiceDeps {
   budgetMonthService: Pick<BudgetMonthService, 'resolveBudgetMonthId' | 'findBudgetMonthId'>;
 }
 
-function isUniqueConstraintError(error: unknown): boolean {
+function hasPrismaErrorCode(error: unknown, code: string): boolean {
   return (
     typeof error === 'object' &&
     error !== null &&
     'code' in error &&
-    (error as { code: unknown }).code === 'P2002'
+    (error as { code: unknown }).code === code
   );
 }
 
@@ -41,17 +41,6 @@ function assertValidBudget(monthlyBudgetCents: number): void {
 function assertValidMonth(month: string): void {
   if (!isValidMonthFormat(month)) {
     throw new CategoryMonthServiceError('invalid_month');
-  }
-}
-
-async function assertOwnedCategory(
-  client: Pick<PrismaClient, 'category'>,
-  userId: string,
-  categoryId: string,
-): Promise<void> {
-  const category = await client.category.findUnique({ where: { id: categoryId } });
-  if (!category || category.userId !== userId || category.deletedAt) {
-    throw new CategoryServiceError('category_not_found');
   }
 }
 
@@ -122,7 +111,7 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
       if (error instanceof CategoryServiceError) {
         throw error;
       }
-      if (isUniqueConstraintError(error)) {
+      if (hasPrismaErrorCode(error, 'P2002')) {
         throw new CategoryMonthServiceError('category_month_already_active');
       }
       throw error;
@@ -140,7 +129,20 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
       throw new CategoryMonthServiceError('category_month_has_transactions');
     }
 
-    await prisma.categoryMonth.delete({ where: { id: categoryMonthId } });
+    try {
+      await prisma.categoryMonth.delete({ where: { id: categoryMonthId } });
+    } catch (error) {
+      // A transaction can be created concurrently, after the check above
+      // but before this delete lands — the onDelete: Restrict FK catches
+      // it at the DB level. Map that to the same typed error the check
+      // above would have thrown, rather than letting a raw Prisma error
+      // through (which toGraphQLError doesn't know how to give a clean
+      // extensions.code for).
+      if (hasPrismaErrorCode(error, 'P2003')) {
+        throw new CategoryMonthServiceError('category_month_has_transactions');
+      }
+      throw error;
+    }
   }
 
   async function updateCategoryMonthBudget(

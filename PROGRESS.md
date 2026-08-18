@@ -4,12 +4,23 @@ Tracks status against `plan.md`'s Build Order. Updated as each step lands.
 
 ## Where we left off (2026-08-18)
 
-PR #2 (auth/OTP) was reviewed (twice — a follow-up review after fixes),
-approved, and merged into `develop`. On branch `feature/categories-transactions`
-(branched from synced `develop`), Build Order step 3 is **functionally
-complete and not yet a PR** — working tree is clean, nothing pushed to
-origin yet, no PR opened. See the Phase 1 checklist below for what step 3
-covers and the commit-by-commit design trail.
+PR #2 (auth/OTP) was reviewed (twice), approved, and merged into `develop`.
+PR #3 (`feature/categories-transactions` → `develop`, Build Order step 3)
+is **open, pushed, and has been through four `pr-reviewer` rounds** —
+https://github.com/relense/budget-app-api/pull/3. Round 1 found 2 blocking
+issues (cross-tenant `addCategoryToMonth`, missing `YYYY-MM` validation),
+fixed. Round 2 approved with 3 non-blocking observations. Round 3's fix
+for those observations introduced a real regression (reordered a check,
+reintroducing a permanent-corrupt-row bug for a different field) —
+caught by round 3's own review, fixed, then round 4 approved the fix and
+surfaced 2 more suggestion-level findings (a TOCTOU on
+`removeCategoryFromMonth` analogous to the already-accepted one on
+`addCategoryToMonth`; a stale docstring plus duplicated ownership-check
+logic between `categoryService` and `categoryMonthService`), both since
+fixed and pushed. Working tree is clean, in sync with origin. See the
+Phase 1 checklist below for what step 3 covers and the commit-by-commit
+design trail; the PR itself has the full review history if the reasoning
+behind any specific fix is needed later.
 
 Before any code, step 3 got an extensive "grill me" pass that materially
 changed the shape of `plan.md` itself (not just this step's scope) — see
@@ -39,12 +50,11 @@ reasoning is needed later:
   category with one fixed direction via `category_month`.
 
 Next actions, in order:
-1. Review the diff on `feature/categories-transactions` (or ask for a
-   `pr-reviewer` pass, as was done for PR #2).
-2. Open the PR (`feature/categories-transactions` → `develop`) when ready,
-   then wait for review/approval per `CLAUDE.md`'s git workflow — don't
-   merge, don't start step 4 on this branch or a new one until approved.
-3. Once merged: sync `develop`, branch for step 4 (Recurring expenses),
+1. Wait for the human review/approval on PR #3 per `CLAUDE.md`'s git
+   workflow — don't merge, don't start step 4 on this branch or a new one
+   until approved. The automated `pr-reviewer` passes are done; this is
+   the human review step.
+2. Once merged: sync `develop`, branch for step 4 (Recurring expenses),
    and start with the usual "grill me" interview — it still needs its own
    design pass; the `RecurringExpense` GraphQL type and the
    `recurring_expense_templates`/`recurring_expense_instances` split are
@@ -80,15 +90,22 @@ Next actions, in order:
       `category` — structurally enforces "must be active that month"; hard-
       deleted, `direction` server-derived). Four services (`budgetMonthService`,
       `categoryService`, `categoryMonthService`, `transactionService`),
-      129 Jest tests including three tests that seed a `locked: true` row
+      149 Jest tests including three that seed a `locked: true` row
       directly to prove the locked-month guard works before step 5 has any
-      mutation that sets it. Full GraphQL schema/resolvers/DataLoaders
+      mutation that sets it, plus regression tests added across four
+      review rounds (cross-tenant ownership, month-format validation,
+      non-integer budget rejection, ownership-check-before-permanent-
+      side-effect ordering, a simulated race on `removeCategoryFromMonth`).
+      Full GraphQL schema/resolvers/DataLoaders
       (`category`/`categoryMonth`/`budgetMonth`/`transactionsByCategoryMonthId`),
       per-field `requireUserId` auth checks, service errors mapped to
       `GraphQLError` with a stable `extensions.code`. Manually smoke-tested
-      end to end against real Postgres (full mutation/query lifecycle +
-      duplicate-add rejection + blocked/then-allowed delete + unauthenticated
-      rejection). → branch `feature/categories-transactions`, not yet a PR.
+      end to end against real Postgres repeatedly across review rounds
+      (full mutation/query lifecycle, duplicate-add rejection, blocked/
+      then-allowed delete, unauthenticated rejection, cross-tenant
+      rejection, malformed-month rejection). → PR #3
+      (`feature/categories-transactions` → `develop`), open, awaiting
+      human review.
 - [ ] **4. Recurring expenses** — CRUD on `recurring_expense_templates` +
       generation of `recurring_expense_instances`; `markRecurringPaid`;
       `paidThisMonth` computed, not stored. Needs its own "grill me" pass —

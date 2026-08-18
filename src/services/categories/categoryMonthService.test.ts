@@ -254,6 +254,42 @@ describe('removeCategoryFromMonth', () => {
     expect(prisma.categoryMonths).toHaveLength(1);
   });
 
+  it('throws category_month_has_transactions (not a raw FK error) when a transaction is created between the check and the delete', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      10000,
+    );
+
+    // Simulate the race: the "no referencing transaction" check reports
+    // none (as if it ran a moment before the concurrent insert), but a
+    // transaction lands in the table right after — the fake's delete()
+    // enforces onDelete: Restrict just like the real DB, so this
+    // exercises the same path a concurrent request would hit.
+    prisma.transaction.findFirst = (async () => {
+      prisma.transactions.push({
+        id: 'tx-race',
+        userId: 'user-1',
+        categoryMonthId: categoryMonth.id,
+        amountCents: 500,
+        date: new Date('2026-08-05'),
+        merchant: null,
+        note: null,
+        direction: 'expense',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return null;
+    }) as typeof prisma.transaction.findFirst;
+
+    await expect(
+      categoryMonthService.removeCategoryFromMonth('user-1', categoryMonth.id),
+    ).rejects.toMatchObject({ reason: 'category_month_has_transactions' });
+    expect(prisma.categoryMonths).toHaveLength(1);
+  });
+
   it('throws month_locked when the month has since been locked', async () => {
     const { prisma, categoryMonthService, categoryA } = await setup();
     const categoryMonth = await categoryMonthService.addCategoryToMonth(

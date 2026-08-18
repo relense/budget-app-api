@@ -62,6 +62,14 @@ export class FakeUniqueConstraintError extends Error {
   }
 }
 
+/** Mimics the shape of Prisma's PrismaClientKnownRequestError for P2003 (foreign key constraint). */
+export class FakeForeignKeyConstraintError extends Error {
+  readonly code = 'P2003';
+  constructor() {
+    super('Foreign key constraint failed');
+  }
+}
+
 interface FakeDelegates {
   budgetMonth: FakeBudgetMonthDelegate;
   category: {
@@ -246,6 +254,12 @@ export function createFakePrisma(): FakePrismaClient {
       async delete({ where }) {
         const index = categoryMonths.findIndex((cm) => cm.id === where.id);
         if (index === -1) throw new Error('not found');
+        // Mimics the real onDelete: Restrict FK from transactions —
+        // simulates a transaction landing between an app-level "no
+        // referencing transactions" check and this delete.
+        if (transactions.some((t) => t.categoryMonthId === where.id)) {
+          throw new FakeForeignKeyConstraintError();
+        }
         const [row] = categoryMonths.splice(index, 1);
         return row!;
       },
