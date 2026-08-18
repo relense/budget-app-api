@@ -101,6 +101,46 @@ describe('POST /auth/request-otp', () => {
     await app.close();
   });
 
+  it('normalizes email casing/whitespace before calling the auth service', async () => {
+    const authService = fakeAuthService();
+    const app = await buildTestApp(authService);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/request-otp',
+      payload: { email: '  User@Example.com  ' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(authService.requestOtp).toHaveBeenCalledWith('user@example.com');
+
+    await app.close();
+  });
+
+  it('rate-limits case variations of the same email as the same key', async () => {
+    const authService = fakeAuthService();
+    const app = await buildTestApp(authService);
+
+    const casings = ['user@example.com', 'User@Example.com', 'USER@EXAMPLE.COM'];
+    for (const email of casings) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/auth/request-otp',
+        payload: { email },
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const limited = await app.inject({
+      method: 'POST',
+      url: '/auth/request-otp',
+      payload: { email: 'uSeR@eXaMpLe.CoM' },
+    });
+    expect(limited.statusCode).toBe(429);
+
+    await app.close();
+  });
+
   it('does not rate-limit a different email from the same IP', async () => {
     const authService = fakeAuthService();
     const app = await buildTestApp(authService);
@@ -132,7 +172,7 @@ describe('POST /auth/verify-otp', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/auth/verify-otp',
-      payload: { email: 'user@example.com', code: 'K7QXF3', deviceLabel: "Miguel's iPhone" },
+      payload: { email: '  User@Example.com  ', code: 'K7QXF3', deviceLabel: "Miguel's iPhone" },
     });
 
     expect(response.statusCode).toBe(200);

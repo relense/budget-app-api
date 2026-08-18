@@ -11,12 +11,14 @@ import {
 const OTP_RATE_LIMIT_MAX = 3;
 const OTP_RATE_LIMIT_WINDOW = '15 minutes';
 
+const emailSchema = z.string().trim().toLowerCase().email();
+
 const requestOtpSchema = z.object({
-  email: z.string().email(),
+  email: emailSchema,
 });
 
 const verifyOtpSchema = z.object({
-  email: z.string().email(),
+  email: emailSchema,
   code: z
     .string()
     .transform((value) => value.toUpperCase())
@@ -61,7 +63,8 @@ export async function registerAuthRoutes(
           hook: 'preHandler',
           keyGenerator: (request) => {
             const body = request.body as { email?: string } | undefined;
-            return `${request.ip}:${body?.email ?? ''}`;
+            const normalizedEmail = (body?.email ?? '').trim().toLowerCase();
+            return `${request.ip}:${normalizedEmail}`;
           },
         },
       },
