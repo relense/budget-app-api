@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import { createBudgetMonthService } from '../budgetMonths/budgetMonthService.js';
 import { createCategoryMonthService } from '../categories/categoryMonthService.js';
 import { createCategoryService } from '../categories/categoryService.js';
+import { createTransactionService } from '../categories/transactionService.js';
 import { createRecurringExpenseInstanceService } from './recurringExpenseInstanceService.js';
 import { createRecurringExpenseTemplateService } from './recurringExpenseTemplateService.js';
 import { createFakePrisma } from '../categories/testFakePrisma.js';
@@ -15,11 +16,13 @@ async function setup() {
     budgetMonthService,
   });
   const templateService = createRecurringExpenseTemplateService({ prisma: prisma as never });
+  const transactionService = createTransactionService({ prisma: prisma as never, budgetMonthService });
   const instanceService = createRecurringExpenseInstanceService({
     prisma: prisma as never,
     budgetMonthService,
     categoryMonthService,
     templateService,
+    transactionService,
   });
 
   const housing = await categoryService.createCategory('user-1', {
@@ -344,5 +347,108 @@ describe('sumCommittedCentsForCategoryMonth', () => {
     const sum = await instanceService.sumCommittedCentsForCategoryMonth(housing.id, 'month-none');
 
     expect(sum).toBe(0);
+  });
+});
+
+describe('markRecurringPaid', () => {
+  it('creates a transaction linked to the instance, auto-resolving the categoryMonthId', async () => {
+    const { prisma, categoryMonthService, templateService, instanceService, housing } = await setup();
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      housing.id,
+      '2026-08',
+      90000,
+    );
+    const template = await templateService.createTemplate('user-1', {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: housing.id,
+      budgetType: 'need',
+      dueDay: 1,
+    });
+    const instance = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+
+    const transaction = await instanceService.markRecurringPaid('user-1', instance.id, {
+      amountCents: 80000,
+      date: '2026-08-01',
+      merchant: 'Landlord',
+    });
+
+    expect(transaction).toMatchObject({
+      userId: 'user-1',
+      categoryMonthId: categoryMonth.id,
+      recurringExpenseInstanceId: instance.id,
+      amountCents: 80000,
+      merchant: 'Landlord',
+      direction: 'expense',
+    });
+    expect(prisma.transactions).toHaveLength(1);
+  });
+
+  it('allows a second call against the same instance (split payments)', async () => {
+    const { categoryMonthService, templateService, instanceService, housing } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
+    const template = await templateService.createTemplate('user-1', {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: housing.id,
+      budgetType: 'need',
+      dueDay: 1,
+    });
+    const instance = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+
+    const first = await instanceService.markRecurringPaid('user-1', instance.id, {
+      amountCents: 40000,
+      date: '2026-08-01',
+    });
+    const second = await instanceService.markRecurringPaid('user-1', instance.id, {
+      amountCents: 40000,
+      date: '2026-08-15',
+    });
+
+    expect(first.id).not.toBe(second.id);
+    expect(first.recurringExpenseInstanceId).toBe(instance.id);
+    expect(second.recurringExpenseInstanceId).toBe(instance.id);
+  });
+
+  it('throws instance_not_found for another user\'s instance', async () => {
+    const { categoryMonthService, templateService, instanceService, housing } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
+    const template = await templateService.createTemplate('user-1', {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: housing.id,
+      budgetType: 'need',
+      dueDay: 1,
+    });
+    const instance = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+
+    await expect(
+      instanceService.markRecurringPaid('user-2', instance.id, {
+        amountCents: 80000,
+        date: '2026-08-01',
+      }),
+    ).rejects.toMatchObject({ reason: 'instance_not_found' });
+  });
+
+  it('rejects when the month is locked', async () => {
+    const { prisma, categoryMonthService, templateService, instanceService, housing } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
+    const template = await templateService.createTemplate('user-1', {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: housing.id,
+      budgetType: 'need',
+      dueDay: 1,
+    });
+    const instance = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+    prisma.budgetMonths[0]!.locked = true;
+
+    await expect(
+      instanceService.markRecurringPaid('user-1', instance.id, {
+        amountCents: 80000,
+        date: '2026-08-01',
+      }),
+    ).rejects.toMatchObject({ reason: 'month_locked' });
   });
 });

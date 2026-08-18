@@ -1,5 +1,6 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
 import type { CategoryMonthService } from '../categories/categoryMonthService.js';
+import type { TransactionService } from '../categories/transactionService.js';
 import { assertOwnedTemplate } from './recurringExpenseTemplateService.js';
 import type {
   RecurringExpenseTemplateInput,
@@ -21,14 +22,22 @@ export class RecurringExpenseInstanceServiceError extends Error {
   }
 }
 
+export interface MarkRecurringPaidInput {
+  amountCents: number;
+  date: string;
+  merchant?: string;
+  note?: string;
+}
+
 export interface RecurringExpenseInstanceServiceDeps {
   prisma: Pick<
     PrismaClient,
-    'recurringExpenseTemplate' | 'recurringExpenseInstance' | 'transaction' | 'budgetMonth'
+    'recurringExpenseTemplate' | 'recurringExpenseInstance' | 'transaction' | 'budgetMonth' | 'categoryMonth'
   >;
   budgetMonthService: Pick<BudgetMonthService, 'findBudgetMonthId'>;
   categoryMonthService: Pick<CategoryMonthService, 'ensureActiveForCategory'>;
   templateService: Pick<RecurringExpenseTemplateService, 'createTemplate'>;
+  transactionService: Pick<TransactionService, 'create'>;
 }
 
 function hasPrismaErrorCode(error: unknown, code: string): boolean {
@@ -51,6 +60,7 @@ export function createRecurringExpenseInstanceService({
   budgetMonthService,
   categoryMonthService,
   templateService,
+  transactionService,
 }: RecurringExpenseInstanceServiceDeps) {
   async function findOwnedInstance(userId: string, instanceId: string) {
     const instance = await prisma.recurringExpenseInstance.findUnique({ where: { id: instanceId } });
@@ -164,6 +174,35 @@ export function createRecurringExpenseInstanceService({
     }
   }
 
+  /** Records a payment against an instance. May be called more than once per instance (split payments). */
+  async function markRecurringPaid(userId: string, instanceId: string, input: MarkRecurringPaidInput) {
+    const instance = await findOwnedInstance(userId, instanceId);
+    const template = await prisma.recurringExpenseTemplate.findUnique({ where: { id: instance.templateId } });
+    if (!template) {
+      throw new Error(`Data integrity error: RecurringExpenseTemplate ${instance.templateId} not found`);
+    }
+    const categoryMonth = await prisma.categoryMonth.findFirst({
+      where: { categoryId: template.categoryId, monthId: instance.monthId },
+    });
+    if (!categoryMonth) {
+      throw new Error(
+        `Data integrity error: CategoryMonth not found for category ${template.categoryId} month ${instance.monthId}`,
+      );
+    }
+
+    return transactionService.create(
+      userId,
+      {
+        categoryMonthId: categoryMonth.id,
+        amountCents: input.amountCents,
+        date: input.date,
+        merchant: input.merchant,
+        note: input.note,
+      },
+      instanceId,
+    );
+  }
+
   async function listByMonth(userId: string, month: string) {
     const monthId = await budgetMonthService.findBudgetMonthId(userId, month);
     if (!monthId) return [];
@@ -200,6 +239,7 @@ export function createRecurringExpenseInstanceService({
     addRecurringExpenseToMonth,
     updateInstance,
     removeFromMonth,
+    markRecurringPaid,
     listByMonth,
     findManyByIds,
     sumCommittedCentsForCategoryMonth,
