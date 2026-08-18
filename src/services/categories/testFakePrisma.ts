@@ -1,5 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
+// A plain `new Date()` can collide within the same millisecond when a test
+// creates several rows back-to-back, which breaks createdAt-tiebreaker
+// ordering assertions. Monotonically increasing instead.
+let lastTimestampMs = 0;
+function nextTimestamp(): Date {
+  const now = Date.now();
+  lastTimestampMs = now > lastTimestampMs ? now : lastTimestampMs + 1;
+  return new Date(lastTimestampMs);
+}
+
 export type FakeBudgetType = 'preciso' | 'quero' | 'poupanca';
 export type FakeDirection = 'expense' | 'income';
 
@@ -89,7 +99,9 @@ interface FakeDelegates {
   categoryMonth: {
     findUnique(args: { where: { id: string } }): Promise<FakeCategoryMonth | null>;
     findFirst(args: { where: { categoryId: string } }): Promise<FakeCategoryMonth | null>;
-    findMany(args: { where: { categoryId: string } }): Promise<FakeCategoryMonth[]>;
+    findMany(args: {
+      where: Partial<Pick<FakeCategoryMonth, 'userId' | 'categoryId' | 'monthId'>>;
+    }): Promise<FakeCategoryMonth[]>;
     create(args: {
       data: { userId: string; categoryId: string; monthId: string; monthlyBudgetCents: number };
     }): Promise<FakeCategoryMonth>;
@@ -100,9 +112,34 @@ interface FakeDelegates {
     delete(args: { where: { id: string } }): Promise<FakeCategoryMonth>;
   };
   transaction: {
+    findUnique(args: { where: { id: string } }): Promise<FakeTransaction | null>;
     findFirst(args: {
       where: { categoryMonthId: string } | { categoryMonthId: { in: string[] } };
     }): Promise<FakeTransaction | null>;
+    findMany(args: {
+      where: { categoryMonthId: { in: string[] } };
+    }): Promise<FakeTransaction[]>;
+    create(args: {
+      data: {
+        userId: string;
+        categoryMonthId: string;
+        amountCents: number;
+        date: Date;
+        merchant: string | null;
+        note: string | null;
+        direction: FakeDirection;
+      };
+    }): Promise<FakeTransaction>;
+    update(args: {
+      where: { id: string };
+      data: Partial<
+        Pick<
+          FakeTransaction,
+          'categoryMonthId' | 'amountCents' | 'date' | 'merchant' | 'note' | 'direction'
+        >
+      >;
+    }): Promise<FakeTransaction>;
+    delete(args: { where: { id: string } }): Promise<FakeTransaction>;
   };
 }
 
@@ -140,8 +177,8 @@ export function createFakePrisma(): FakePrismaClient {
           budgetType: data.budgetType,
           direction: data.direction,
           deletedAt: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          createdAt: nextTimestamp(),
+          updatedAt: nextTimestamp(),
         };
         categories.push(row);
         return row;
@@ -153,7 +190,7 @@ export function createFakePrisma(): FakePrismaClient {
         const row = categories.find((c) => c.id === where.id);
         if (!row) throw new Error('not found');
         Object.assign(row, data);
-        row.updatedAt = new Date();
+        row.updatedAt = nextTimestamp();
         return row;
       },
     },
@@ -176,7 +213,7 @@ export function createFakePrisma(): FakePrismaClient {
           month,
           locked: false,
           lockedAt: null,
-          createdAt: new Date(),
+          createdAt: nextTimestamp(),
         };
         budgetMonths.push(row);
         return row;
@@ -190,7 +227,12 @@ export function createFakePrisma(): FakePrismaClient {
         return categoryMonths.find((cm) => cm.categoryId === where.categoryId) ?? null;
       },
       async findMany({ where }) {
-        return categoryMonths.filter((cm) => cm.categoryId === where.categoryId);
+        return categoryMonths.filter((cm) => {
+          if (where.userId !== undefined && cm.userId !== where.userId) return false;
+          if (where.categoryId !== undefined && cm.categoryId !== where.categoryId) return false;
+          if (where.monthId !== undefined && cm.monthId !== where.monthId) return false;
+          return true;
+        });
       },
       async create({ data }) {
         const duplicate = categoryMonths.find(
@@ -204,8 +246,8 @@ export function createFakePrisma(): FakePrismaClient {
           categoryId: data.categoryId,
           monthId: data.monthId,
           monthlyBudgetCents: data.monthlyBudgetCents,
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          createdAt: nextTimestamp(),
+          updatedAt: nextTimestamp(),
         };
         categoryMonths.push(row);
         return row;
@@ -214,7 +256,7 @@ export function createFakePrisma(): FakePrismaClient {
         const row = categoryMonths.find((cm) => cm.id === where.id);
         if (!row) throw new Error('not found');
         Object.assign(row, data);
-        row.updatedAt = new Date();
+        row.updatedAt = nextTimestamp();
         return row;
       },
       async delete({ where }) {
@@ -225,6 +267,9 @@ export function createFakePrisma(): FakePrismaClient {
       },
     },
     transaction: {
+      async findUnique({ where }) {
+        return transactions.find((t) => t.id === where.id) ?? null;
+      },
       async findFirst({ where }) {
         if ('categoryMonthId' in where && typeof where.categoryMonthId === 'string') {
           const categoryMonthId = where.categoryMonthId;
@@ -232,6 +277,39 @@ export function createFakePrisma(): FakePrismaClient {
         }
         const ids = (where.categoryMonthId as { in: string[] }).in;
         return transactions.find((t) => ids.includes(t.categoryMonthId)) ?? null;
+      },
+      async findMany({ where }) {
+        const ids = where.categoryMonthId.in;
+        return transactions.filter((t) => ids.includes(t.categoryMonthId));
+      },
+      async create({ data }) {
+        const row: FakeTransaction = {
+          id: randomUUID(),
+          userId: data.userId,
+          categoryMonthId: data.categoryMonthId,
+          amountCents: data.amountCents,
+          date: data.date,
+          merchant: data.merchant,
+          note: data.note,
+          direction: data.direction,
+          createdAt: nextTimestamp(),
+          updatedAt: nextTimestamp(),
+        };
+        transactions.push(row);
+        return row;
+      },
+      async update({ where, data }) {
+        const row = transactions.find((t) => t.id === where.id);
+        if (!row) throw new Error('not found');
+        Object.assign(row, data);
+        row.updatedAt = nextTimestamp();
+        return row;
+      },
+      async delete({ where }) {
+        const index = transactions.findIndex((t) => t.id === where.id);
+        if (index === -1) throw new Error('not found');
+        const [row] = transactions.splice(index, 1);
+        return row!;
       },
     },
   };
