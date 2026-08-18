@@ -60,3 +60,8 @@ Not started.
 - Row cleanup for expired/used `otp_codes` and expired/revoked
   `refresh_tokens` is not implemented yet — plan.md flags this as "not urgent
   on day one, but don't let it be never." Still backlog.
+- OTP codes are alphanumeric, not digits-only (GLOSSARY.md/plan.md originally
+  said "6-digit" — updated to "6-character"): uppercase A-Z + digits 2-9,
+  excluding ambiguous characters (0/O, 1/I/L), verified case-insensitively.
+  Confirmed with the user; charset/case/length were all explicit choices,
+  not defaults.

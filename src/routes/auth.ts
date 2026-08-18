@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { verifyAccessToken } from '../lib/jwt.js';
+import { OTP_CODE_REGEX } from '../lib/otp.js';
 import {
   type AuthService,
   OtpVerificationError,
@@ -16,7 +17,10 @@ const requestOtpSchema = z.object({
 
 const verifyOtpSchema = z.object({
   email: z.string().email(),
-  code: z.string().regex(/^\d{6}$/, 'code must be 6 digits'),
+  code: z
+    .string()
+    .transform((value) => value.toUpperCase())
+    .pipe(z.string().regex(OTP_CODE_REGEX, 'code must be 6 characters (A-Z, 2-9)')),
   deviceLabel: z.string().min(1).max(100).optional(),
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import { verifyAccessToken } from '../../lib/jwt.js';
-import { hashOtpCode, verifyOtpCode } from '../../lib/otp.js';
+import { hashOtpCode, OTP_CODE_REGEX, verifyOtpCode } from '../../lib/otp.js';
 import { hashRefreshToken } from '../../lib/refreshToken.js';
 import { createAuthService } from './authService.js';
 import { createFakePrisma } from './testFakePrisma.js';
@@ -39,7 +39,7 @@ describe('requestOtp', () => {
     expect(emailService.sendOtpEmail).toHaveBeenCalledTimes(1);
     const [emailedTo, emailedCode] = emailService.sendOtpEmail.mock.calls[0] as [string, string];
     expect(emailedTo).toBe('user@example.com');
-    expect(emailedCode).toMatch(/^\d{6}$/);
+    expect(emailedCode).toMatch(OTP_CODE_REGEX);
 
     await expect(verifyOtpCode(emailedCode, row!.codeHash)).resolves.toBe(true);
   });

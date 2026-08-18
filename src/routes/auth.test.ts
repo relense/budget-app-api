@@ -132,7 +132,7 @@ describe('POST /auth/verify-otp', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/auth/verify-otp',
-      payload: { email: 'user@example.com', code: '123456', deviceLabel: "Miguel's iPhone" },
+      payload: { email: 'user@example.com', code: 'K7QXF3', deviceLabel: "Miguel's iPhone" },
     });
 
     expect(response.statusCode).toBe(200);
@@ -143,9 +143,44 @@ describe('POST /auth/verify-otp', () => {
     });
     expect(authService.verifyOtp).toHaveBeenCalledWith({
       email: 'user@example.com',
-      code: '123456',
+      code: 'K7QXF3',
       deviceLabel: "Miguel's iPhone",
     });
+
+    await app.close();
+  });
+
+  it('normalizes a lowercase code to uppercase before verifying', async () => {
+    const authService = fakeAuthService();
+    const app = await buildTestApp(authService);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/verify-otp',
+      payload: { email: 'user@example.com', code: 'k7qxf3' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(authService.verifyOtp).toHaveBeenCalledWith({
+      email: 'user@example.com',
+      code: 'K7QXF3',
+    });
+
+    await app.close();
+  });
+
+  it('rejects a code containing ambiguous characters (0, O, 1, I, L) with 400', async () => {
+    const authService = fakeAuthService();
+    const app = await buildTestApp(authService);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/verify-otp',
+      payload: { email: 'user@example.com', code: 'K7QX01' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(authService.verifyOtp).not.toHaveBeenCalled();
 
     await app.close();
   });
@@ -181,7 +216,7 @@ describe('POST /auth/verify-otp', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/auth/verify-otp',
-        payload: { email: 'user@example.com', code: '123456' },
+        payload: { email: 'user@example.com', code: 'K7QXF3' },
       });
 
       expect(response.statusCode).toBe(401);
