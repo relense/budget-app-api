@@ -55,7 +55,7 @@ describe('createTemplateForMonth', () => {
   it('creates the template, activates the category for the month, and creates the instance', async () => {
     const { prisma, instanceService, housing } = await setup();
 
-    const instance = await instanceService.createTemplateForMonth(
+    const { template, instance } = await instanceService.createTemplateForMonth(
       'user-1',
       { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
       '2026-08',
@@ -65,8 +65,9 @@ describe('createTemplateForMonth', () => {
     expect(prisma.recurringExpenseTemplates).toHaveLength(1);
     expect(prisma.categoryMonths).toHaveLength(1);
     expect(prisma.categoryMonths[0]!.monthlyBudgetCents).toBe(90000);
+    expect(template.id).toBe(prisma.recurringExpenseTemplates[0]!.id);
     expect(instance.amountCents).toBe(80000);
-    expect(instance.templateId).toBe(prisma.recurringExpenseTemplates[0]!.id);
+    expect(instance.templateId).toBe(template.id);
   });
 
   it('reuses an already-active category_month without requiring a budget', async () => {

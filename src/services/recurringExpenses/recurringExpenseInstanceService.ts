@@ -109,7 +109,12 @@ export function createRecurringExpenseInstanceService({
     }
   }
 
-  /** First-time creation: makes the template, then adds it to `month` (auto-activating the category if needed). */
+  /**
+   * First-time creation: makes the template, then adds it to `month`
+   * (auto-activating the category if needed). Returns both records —
+   * createRecurringExpenseTemplate's GraphQL return type is the template
+   * itself, not the instance, per plan.md's schema sketch.
+   */
   async function createTemplateForMonth(
     userId: string,
     input: RecurringExpenseTemplateInput,
@@ -117,7 +122,7 @@ export function createRecurringExpenseInstanceService({
     categoryMonthlyBudgetCents?: number,
   ) {
     const template = await templateService.createTemplate(userId, input);
-    return createInstanceForTemplate(
+    const instance = await createInstanceForTemplate(
       userId,
       template.id,
       template.categoryId,
@@ -125,6 +130,7 @@ export function createRecurringExpenseInstanceService({
       month,
       categoryMonthlyBudgetCents,
     );
+    return { template, instance };
   }
 
   /** Reuses an existing template, carrying it into `month` (auto-activating the category if needed). */
