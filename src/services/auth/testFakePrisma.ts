@@ -32,7 +32,9 @@ interface FakeDelegates {
     findFirst(args: { where: { email: string } }): Promise<FakeOtpCode | null>;
     update(args: {
       where: { id: string };
-      data: Partial<Pick<FakeOtpCode, 'used' | 'failedAttempts'>>;
+      data: Partial<Pick<FakeOtpCode, 'used'>> & {
+        failedAttempts?: number | { increment: number };
+      };
     }): Promise<FakeOtpCode>;
   };
   user: {
@@ -102,7 +104,12 @@ export function createFakePrisma(): FakePrismaClient {
       async update({ where, data }) {
         const row = otpCodes.find((r) => r.id === where.id);
         if (!row) throw new Error('not found');
-        Object.assign(row, data);
+        if (data.used !== undefined) row.used = data.used;
+        if (typeof data.failedAttempts === 'number') {
+          row.failedAttempts = data.failedAttempts;
+        } else if (data.failedAttempts !== undefined) {
+          row.failedAttempts += data.failedAttempts.increment;
+        }
         return row;
       },
     },

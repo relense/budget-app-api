@@ -91,14 +91,19 @@ export function createAuthService({
     const isValid = await verifyOtpCode(code, otp.codeHash);
 
     if (!isValid) {
-      const failedAttempts = otp.failedAttempts + 1;
-      await prisma.otpCode.update({ where: { id: otp.id }, data: { failedAttempts } });
+      const updated = await prisma.otpCode.update({
+        where: { id: otp.id },
+        data: { failedAttempts: { increment: 1 } },
+      });
 
-      if (failedAttempts >= OTP_MAX_FAILED_ATTEMPTS) {
+      if (updated.failedAttempts >= OTP_MAX_FAILED_ATTEMPTS) {
         throw new OtpVerificationError('too_many_attempts');
       }
 
-      throw new OtpVerificationError('incorrect_code', OTP_MAX_FAILED_ATTEMPTS - failedAttempts);
+      throw new OtpVerificationError(
+        'incorrect_code',
+        OTP_MAX_FAILED_ATTEMPTS - updated.failedAttempts,
+      );
     }
 
     const refreshToken = generateRefreshToken();

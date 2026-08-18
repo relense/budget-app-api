@@ -129,6 +129,43 @@ describe('verifyOtp', () => {
     expect(prisma.otpCodes[0]!.failedAttempts).toBe(1);
   });
 
+  it('increments failedAttempts atomically, even if a concurrent attempt lands first', async () => {
+    const { prisma, authService } = setup();
+    prisma.otpCodes.push({
+      id: 'otp-1',
+      email: 'user@example.com',
+      codeHash: await hashOtpCode('123456'),
+      expiresAt: new Date('2026-01-01T00:10:00.000Z'),
+      used: false,
+      failedAttempts: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    // Simulate a concurrent failed attempt's write landing between this
+    // call's read of failedAttempts and its own update call. A naive
+    // read-then-write (`failedAttempts: otp.failedAttempts + 1`) would
+    // stomp the concurrent write and lose an attempt; an atomic increment
+    // must not.
+    const originalUpdate = prisma.otpCode.update.bind(prisma.otpCode);
+    let firstCall = true;
+    prisma.otpCode.update = (async (args: Parameters<typeof originalUpdate>[0]) => {
+      if (firstCall) {
+        firstCall = false;
+        prisma.otpCodes[0]!.failedAttempts += 1;
+      }
+      return originalUpdate(args);
+    }) as typeof originalUpdate;
+
+    await expect(
+      authService.verifyOtp({ email: 'user@example.com', code: '000000' }),
+    ).rejects.toMatchObject({
+      reason: 'incorrect_code',
+      attemptsRemaining: OTP_MAX_FAILED_ATTEMPTS - 2,
+    });
+
+    expect(prisma.otpCodes[0]!.failedAttempts).toBe(2);
+  });
+
   it('throws too_many_attempts (not incorrect_code) on the attempt that hits the cap', async () => {
     const { prisma, authService } = setup();
     prisma.otpCodes.push({
