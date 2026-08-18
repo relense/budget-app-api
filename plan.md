@@ -201,7 +201,7 @@ There is no `activate`/bundle-into-`createCategory` behavior: `createCategory` i
 - name
 - expected_amount_cents (integer — cents)
 - actual_amount_cents (nullable, integer — cents)
-- month (YYYY-MM)
+- month_id (fk → `budget_months`) — same pattern as `category_month`/`recurring_expense_instances`, for the same reason: one real per-user-per-calendar-month row backing every month reference in the schema, not a raw `YYYY-MM` string repeated (and potentially drifting) in every table that needs one
 - deleted_at (nullable) — soft delete
 
 > Debts, taxes (IVA/IRS/SS), and the annual roll-up view from your Excel are real features but backlog for after Phase 1-3 are working end to end — don't let them expand the API surface before the core loop (categories → transactions → budget available) is solid and deployed.
@@ -323,7 +323,7 @@ type IncomeSource {
   name: String!
   expectedAmountCents: Int!
   actualAmountCents: Int
-  month: String!
+  month: String! # YYYY-MM, denormalized from the linked BudgetMonth (month_id) — same pattern as CategoryMonth.month
 }
 
 input CategoryInput {
