@@ -44,6 +44,17 @@ function assertValidMonth(month: string): void {
   }
 }
 
+async function assertOwnedCategory(
+  client: Pick<PrismaClient, 'category'>,
+  userId: string,
+  categoryId: string,
+): Promise<void> {
+  const category = await client.category.findUnique({ where: { id: categoryId } });
+  if (!category || category.userId !== userId || category.deletedAt) {
+    throw new CategoryServiceError('category_not_found');
+  }
+}
+
 export function createCategoryMonthService({ prisma, budgetMonthService }: CategoryMonthServiceDeps) {
   async function findOwnedCategoryMonth(userId: string, categoryMonthId: string) {
     const categoryMonth = await prisma.categoryMonth.findUnique({ where: { id: categoryMonthId } });
@@ -83,21 +94,25 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     assertValidBudget(monthlyBudgetCents);
     assertValidMonth(month);
 
+    // Checked before resolveBudgetMonthId deliberately: that call upserts a
+    // permanent BudgetMonth row with no delete path, so a bad categoryId
+    // must fail before it, not after — otherwise every failed attempt
+    // leaves a corrupt-but-permanent row behind.
+    await assertOwnedCategory(prisma, userId, categoryId);
+
     const monthId = await budgetMonthService.resolveBudgetMonthId(userId, month);
     await assertMonthNotLocked(monthId);
 
     try {
-      // The ownership check and the insert run in one transaction so a
-      // concurrent delete of this same category can't land in the gap
-      // between "verified owned and not deleted" and "row created" — that
-      // gap would otherwise let a category_month get created for a
-      // category that's already soft-deleted, breaking deleteCategory's
-      // invariant that a deleted category never has category_month rows.
+      // Re-checked inside the transaction, against the transactional
+      // client, right before the insert: narrows (does not fully close,
+      // since this is a plain read with no row lock under Postgres's
+      // default READ COMMITTED isolation) the window where a concurrent
+      // delete of this same category could otherwise land between the
+      // check above and the write, leaving a category_month row that
+      // references an already-soft-deleted category.
       return await prisma.$transaction(async (tx) => {
-        const category = await tx.category.findUnique({ where: { id: categoryId } });
-        if (!category || category.userId !== userId || category.deletedAt) {
-          throw new CategoryServiceError('category_not_found');
-        }
+        await assertOwnedCategory(tx, userId, categoryId);
 
         return tx.categoryMonth.create({
           data: { userId, categoryId, monthId, monthlyBudgetCents },

@@ -108,12 +108,17 @@ describe('addCategoryToMonth', () => {
     expect(prisma.budgetMonths[0]!.month).toBe('2026-08');
   });
 
-  it('throws category_not_found for a category belonging to another user', async () => {
-    const { categoryMonthService, otherUsersCategory } = await setup();
+  it('throws category_not_found for a category belonging to another user, and creates no BudgetMonth row', async () => {
+    const { prisma, categoryMonthService, otherUsersCategory } = await setup();
 
     await expect(
       categoryMonthService.addCategoryToMonth('user-1', otherUsersCategory.id, '2026-08', 10000),
     ).rejects.toMatchObject({ reason: 'category_not_found' });
+
+    // The ownership check must run before resolveBudgetMonthId's upsert —
+    // BudgetMonth has no delete path, so a failed request must not leave
+    // one behind.
+    expect(prisma.budgetMonths).toHaveLength(0);
   });
 
   it('throws category_not_found for an unknown categoryId', async () => {
