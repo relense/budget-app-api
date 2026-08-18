@@ -42,7 +42,7 @@ Whether a Transaction linked to this Recurring Expense exists for the current mo
 ## Auth terms
 
 **OTP (One-Time Code)**
-The 6-digit code emailed to the user for passwordless login. Short-lived, single-use, stored only as a hash.
+The 6-character code emailed to the user for passwordless login. Alphanumeric (uppercase A-Z + digits 2-9, excluding ambiguous characters 0/O/1/I/L), verified case-insensitively. Short-lived, single-use, stored only as a hash.
 
 **Access Token**
 Short-lived JWT (5-15 min) proving the user is authenticated for the current request. Not persisted server-side — stateless, decoded per-request.

@@ -89,7 +89,7 @@ Going with GraphQL from the start, since the API is being built once and used by
 - code_hash (never store the raw code)
 - expires_at (short, e.g. 10 min)
 - used (boolean)
-- failed_attempts (integer, default 0) — increment on every wrong `verify-otp` call for this code; once it hits a max (e.g. 5), invalidate the code even though it hasn't expired yet, forcing a fresh `request-otp`. Without this, expiry alone still leaves a 10-minute window to brute-force a 6-digit code.
+- failed_attempts (integer, default 0) — increment on every wrong `verify-otp` call for this code; once it hits a max (e.g. 5), invalidate the code even though it hasn't expired yet, forcing a fresh `request-otp`. Without this, expiry alone still leaves a 10-minute window to brute-force a 6-character code.
 - created_at
 
 **refresh_tokens**

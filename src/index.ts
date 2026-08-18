@@ -1,11 +1,15 @@
+import { createConsoleEmailService } from './lib/email.js';
 import { loadEnv } from './lib/env.js';
 import { createPrismaClient } from './lib/prisma.js';
 import { createShutdownHandler } from './lib/shutdown.js';
 import { buildServer } from './server.js';
+import { createAuthService } from './services/auth/authService.js';
 
 const env = loadEnv();
 const prisma = createPrismaClient(env.DATABASE_URL);
-const app = await buildServer({ env, prisma });
+const emailService = createConsoleEmailService(console);
+const authService = createAuthService({ prisma, emailService, jwtSecret: env.JWT_SECRET });
+const app = await buildServer({ env, prisma, authService });
 
 process.on('uncaughtException', (error) => {
   app.log.error(error, 'Uncaught exception');

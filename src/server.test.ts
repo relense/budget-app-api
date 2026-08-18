@@ -1,21 +1,38 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import type { Env } from './lib/env.js';
 import { buildServer } from './server.js';
+import type { AuthService } from './services/auth/authService.js';
 
 const testEnv: Env = {
   NODE_ENV: 'test',
   PORT: 4000,
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/budget_app',
   CORS_ORIGIN: 'http://localhost:19006',
+  JWT_SECRET: 'a'.repeat(32),
 };
 
 function fakePrisma(queryRaw: () => Promise<unknown>) {
   return { $queryRaw: queryRaw } as unknown as import('./lib/prisma.js').PrismaClient;
 }
 
+const authService: Pick<
+  AuthService,
+  'requestOtp' | 'verifyOtp' | 'refreshSession' | 'logout' | 'logoutAll'
+> = {
+  requestOtp: jest.fn(async () => undefined),
+  verifyOtp: jest.fn(),
+  refreshSession: jest.fn(),
+  logout: jest.fn(async () => undefined),
+  logoutAll: jest.fn(async () => undefined),
+} as never;
+
 describe('buildServer', () => {
   it('GET /health returns 200 when the database check succeeds', async () => {
-    const app = await buildServer({ env: testEnv, prisma: fakePrisma(async () => [{ 1: 1 }]) });
+    const app = await buildServer({
+      env: testEnv,
+      prisma: fakePrisma(async () => [{ 1: 1 }]),
+      authService,
+    });
 
     const response = await app.inject({ method: 'GET', url: '/health' });
 
@@ -31,6 +48,7 @@ describe('buildServer', () => {
       prisma: fakePrisma(async () => {
         throw new Error('connection refused');
       }),
+      authService,
     });
 
     const response = await app.inject({ method: 'GET', url: '/health' });
@@ -42,7 +60,11 @@ describe('buildServer', () => {
   });
 
   it('POST /graphql resolves Query.ping', async () => {
-    const app = await buildServer({ env: testEnv, prisma: fakePrisma(async () => [{ 1: 1 }]) });
+    const app = await buildServer({
+      env: testEnv,
+      prisma: fakePrisma(async () => [{ 1: 1 }]),
+      authService,
+    });
 
     const response = await app.inject({
       method: 'POST',
@@ -56,8 +78,32 @@ describe('buildServer', () => {
     await app.close();
   });
 
+  it('POST /graphql still resolves ping with a malformed Authorization header', async () => {
+    const app = await buildServer({
+      env: testEnv,
+      prisma: fakePrisma(async () => [{ 1: 1 }]),
+      authService,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/graphql',
+      payload: { query: '{ ping }' },
+      headers: { authorization: 'Bearer not-a-real-token' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ data: { ping: 'pong' } });
+
+    await app.close();
+  });
+
   it('sets CORS headers for the configured origin', async () => {
-    const app = await buildServer({ env: testEnv, prisma: fakePrisma(async () => [{ 1: 1 }]) });
+    const app = await buildServer({
+      env: testEnv,
+      prisma: fakePrisma(async () => [{ 1: 1 }]),
+      authService,
+    });
 
     const response = await app.inject({
       method: 'GET',
@@ -71,7 +117,11 @@ describe('buildServer', () => {
   });
 
   it('sets baseline security headers via helmet', async () => {
-    const app = await buildServer({ env: testEnv, prisma: fakePrisma(async () => [{ 1: 1 }]) });
+    const app = await buildServer({
+      env: testEnv,
+      prisma: fakePrisma(async () => [{ 1: 1 }]),
+      authService,
+    });
 
     const response = await app.inject({ method: 'GET', url: '/health' });
 
@@ -84,6 +134,7 @@ describe('buildServer', () => {
     const app = await buildServer({
       env: { ...testEnv, NODE_ENV: 'production' },
       prisma: fakePrisma(async () => [{ 1: 1 }]),
+      authService,
     });
 
     const response = await app.inject({
@@ -99,7 +150,11 @@ describe('buildServer', () => {
   });
 
   it('allows introspection queries outside production', async () => {
-    const app = await buildServer({ env: testEnv, prisma: fakePrisma(async () => [{ 1: 1 }]) });
+    const app = await buildServer({
+      env: testEnv,
+      prisma: fakePrisma(async () => [{ 1: 1 }]),
+      authService,
+    });
 
     const response = await app.inject({
       method: 'POST',

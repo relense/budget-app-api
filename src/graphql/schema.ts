@@ -1,6 +1,10 @@
 import { createSchema } from 'graphql-yoga';
 
-export const schema = createSchema({
+export interface GraphQLContext {
+  userId: string | null;
+}
+
+export const schema = createSchema<GraphQLContext>({
   typeDefs: /* GraphQL */ `
     type Query {
       ping: String!

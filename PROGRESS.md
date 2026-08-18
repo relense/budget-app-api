@@ -2,6 +2,72 @@
 
 Tracks status against `plan.md`'s Build Order. Updated as each step lands.
 
+## Where we left off (2026-08-18)
+
+On branch `feature/auth-otp`, PR #2 (`feature/auth-otp` → `develop`) is
+**open and waiting for review** — https://github.com/relense/budget-app-api/pull/2.
+Working tree is clean, local is pushed and in sync with `origin/feature/auth-otp`.
+
+The `pr-reviewer` subagent (`.claude/agents/reviewer.md`) reviewed PR #2 and
+found 4 blocking issues, all now fixed with tests, one commit each, and
+pushed:
+- Email casing/whitespace wasn't normalized — bypassed the request-otp rate
+  limit via case variation and risked duplicate `User` rows. Fixed by
+  normalizing once in a shared Zod schema (`fe7f220`).
+- `POST /auth/verify-otp` had no rate limiting at all. Added a 10/15min
+  per-IP+email limit (looser than request-otp's 3/15min since the DB-level
+  `failedAttempts` cap is the primary defense) — this number was picked by
+  Claude, not explicitly specified by the user, flagging per CLAUDE.md's
+  "don't invent details" rule (`1ca64ec`).
+- `OtpCode.failedAttempts` was incremented via read-then-write, letting
+  concurrent guesses race past the 5-attempt cap. Fixed with Prisma's atomic
+  `increment` operator (`d8d3ca3`).
+- Refresh-token rotation had a TOCTOU race (revoked/expired check ran
+  outside the `$transaction`). Fixed with a conditional atomic `updateMany`
+  (`revoked: false`) inside the transaction (`42e7188`).
+
+A follow-up review confirmed all 4 fixes and approved the PR. Two more items
+from that follow-up were then addressed too:
+- Email normalization only lived at the route layer — `authService.requestOtp`/
+  `verifyOtp` now also normalize (`normalizeEmail` in `authService.ts`), so
+  the invariant holds for any future caller (GraphQL resolver, script) that
+  bypasses the REST route, not just today's one caller (`da46e1e`).
+- Added `@@index([userId])` on `RefreshToken` — `logoutAll` and any future
+  cleanup job filtering by `user_id` would've table-scanned as the table
+  grows (`4fffc3c`, migration `20260818082055_add_refresh_token_user_id_index`).
+
+**Deliberately deferred, with reasoning** (explicit user decision, not an
+oversight — revisit only if the threat model changes, e.g. this data stops
+being "just personal finance line items" and becomes something more
+sensitive):
+- **OTP `failedAttempts` cap converges to 5 under heavy concurrency rather
+  than being a hard ceiling** (read-checked pre-verify, then atomically
+  incremented post-verify — the check itself isn't locked). Not fixed:
+  the outer per-IP+email rate limit on `/auth/verify-otp` (10/15min) still
+  bounds total attempts regardless, and the data behind this auth isn't
+  considered high-value enough to justify the added complexity right now.
+- **Timing side-channel on verify-otp's `not_found` path** (fast-paths
+  before the constant-time-ish argon2.verify, letting a caller infer
+  whether an email has a pending OTP). Not fixed: `request-otp` already
+  lets anyone probe any email with no auth at all, so this leaks little
+  beyond what's already exposed, and low-value data doesn't justify it.
+
+Remaining nitpicks from the same reviews, not acted on: `tokenHash` not
+`@unique`, no refresh-token-reuse detection, PR bundling unrelated
+`.claude/` changes, no explicit `algorithms: ['HS256']` allowlist in
+`jwtVerify`, no upper bound on email/refreshToken field lengths,
+unconfirmed zod v4 `.email()` deprecation — low-value, still backlog if
+ever wanted.
+
+Next actions, in order:
+1. Wait for PR #2 review/approval — do not merge, do not start step 3 work
+   on this branch or a new one until it's approved, per `CLAUDE.md`'s git
+   workflow.
+2. Once PR #2 is approved and merged into `develop` by the user: sync local
+   `develop`, branch `feature/categories-transactions` (or similar) from
+   it, and start Build Order step 3 with the usual "grill me" interview
+   first — don't jump straight to code.
+
 ## Phase 1 — Backend
 
 - [x] **0. Ground truth** — `CLAUDE.md`, `GLOSSARY.md`, `plan.md`, `SCALING.md` committed.
@@ -14,9 +80,16 @@ Tracks status against `plan.md`'s Build Order. Updated as each step lands.
       Production hardening (masked errors, introspection disabled, query depth
       limit) wired in from the start rather than bolted on later.
       → PR #1 (`chore/backend-scaffold`).
-- [ ] **2. Auth (OTP)** — `otp_codes` + `refresh_tokens` tables, email sending
-      (console-log in dev), request-otp/verify-otp/refresh/logout routes, JWT
-      context builder for resolvers.
+- [x] **2. Auth (OTP)** — `User`/`OtpCode`/`RefreshToken` Prisma models (UUID
+      ids, native Postgres `uuid` columns); `authService` (requestOtp,
+      verifyOtp, refreshSession, logout, logoutAll) with argon2-hashed OTP
+      codes, sha256-hashed refresh tokens, mandatory rotation on refresh;
+      `POST /auth/{request-otp,verify-otp,refresh,logout,logout-all}`, the
+      first rate-limited 3/15min by IP+email; JWT (jose, HS256, 15 min access
+      / 30 day refresh) context builder attaches a nullable `userId` to
+      GraphQL context. Email delivery via a console-log `EmailService` (real
+      provider deferred, per plan.md). Manually smoke-tested end to end
+      against real Postgres. → branch `feature/auth-otp`.
 - [ ] **3. Categories + Transactions** — types, queries, mutations, scoped by
       user; DataLoader for `Category.transactions`.
 - [ ] **4. Recurring expenses** — CRUD + `markRecurringPaid`; `paidThisMonth`
@@ -43,3 +116,18 @@ Not started.
   `@prisma/adapter-pg` (plan.md assumed the classic bare-`DATABASE_URL` setup).
 - `prisma init` auto-vendors AI-agent skill docs into `.claude/`, `.windsurf/`,
   `.agents/` — removed, unrelated to the app.
+- ID strategy for every table (not specified in plan.md): UUID v4, stored as
+  native Postgres `uuid` columns (`@db.Uuid`), confirmed with the user during
+  the auth step since it's a precedent-setting choice.
+- OTP hashing: argon2 (not scrypt/sha256) — confirmed with the user; refresh
+  tokens use sha256 since they're already high-entropy random secrets, not
+  low-entropy codes.
+- JWT library: `jose` (ESM-native) over `jsonwebtoken`/`@fastify/jwt`.
+- Row cleanup for expired/used `otp_codes` and expired/revoked
+  `refresh_tokens` is not implemented yet — plan.md flags this as "not urgent
+  on day one, but don't let it be never." Still backlog.
+- OTP codes are alphanumeric, not digits-only (GLOSSARY.md/plan.md originally
+  said "6-digit" — updated to "6-character"): uppercase A-Z + digits 2-9,
+  excluding ambiguous characters (0/O, 1/I/L), verified case-insensitively.
+  Confirmed with the user; charset/case/length were all explicit choices,
+  not defaults.
