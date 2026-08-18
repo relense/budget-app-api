@@ -5,12 +5,17 @@ import fastify, { type FastifyInstance } from 'fastify';
 import { type ValidationRule, NoSchemaIntrospectionCustomRule } from 'graphql';
 import depthLimit from 'graphql-depth-limit';
 import { createYoga, type Plugin } from 'graphql-yoga';
+import { createGraphQLContextBuilder } from './graphql/context.js';
 import { schema } from './graphql/schema.js';
 import type { Env } from './lib/env.js';
 import { verifyAccessToken } from './lib/jwt.js';
 import type { PrismaClient } from './lib/prisma.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import type { AuthService } from './services/auth/authService.js';
+import { createBudgetMonthService } from './services/budgetMonths/budgetMonthService.js';
+import { createCategoryMonthService } from './services/categories/categoryMonthService.js';
+import { createCategoryService } from './services/categories/categoryService.js';
+import { createTransactionService } from './services/categories/transactionService.js';
 
 const MAX_QUERY_DEPTH = 10;
 const BEARER_PREFIX = 'Bearer ';
@@ -25,7 +30,10 @@ function useValidationRules(rules: ValidationRule[]): Plugin {
 
 export interface BuildServerOptions {
   env: Env;
-  prisma: Pick<PrismaClient, '$queryRaw'>;
+  prisma: Pick<
+    PrismaClient,
+    '$queryRaw' | 'category' | 'categoryMonth' | 'budgetMonth' | 'transaction'
+  >;
   authService: Pick<
     AuthService,
     'requestOtp' | 'verifyOtp' | 'refreshSession' | 'logout' | 'logoutAll'
@@ -48,6 +56,17 @@ export async function buildServer({
 
   await registerAuthRoutes(app, { authService, jwtSecret: env.JWT_SECRET });
 
+  const budgetMonthService = createBudgetMonthService({ prisma });
+  const categoryService = createCategoryService({ prisma });
+  const categoryMonthService = createCategoryMonthService({ prisma, budgetMonthService });
+  const transactionService = createTransactionService({ prisma, budgetMonthService });
+  const buildGraphQLContext = createGraphQLContextBuilder({
+    categoryService,
+    categoryMonthService,
+    budgetMonthService,
+    transactionService,
+  });
+
   app.get('/health', async (_request, reply) => {
     try {
       await prisma.$queryRaw`SELECT 1`;
@@ -69,7 +88,7 @@ export async function buildServer({
         ? authHeader.slice(BEARER_PREFIX.length)
         : null;
       const payload = token ? await verifyAccessToken(token, env.JWT_SECRET) : null;
-      return { userId: payload?.userId ?? null };
+      return buildGraphQLContext(payload?.userId ?? null);
     },
     plugins: [
       useValidationRules(
