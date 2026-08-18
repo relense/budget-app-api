@@ -13,6 +13,34 @@ function setup() {
   return { prisma, budgetMonthService, categoryMonthService };
 }
 
+describe('listByMonth', () => {
+  it('returns category_month rows active in the given month, without creating a BudgetMonth for a month with none', async () => {
+    const { prisma, categoryMonthService } = setup();
+    const inAugust = await categoryMonthService.addCategoryToMonth('user-1', 'cat-1', '2026-08', 10000);
+    await categoryMonthService.addCategoryToMonth('user-1', 'cat-2', '2026-09', 5000);
+
+    const result = await categoryMonthService.listByMonth('user-1', '2026-08');
+
+    expect(result.map((cm) => cm.id)).toEqual([inAugust.id]);
+
+    const empty = await categoryMonthService.listByMonth('user-1', '2030-01');
+    expect(empty).toEqual([]);
+    expect(prisma.budgetMonths.some((bm) => bm.month === '2030-01')).toBe(false);
+  });
+});
+
+describe('findManyByIds', () => {
+  it('returns category_month rows matching the given ids', async () => {
+    const { categoryMonthService } = setup();
+    const a = await categoryMonthService.addCategoryToMonth('user-1', 'cat-1', '2026-08', 10000);
+    const b = await categoryMonthService.addCategoryToMonth('user-1', 'cat-2', '2026-08', 20000);
+
+    const result = await categoryMonthService.findManyByIds([a.id, b.id]);
+
+    expect(result.map((cm) => cm.id).sort()).toEqual([a.id, b.id].sort());
+  });
+});
+
 describe('addCategoryToMonth', () => {
   it('creates a category_month row for the resolved month', async () => {
     const { prisma, categoryMonthService } = setup();

@@ -148,7 +148,13 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
     );
   }
 
-  return { create, update, deleteTransaction, list };
+  /** Batch lookup for DataLoader use — trusts the caller to have already scoped the ids to one user. */
+  async function listByCategoryMonthIds(categoryMonthIds: string[]) {
+    if (categoryMonthIds.length === 0) return [];
+    return prisma.transaction.findMany({ where: { categoryMonthId: { in: categoryMonthIds } } });
+  }
+
+  return { create, update, deleteTransaction, list, listByCategoryMonthIds };
 }
 
 export type TransactionService = ReturnType<typeof createTransactionService>;

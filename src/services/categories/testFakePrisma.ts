@@ -79,6 +79,9 @@ interface FakeDelegates {
       };
     }): Promise<FakeCategory>;
     findUnique(args: { where: { id: string } }): Promise<FakeCategory | null>;
+    findMany(args: {
+      where: { userId: string; deletedAt: null } | { id: { in: string[] } };
+    }): Promise<FakeCategory[]>;
     update(args: {
       where: { id: string };
       data: Partial<
@@ -100,7 +103,9 @@ interface FakeDelegates {
     findUnique(args: { where: { id: string } }): Promise<FakeCategoryMonth | null>;
     findFirst(args: { where: { categoryId: string } }): Promise<FakeCategoryMonth | null>;
     findMany(args: {
-      where: Partial<Pick<FakeCategoryMonth, 'userId' | 'categoryId' | 'monthId'>>;
+      where:
+        | Partial<Pick<FakeCategoryMonth, 'userId' | 'categoryId' | 'monthId'>>
+        | { id: { in: string[] } };
     }): Promise<FakeCategoryMonth[]>;
     create(args: {
       data: { userId: string; categoryId: string; monthId: string; monthlyBudgetCents: number };
@@ -186,6 +191,12 @@ export function createFakePrisma(): FakePrismaClient {
       async findUnique({ where }) {
         return categories.find((c) => c.id === where.id) ?? null;
       },
+      async findMany({ where }) {
+        if ('id' in where) {
+          return categories.filter((c) => where.id.in.includes(c.id));
+        }
+        return categories.filter((c) => c.userId === where.userId && c.deletedAt === null);
+      },
       async update({ where, data }) {
         const row = categories.find((c) => c.id === where.id);
         if (!row) throw new Error('not found');
@@ -227,6 +238,9 @@ export function createFakePrisma(): FakePrismaClient {
         return categoryMonths.find((cm) => cm.categoryId === where.categoryId) ?? null;
       },
       async findMany({ where }) {
+        if ('id' in where) {
+          return categoryMonths.filter((cm) => where.id.in.includes(cm.id));
+        }
         return categoryMonths.filter((cm) => {
           if (where.userId !== undefined && cm.userId !== where.userId) return false;
           if (where.categoryId !== undefined && cm.categoryId !== where.categoryId) return false;

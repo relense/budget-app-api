@@ -43,6 +43,16 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
     return category;
   }
 
+  async function listCatalog(userId: string) {
+    return prisma.category.findMany({ where: { userId, deletedAt: null } });
+  }
+
+  /** Batch lookup for DataLoader use — trusts the caller to have already scoped the ids to one user. */
+  async function findManyByIds(ids: string[]) {
+    if (ids.length === 0) return [];
+    return prisma.category.findMany({ where: { id: { in: ids } } });
+  }
+
   async function createCategory(userId: string, input: CategoryInput) {
     assertValidBudgetType(input.direction, input.budgetType);
 
@@ -100,7 +110,7 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
     await prisma.category.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 
-  return { createCategory, updateCategory, deleteCategory };
+  return { listCatalog, findManyByIds, createCategory, updateCategory, deleteCategory };
 }
 
 export type CategoryService = ReturnType<typeof createCategoryService>;

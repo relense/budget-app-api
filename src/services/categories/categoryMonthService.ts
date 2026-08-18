@@ -17,7 +17,7 @@ export class CategoryMonthServiceError extends Error {
 
 export interface CategoryMonthServiceDeps {
   prisma: Pick<PrismaClient, 'categoryMonth' | 'transaction' | 'budgetMonth'>;
-  budgetMonthService: Pick<BudgetMonthService, 'resolveBudgetMonthId'>;
+  budgetMonthService: Pick<BudgetMonthService, 'resolveBudgetMonthId' | 'findBudgetMonthId'>;
 }
 
 function isUniqueConstraintError(error: unknown): boolean {
@@ -49,6 +49,18 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     if (budgetMonth?.locked) {
       throw new CategoryMonthServiceError('month_locked');
     }
+  }
+
+  async function listByMonth(userId: string, month: string) {
+    const monthId = await budgetMonthService.findBudgetMonthId(userId, month);
+    if (!monthId) return [];
+    return prisma.categoryMonth.findMany({ where: { userId, monthId } });
+  }
+
+  /** Batch lookup for DataLoader use — trusts the caller to have already scoped the ids to one user. */
+  async function findManyByIds(ids: string[]) {
+    if (ids.length === 0) return [];
+    return prisma.categoryMonth.findMany({ where: { id: { in: ids } } });
   }
 
   async function addCategoryToMonth(
@@ -104,7 +116,13 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     });
   }
 
-  return { addCategoryToMonth, removeCategoryFromMonth, updateCategoryMonthBudget };
+  return {
+    listByMonth,
+    findManyByIds,
+    addCategoryToMonth,
+    removeCategoryFromMonth,
+    updateCategoryMonthBudget,
+  };
 }
 
 export type CategoryMonthService = ReturnType<typeof createCategoryMonthService>;

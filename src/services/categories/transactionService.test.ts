@@ -237,6 +237,37 @@ describe('deleteTransaction', () => {
   });
 });
 
+describe('listByCategoryMonthIds', () => {
+  it('groups transactions by categoryMonthId for the given ids', async () => {
+    const { transactionService, expenseCategoryMonth, incomeCategoryMonth } = await setup();
+    const tx1 = await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 100,
+      date: '2026-08-05',
+    });
+    const tx2 = await transactionService.create('user-1', {
+      categoryMonthId: incomeCategoryMonth.id,
+      amountCents: 200,
+      date: '2026-08-05',
+    });
+
+    const result = await transactionService.listByCategoryMonthIds([
+      expenseCategoryMonth.id,
+      incomeCategoryMonth.id,
+    ]);
+
+    expect(result.map((t) => t.id).sort()).toEqual([tx1.id, tx2.id].sort());
+  });
+
+  it('returns an empty array for an empty id list', async () => {
+    const { transactionService } = await setup();
+
+    const result = await transactionService.listByCategoryMonthIds([]);
+
+    expect(result).toEqual([]);
+  });
+});
+
 describe('list', () => {
   it('returns transactions for the month, ordered date DESC then createdAt DESC', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();

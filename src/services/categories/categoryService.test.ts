@@ -61,6 +61,69 @@ describe('createCategory', () => {
   });
 });
 
+describe('listCatalog', () => {
+  it('returns only the user\'s non-deleted categories', async () => {
+    const { categoryService } = setup();
+    const mine = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'preciso',
+      direction: 'expense',
+    });
+    await categoryService.createCategory('user-2', {
+      name: 'Rent',
+      icon: 'home',
+      color: '#FF0000',
+      budgetType: 'preciso',
+      direction: 'expense',
+    });
+    const deleted = await categoryService.createCategory('user-1', {
+      name: 'Old',
+      icon: 'x',
+      color: '#000000',
+      budgetType: 'preciso',
+      direction: 'expense',
+    });
+    await categoryService.deleteCategory('user-1', deleted.id);
+
+    const result = await categoryService.listCatalog('user-1');
+
+    expect(result.map((c) => c.id)).toEqual([mine.id]);
+  });
+});
+
+describe('findManyByIds', () => {
+  it('returns categories matching the given ids', async () => {
+    const { categoryService } = setup();
+    const a = await categoryService.createCategory('user-1', {
+      name: 'A',
+      icon: 'a',
+      color: '#111111',
+      budgetType: 'preciso',
+      direction: 'expense',
+    });
+    const b = await categoryService.createCategory('user-1', {
+      name: 'B',
+      icon: 'b',
+      color: '#222222',
+      budgetType: 'preciso',
+      direction: 'expense',
+    });
+    await categoryService.createCategory('user-1', {
+      name: 'C',
+      icon: 'c',
+      color: '#333333',
+      budgetType: 'preciso',
+      direction: 'expense',
+    });
+
+    const result = await categoryService.findManyByIds([a.id, b.id]);
+
+    expect(result.map((c) => c.id).sort()).toEqual([a.id, b.id].sort());
+  });
+});
+
 describe('updateCategory', () => {
   it('updates catalog fields', async () => {
     const { categoryService } = setup();
