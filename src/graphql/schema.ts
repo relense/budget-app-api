@@ -3,6 +3,7 @@ import type { GraphQLContext } from './context.js';
 import {
   budgetTypeToDb,
   budgetTypeToGraphQL,
+  directionToDb,
   directionToGraphQL,
   type GraphQLBudgetType,
   type GraphQLDirection,
@@ -131,7 +132,7 @@ export const schema = createSchema<GraphQLContext>({
             icon: args.input.icon,
             color: args.input.color,
             budgetType: budgetTypeToDb(args.input.budgetType),
-            direction: args.input.direction === 'EXPENSE' ? 'expense' : 'income',
+            direction: directionToDb(args.input.direction),
           });
         } catch (error) {
           toGraphQLError(error);
@@ -149,7 +150,7 @@ export const schema = createSchema<GraphQLContext>({
             icon: args.input.icon,
             color: args.input.color,
             budgetType: budgetTypeToDb(args.input.budgetType),
-            direction: args.input.direction === 'EXPENSE' ? 'expense' : 'income',
+            direction: directionToDb(args.input.direction),
           });
         } catch (error) {
           toGraphQLError(error);
@@ -256,7 +257,10 @@ export const schema = createSchema<GraphQLContext>({
     CategoryMonth: {
       month: async (parent: { monthId: string }, _args: unknown, context) => {
         const budgetMonth = await context.loaders.budgetMonthById.load(parent.monthId);
-        return budgetMonth!.month;
+        if (!budgetMonth) {
+          throw new Error(`Data integrity error: BudgetMonth ${parent.monthId} not found`);
+        }
+        return budgetMonth.month;
       },
       category: async (parent: { categoryId: string }, _args: unknown, context) => {
         return context.loaders.categoryById.load(parent.categoryId);

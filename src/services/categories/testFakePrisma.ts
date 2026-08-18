@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import {
+  createFakeBudgetMonthDelegate,
+  type FakeBudgetMonth,
+  type FakeBudgetMonthDelegate,
+} from '../budgetMonths/testFakePrisma.js';
 
 // A plain `new Date()` can collide within the same millisecond when a test
 // creates several rows back-to-back, which breaks createdAt-tiebreaker
@@ -24,15 +29,6 @@ export interface FakeCategory {
   deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
-}
-
-export interface FakeBudgetMonth {
-  id: string;
-  userId: string;
-  month: string;
-  locked: boolean;
-  lockedAt: Date | null;
-  createdAt: Date;
 }
 
 export interface FakeCategoryMonth {
@@ -67,6 +63,7 @@ export class FakeUniqueConstraintError extends Error {
 }
 
 interface FakeDelegates {
+  budgetMonth: FakeBudgetMonthDelegate;
   category: {
     create(args: {
       data: {
@@ -88,16 +85,6 @@ interface FakeDelegates {
         Pick<FakeCategory, 'name' | 'icon' | 'color' | 'budgetType' | 'direction' | 'deletedAt'>
       >;
     }): Promise<FakeCategory>;
-  };
-  budgetMonth: {
-    findUnique(args: {
-      where: { id: string } | { userId_month: { userId: string; month: string } };
-    }): Promise<FakeBudgetMonth | null>;
-    upsert(args: {
-      where: { userId_month: { userId: string; month: string } };
-      create: { userId: string; month: string };
-      update: Record<string, never>;
-    }): Promise<FakeBudgetMonth>;
   };
   categoryMonth: {
     findUnique(args: { where: { id: string } }): Promise<FakeCategoryMonth | null>;
@@ -122,7 +109,7 @@ interface FakeDelegates {
       where: { categoryMonthId: string } | { categoryMonthId: { in: string[] } };
     }): Promise<FakeTransaction | null>;
     findMany(args: {
-      where: { categoryMonthId: { in: string[] } };
+      where: { categoryMonthId: { in: string[] }; userId?: string };
     }): Promise<FakeTransaction[]>;
     create(args: {
       data: {
@@ -205,31 +192,7 @@ export function createFakePrisma(): FakePrismaClient {
         return row;
       },
     },
-    budgetMonth: {
-      async findUnique({ where }) {
-        if ('id' in where) {
-          return budgetMonths.find((bm) => bm.id === where.id) ?? null;
-        }
-        const { userId, month } = where.userId_month;
-        return budgetMonths.find((bm) => bm.userId === userId && bm.month === month) ?? null;
-      },
-      async upsert({ where }) {
-        const { userId, month } = where.userId_month;
-        const existing = budgetMonths.find((bm) => bm.userId === userId && bm.month === month);
-        if (existing) return existing;
-
-        const row: FakeBudgetMonth = {
-          id: randomUUID(),
-          userId,
-          month,
-          locked: false,
-          lockedAt: null,
-          createdAt: nextTimestamp(),
-        };
-        budgetMonths.push(row);
-        return row;
-      },
-    },
+    budgetMonth: createFakeBudgetMonthDelegate(budgetMonths),
     categoryMonth: {
       async findUnique({ where }) {
         return categoryMonths.find((cm) => cm.id === where.id) ?? null;
@@ -294,7 +257,9 @@ export function createFakePrisma(): FakePrismaClient {
       },
       async findMany({ where }) {
         const ids = where.categoryMonthId.in;
-        return transactions.filter((t) => ids.includes(t.categoryMonthId));
+        return transactions.filter(
+          (t) => ids.includes(t.categoryMonthId) && (where.userId === undefined || t.userId === where.userId),
+        );
       },
       async create({ data }) {
         const row: FakeTransaction = {

@@ -45,6 +45,20 @@ describe('createCategory', () => {
     expect(category.budgetType).toBeNull();
   });
 
+  it('discards a client-supplied budgetType on an income category rather than storing it', async () => {
+    const { categoryService } = setup();
+
+    const category = await categoryService.createCategory('user-1', {
+      name: 'Salary',
+      icon: 'wallet',
+      color: '#0000FF',
+      budgetType: 'poupanca',
+      direction: 'income',
+    });
+
+    expect(category.budgetType).toBeNull();
+  });
+
   it('rejects an expense category with no budgetType', async () => {
     const { prisma, categoryService } = setup();
 
@@ -181,10 +195,12 @@ describe('updateCategory', () => {
       name: 'Misc',
       icon: 'tag',
       color: '#FFFFFF',
+      budgetType: 'poupanca',
       direction: 'income',
     });
 
     expect(updated.direction).toBe('income');
+    expect(updated.budgetType).toBeNull();
   });
 
   it('blocks a direction change when a transaction references the category', async () => {

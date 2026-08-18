@@ -35,7 +35,13 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
     }
   }
 
-  async function findOwnedCategory(userId: string, id: string) {
+  /** budgetType isn't meaningful for income categories — normalize it away rather than trust the caller. */
+  function normalizeBudgetType(direction: Direction, budgetType?: BudgetType): BudgetType | null {
+    return direction === 'income' ? null : (budgetType ?? null);
+  }
+
+  /** Public so other services (e.g. categoryMonthService) can enforce the same ownership check. */
+  async function getOwnedCategory(userId: string, id: string) {
     const category = await prisma.category.findUnique({ where: { id } });
     if (!category || category.userId !== userId || category.deletedAt) {
       throw new CategoryServiceError('category_not_found');
@@ -62,14 +68,14 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
         name: input.name,
         icon: input.icon,
         color: input.color,
-        budgetType: input.budgetType ?? null,
+        budgetType: normalizeBudgetType(input.direction, input.budgetType),
         direction: input.direction,
       },
     });
   }
 
   async function updateCategory(userId: string, id: string, input: CategoryInput) {
-    const existing = await findOwnedCategory(userId, id);
+    const existing = await getOwnedCategory(userId, id);
     assertValidBudgetType(input.direction, input.budgetType);
 
     if (input.direction !== existing.direction) {
@@ -93,14 +99,14 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
         name: input.name,
         icon: input.icon,
         color: input.color,
-        budgetType: input.budgetType ?? null,
+        budgetType: normalizeBudgetType(input.direction, input.budgetType),
         direction: input.direction,
       },
     });
   }
 
   async function deleteCategory(userId: string, id: string): Promise<void> {
-    await findOwnedCategory(userId, id);
+    await getOwnedCategory(userId, id);
 
     const existingCategoryMonth = await prisma.categoryMonth.findFirst({ where: { categoryId: id } });
     if (existingCategoryMonth) {
@@ -110,7 +116,14 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
     await prisma.category.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 
-  return { listCatalog, findManyByIds, createCategory, updateCategory, deleteCategory };
+  return {
+    listCatalog,
+    findManyByIds,
+    getOwnedCategory,
+    createCategory,
+    updateCategory,
+    deleteCategory,
+  };
 }
 
 export type CategoryService = ReturnType<typeof createCategoryService>;

@@ -12,6 +12,7 @@ async function setup() {
   const categoryMonthService = createCategoryMonthService({
     prisma: prisma as never,
     budgetMonthService,
+    categoryService,
   });
   const transactionService = createTransactionService({
     prisma: prisma as never,
@@ -269,6 +270,14 @@ describe('listByCategoryMonthIds', () => {
 });
 
 describe('list', () => {
+  it('rejects a malformed month string', async () => {
+    const { transactionService } = await setup();
+
+    await expect(transactionService.list('user-1', 'banana')).rejects.toMatchObject({
+      reason: 'invalid_month',
+    });
+  });
+
   it('returns transactions for the month, ordered date DESC then createdAt DESC', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();
     const first = await transactionService.create('user-1', {

@@ -58,7 +58,11 @@ export async function buildServer({
 
   const budgetMonthService = createBudgetMonthService({ prisma });
   const categoryService = createCategoryService({ prisma });
-  const categoryMonthService = createCategoryMonthService({ prisma, budgetMonthService });
+  const categoryMonthService = createCategoryMonthService({
+    prisma,
+    budgetMonthService,
+    categoryService,
+  });
   const transactionService = createTransactionService({ prisma, budgetMonthService });
   const buildGraphQLContext = createGraphQLContextBuilder({
     categoryService,

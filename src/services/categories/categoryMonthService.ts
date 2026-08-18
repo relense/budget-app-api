@@ -1,4 +1,6 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
+import type { CategoryService } from './categoryService.js';
+import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 
 export type CategoryMonthServiceErrorReason =
@@ -6,7 +8,8 @@ export type CategoryMonthServiceErrorReason =
   | 'category_month_already_active'
   | 'category_month_has_transactions'
   | 'month_locked'
-  | 'invalid_budget';
+  | 'invalid_budget'
+  | 'invalid_month';
 
 export class CategoryMonthServiceError extends Error {
   constructor(public readonly reason: CategoryMonthServiceErrorReason) {
@@ -18,6 +21,7 @@ export class CategoryMonthServiceError extends Error {
 export interface CategoryMonthServiceDeps {
   prisma: Pick<PrismaClient, 'categoryMonth' | 'transaction' | 'budgetMonth'>;
   budgetMonthService: Pick<BudgetMonthService, 'resolveBudgetMonthId' | 'findBudgetMonthId'>;
+  categoryService: Pick<CategoryService, 'getOwnedCategory'>;
 }
 
 function isUniqueConstraintError(error: unknown): boolean {
@@ -35,7 +39,17 @@ function assertValidBudget(monthlyBudgetCents: number): void {
   }
 }
 
-export function createCategoryMonthService({ prisma, budgetMonthService }: CategoryMonthServiceDeps) {
+function assertValidMonth(month: string): void {
+  if (!isValidMonthFormat(month)) {
+    throw new CategoryMonthServiceError('invalid_month');
+  }
+}
+
+export function createCategoryMonthService({
+  prisma,
+  budgetMonthService,
+  categoryService,
+}: CategoryMonthServiceDeps) {
   async function findOwnedCategoryMonth(userId: string, categoryMonthId: string) {
     const categoryMonth = await prisma.categoryMonth.findUnique({ where: { id: categoryMonthId } });
     if (!categoryMonth || categoryMonth.userId !== userId) {
@@ -52,6 +66,8 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
   }
 
   async function listByMonth(userId: string, month: string) {
+    assertValidMonth(month);
+
     const monthId = await budgetMonthService.findBudgetMonthId(userId, month);
     if (!monthId) return [];
     return prisma.categoryMonth.findMany({ where: { userId, monthId } });
@@ -70,6 +86,8 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     monthlyBudgetCents: number,
   ) {
     assertValidBudget(monthlyBudgetCents);
+    assertValidMonth(month);
+    await categoryService.getOwnedCategory(userId, categoryId);
 
     const monthId = await budgetMonthService.resolveBudgetMonthId(userId, month);
     await assertMonthNotLocked(monthId);

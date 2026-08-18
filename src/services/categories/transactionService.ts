@@ -1,4 +1,5 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
+import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
@@ -14,6 +15,7 @@ export interface TransactionInput {
 export type TransactionServiceErrorReason =
   | 'invalid_amount'
   | 'invalid_date'
+  | 'invalid_month'
   | 'category_month_not_found'
   | 'month_locked'
   | 'date_month_mismatch'
@@ -43,6 +45,12 @@ function assertValidDateFormat(date: string): void {
   }
 }
 
+function assertValidMonth(month: string): void {
+  if (!isValidMonthFormat(month)) {
+    throw new TransactionServiceError('invalid_month');
+  }
+}
+
 export function createTransactionService({ prisma, budgetMonthService }: TransactionServiceDeps) {
   async function loadCategoryMonthForWrite(userId: string, categoryMonthId: string, date: string) {
     const categoryMonth = await prisma.categoryMonth.findUnique({ where: { id: categoryMonthId } });
@@ -59,7 +67,10 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
     }
 
     const category = await prisma.category.findUnique({ where: { id: categoryMonth.categoryId } });
-    return { categoryMonth, direction: category!.direction };
+    if (!category) {
+      throw new Error(`Data integrity error: Category ${categoryMonth.categoryId} not found`);
+    }
+    return { categoryMonth, direction: category.direction };
   }
 
   async function assertOwnedTransactionMonthNotLocked(categoryMonthId: string): Promise<void> {
@@ -130,6 +141,8 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
   }
 
   async function list(userId: string, month: string, categoryId?: string) {
+    assertValidMonth(month);
+
     const monthId = await budgetMonthService.findBudgetMonthId(userId, month);
     if (!monthId) return [];
 
@@ -139,8 +152,10 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
     const categoryMonthIds = categoryMonths.map((categoryMonth) => categoryMonth.id);
     if (categoryMonthIds.length === 0) return [];
 
+    // userId filtered directly too, defense in depth — not solely reliant
+    // on the categoryMonths lookup above already being user-scoped.
     const transactions = await prisma.transaction.findMany({
-      where: { categoryMonthId: { in: categoryMonthIds } },
+      where: { userId, categoryMonthId: { in: categoryMonthIds } },
     });
 
     return transactions.sort(
