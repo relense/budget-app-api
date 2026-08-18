@@ -345,7 +345,7 @@ describe('removeCategoryFromMonth', () => {
         id: 'tx-race',
         userId: 'user-1',
         categoryMonthId: categoryMonth.id,
-      recurringExpenseInstanceId: null,
+        recurringExpenseInstanceId: null,
         amountCents: 500,
         date: new Date('2026-08-05'),
         merchant: null,

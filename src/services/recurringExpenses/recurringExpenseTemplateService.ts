@@ -19,7 +19,8 @@ export type RecurringExpenseTemplateServiceErrorReason =
   | 'invalid_due_day'
   | 'invalid_budget_type'
   | 'template_not_found'
-  | 'template_has_active_instances';
+  | 'template_has_active_instances'
+  | 'category_change_blocked';
 
 export class RecurringExpenseTemplateServiceError extends Error {
   constructor(public readonly reason: RecurringExpenseTemplateServiceErrorReason) {
@@ -29,7 +30,10 @@ export class RecurringExpenseTemplateServiceError extends Error {
 }
 
 export interface RecurringExpenseTemplateServiceDeps {
-  prisma: Pick<PrismaClient, 'category' | 'recurringExpenseTemplate' | 'recurringExpenseInstance'>;
+  prisma: Pick<
+    PrismaClient,
+    'category' | 'recurringExpenseTemplate' | 'recurringExpenseInstance' | '$transaction'
+  >;
 }
 
 function assertValidAmount(amountCents: number): void {
@@ -93,11 +97,26 @@ export function createRecurringExpenseTemplateService({ prisma }: RecurringExpen
   }
 
   async function updateTemplate(userId: string, id: string, input: RecurringExpenseTemplateInput) {
-    await assertOwnedTemplate(prisma, userId, id);
+    const existing = await assertOwnedTemplate(prisma, userId, id);
     assertValidAmount(input.amountCents);
     assertValidDueDay(input.dueDay);
     assertValidBudgetType(input.budgetType);
     await assertOwnedCategory(prisma, userId, input.categoryId);
+
+    // Instances don't snapshot their own categoryId — recurringCommittedCents
+    // always looks it up via the template's *current* categoryId. Changing it
+    // once an instance exists would retroactively move that instance's
+    // amount out of one category's committed total and into another's for
+    // months that have already happened (possibly already locked). Mirrors
+    // updateCategory's direction_change_blocked guard.
+    if (input.categoryId !== existing.categoryId) {
+      const existingInstance = await prisma.recurringExpenseInstance.findFirst({
+        where: { templateId: id },
+      });
+      if (existingInstance) {
+        throw new RecurringExpenseTemplateServiceError('category_change_blocked');
+      }
+    }
 
     return prisma.recurringExpenseTemplate.update({
       where: { id },
@@ -121,7 +140,18 @@ export function createRecurringExpenseTemplateService({ prisma }: RecurringExpen
       throw new RecurringExpenseTemplateServiceError('template_has_active_instances');
     }
 
-    await prisma.recurringExpenseTemplate.update({ where: { id }, data: { deletedAt: new Date() } });
+    // Re-checked inside the transaction, right before the write: this is a
+    // soft delete (no onDelete: Restrict FK to catch a concurrent instance
+    // insert the way removeFromMonth's hard delete does), so without this
+    // re-check a race could leave a soft-deleted template with a live
+    // instance still pointing at it.
+    await prisma.$transaction(async (tx) => {
+      const raceInstance = await tx.recurringExpenseInstance.findFirst({ where: { templateId: id } });
+      if (raceInstance) {
+        throw new RecurringExpenseTemplateServiceError('template_has_active_instances');
+      }
+      await tx.recurringExpenseTemplate.update({ where: { id }, data: { deletedAt: new Date() } });
+    });
   }
 
   return { listCatalog, findManyByIds, createTemplate, updateTemplate, deleteTemplate };
