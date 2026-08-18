@@ -281,6 +281,36 @@ describe('refreshSession', () => {
     });
   });
 
+  it('does not rotate if the token was concurrently revoked between the check and the rotation write', async () => {
+    const { prisma, authService } = setup();
+    prisma.refreshTokens.push({
+      id: 'rt-1',
+      userId: 'user-1',
+      tokenHash: hashRefreshToken('valid-token'),
+      deviceLabel: null,
+      expiresAt: new Date('2026-02-01T00:00:00.000Z'),
+      revoked: false,
+    });
+
+    // Simulate a concurrent request winning the race: it revokes the row
+    // right before this call's own atomic revoke-conditional-on-not-revoked
+    // write runs. A non-atomic check-then-update (reading `revoked` once,
+    // then unconditionally writing) would miss this and rotate anyway.
+    const originalUpdateMany = prisma.refreshToken.updateMany.bind(prisma.refreshToken);
+    prisma.refreshToken.updateMany = (async (
+      args: Parameters<typeof originalUpdateMany>[0],
+    ) => {
+      prisma.refreshTokens[0]!.revoked = true;
+      return originalUpdateMany(args);
+    }) as typeof originalUpdateMany;
+
+    await expect(authService.refreshSession('valid-token')).rejects.toMatchObject({
+      reason: 'revoked',
+    });
+
+    expect(prisma.refreshTokens).toHaveLength(1);
+  });
+
   it('rotates: revokes the old token and issues a new access + refresh token pair', async () => {
     const { prisma, authService, now } = setup();
     prisma.refreshTokens.push({

@@ -54,7 +54,7 @@ interface FakeDelegates {
       data: Partial<Pick<FakeRefreshToken, 'revoked'>>;
     }): Promise<FakeRefreshToken>;
     updateMany(args: {
-      where: { tokenHash: string } | { userId: string };
+      where: Partial<Pick<FakeRefreshToken, 'id' | 'tokenHash' | 'userId' | 'revoked'>>;
       data: Partial<Pick<FakeRefreshToken, 'revoked'>>;
     }): Promise<{ count: number }>;
   };
@@ -145,9 +145,13 @@ export function createFakePrisma(): FakePrismaClient {
         return row;
       },
       async updateMany({ where, data }) {
-        const matches = refreshTokens.filter((row) =>
-          'tokenHash' in where ? row.tokenHash === where.tokenHash : row.userId === where.userId,
-        );
+        const matches = refreshTokens.filter((row) => {
+          if (where.id !== undefined && row.id !== where.id) return false;
+          if (where.tokenHash !== undefined && row.tokenHash !== where.tokenHash) return false;
+          if (where.userId !== undefined && row.userId !== where.userId) return false;
+          if (where.revoked !== undefined && row.revoked !== where.revoked) return false;
+          return true;
+        });
         matches.forEach((row) => Object.assign(row, data));
         return { count: matches.length };
       },

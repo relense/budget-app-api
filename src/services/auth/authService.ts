@@ -158,7 +158,18 @@ export function createAuthService({
     const newExpiresAt = new Date(now().getTime() + REFRESH_TOKEN_TTL_MS);
 
     await prisma.$transaction(async (tx) => {
-      await tx.refreshToken.update({ where: { id: existing.id }, data: { revoked: true } });
+      // Conditional on revoked: false so two concurrent refreshes of the
+      // same token can't both pass the check above and both rotate it —
+      // only the request that wins this atomic write proceeds.
+      const revokeResult = await tx.refreshToken.updateMany({
+        where: { id: existing.id, revoked: false },
+        data: { revoked: true },
+      });
+
+      if (revokeResult.count === 0) {
+        throw new RefreshTokenError('revoked');
+      }
+
       await tx.refreshToken.create({
         data: {
           userId: existing.userId,
