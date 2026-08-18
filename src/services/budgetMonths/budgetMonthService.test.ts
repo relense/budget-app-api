@@ -53,3 +53,23 @@ describe('resolveBudgetMonthId', () => {
     expect(prisma.budgetMonths).toHaveLength(2);
   });
 });
+
+describe('findBudgetMonthId', () => {
+  it('returns null without creating a row when none exists (read-only, no side effect)', async () => {
+    const { prisma, budgetMonthService } = setup();
+
+    const id = await budgetMonthService.findBudgetMonthId('user-1', '2026-08');
+
+    expect(id).toBeNull();
+    expect(prisma.budgetMonths).toHaveLength(0);
+  });
+
+  it('returns the existing id when a BudgetMonth row exists', async () => {
+    const { budgetMonthService } = setup();
+    const created = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+
+    const found = await budgetMonthService.findBudgetMonthId('user-1', '2026-08');
+
+    expect(found).toBe(created);
+  });
+});

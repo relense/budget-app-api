@@ -22,7 +22,17 @@ export function createBudgetMonthService({ prisma }: BudgetMonthServiceDeps) {
     return budgetMonth.id;
   }
 
-  return { resolveBudgetMonthId };
+  /**
+   * Read-only lookup — unlike resolveBudgetMonthId, never creates a row.
+   * For read paths (e.g. listing transactions for a month), where creating
+   * a BudgetMonth as a side effect of a query would be a bug.
+   */
+  async function findBudgetMonthId(userId: string, month: string): Promise<string | null> {
+    const budgetMonth = await prisma.budgetMonth.findUnique({ where: { userId_month: { userId, month } } });
+    return budgetMonth?.id ?? null;
+  }
+
+  return { resolveBudgetMonthId, findBudgetMonthId };
 }
 
 export type BudgetMonthService = ReturnType<typeof createBudgetMonthService>;

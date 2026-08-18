@@ -11,6 +11,9 @@ export interface FakeBudgetMonth {
 
 interface FakeDelegates {
   budgetMonth: {
+    findUnique(args: {
+      where: { userId_month: { userId: string; month: string } };
+    }): Promise<FakeBudgetMonth | null>;
     upsert(args: {
       where: { userId_month: { userId: string; month: string } };
       create: { userId: string; month: string };
@@ -34,6 +37,10 @@ export function createFakePrisma(): FakePrismaClient {
   return {
     budgetMonths,
     budgetMonth: {
+      async findUnique({ where }) {
+        const { userId, month } = where.userId_month;
+        return budgetMonths.find((bm) => bm.userId === userId && bm.month === month) ?? null;
+      },
       async upsert({ where }) {
         const { userId, month } = where.userId_month;
         const existing = budgetMonths.find((bm) => bm.userId === userId && bm.month === month);
