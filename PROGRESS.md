@@ -6,19 +6,39 @@ Tracks status against `plan.md`'s Build Order. Updated as each step lands.
 
 On branch `feature/auth-otp`, PR #2 (`feature/auth-otp` → `develop`) is
 **open and waiting for review** — https://github.com/relense/budget-app-api/pull/2.
-Working tree is clean, local is in sync with `origin/feature/auth-otp`.
-Nothing is blocking except the review itself.
+Working tree is clean, local is pushed and in sync with `origin/feature/auth-otp`.
+
+The `pr-reviewer` subagent (`.claude/agents/reviewer.md`) reviewed PR #2 and
+found 4 blocking issues, all now fixed with tests, one commit each, and
+pushed:
+- Email casing/whitespace wasn't normalized — bypassed the request-otp rate
+  limit via case variation and risked duplicate `User` rows. Fixed by
+  normalizing once in a shared Zod schema (`fe7f220`).
+- `POST /auth/verify-otp` had no rate limiting at all. Added a 10/15min
+  per-IP+email limit (looser than request-otp's 3/15min since the DB-level
+  `failedAttempts` cap is the primary defense) — this number was picked by
+  Claude, not explicitly specified by the user, flagging per CLAUDE.md's
+  "don't invent details" rule (`1ca64ec`).
+- `OtpCode.failedAttempts` was incremented via read-then-write, letting
+  concurrent guesses race past the 5-attempt cap. Fixed with Prisma's atomic
+  `increment` operator (`d8d3ca3`).
+- Refresh-token rotation had a TOCTOU race (revoked/expired check ran
+  outside the `$transaction`). Fixed with a conditional atomic `updateMany`
+  (`revoked: false`) inside the transaction (`42e7188`).
+
+5 suggestions and 3 nitpicks from the same review were *not* acted on (timing
+side-channel on verify-otp's not-found path, missing index on
+`refresh_tokens.user_id`, `tokenHash` not `@unique`, no refresh-token-reuse
+detection, PR bundling unrelated `.claude/` changes, no explicit
+`algorithms: ['HS256']` allowlist in `jwtVerify`, no upper bound on
+email/refreshToken field lengths, unconfirmed zod v4 `.email()` deprecation) —
+still backlog if wanted later.
 
 Next actions, in order:
 1. Wait for PR #2 review/approval — do not merge, do not start step 3 work
    on this branch or a new one until it's approved, per `CLAUDE.md`'s git
    workflow.
-2. A `pr-reviewer` subagent now exists at `.claude/agents/reviewer.md`
-   (added by the user, read-only Sonnet agent, 12-point checklist) — use it
-   to review PR #2 if asked, once it shows up as an available agent type in
-   a fresh session (it didn't appear in the session that discovered it,
-   since agent definitions load at session start).
-3. Once PR #2 is approved and merged into `develop` by the user: sync local
+2. Once PR #2 is approved and merged into `develop` by the user: sync local
    `develop`, branch `feature/categories-transactions` (or similar) from
    it, and start Build Order step 3 with the usual "grill me" interview
    first — don't jump straight to code.
