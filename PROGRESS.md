@@ -4,61 +4,53 @@ Tracks status against `plan.md`'s Build Order. Updated as each step lands.
 
 ## Where we left off (2026-08-18)
 
-PR #2 (auth/OTP) was reviewed (twice), approved, and merged into `develop`.
-PR #3 (`feature/categories-transactions` → `develop`, Build Order step 3)
-is **open, pushed, and has been through four `pr-reviewer` rounds** —
-https://github.com/relense/budget-app-api/pull/3. Round 1 found 2 blocking
-issues (cross-tenant `addCategoryToMonth`, missing `YYYY-MM` validation),
-fixed. Round 2 approved with 3 non-blocking observations. Round 3's fix
-for those observations introduced a real regression (reordered a check,
-reintroducing a permanent-corrupt-row bug for a different field) —
-caught by round 3's own review, fixed, then round 4 approved the fix and
-surfaced 2 more suggestion-level findings (a TOCTOU on
-`removeCategoryFromMonth` analogous to the already-accepted one on
-`addCategoryToMonth`; a stale docstring plus duplicated ownership-check
-logic between `categoryService` and `categoryMonthService`), both since
-fixed and pushed. Working tree is clean, in sync with origin. See the
-Phase 1 checklist below for what step 3 covers and the commit-by-commit
-design trail; the PR itself has the full review history if the reasoning
-behind any specific fix is needed later.
+PR #2 (auth/OTP) and PR #3 (`feature/categories-transactions`, Build Order
+step 3) are both reviewed, approved, and merged into `develop`. After PR #3
+merged, two repo-wide sweeps landed directly: `budgetType`'s three DB values
+were translated from Portuguese (`preciso`/`quero`/`poupanca`) to English
+(`need`/`want`/`savings`) across schema, code, and docs; and the migration
+history was squashed from 6 migrations down to 1 (`20260818183149_init`) —
+safe only because nothing had deployed yet and no real data existed.
 
-Before any code, step 3 got an extensive "grill me" pass that materially
-changed the shape of `plan.md` itself (not just this step's scope) — see
-`plan.md`'s "Month Lifecycle" section and its Data Model section for
-`budget_months`/`categories`/`category_month`. Key decisions, in case the
-reasoning is needed later:
-- Categories split into a pure catalog (`categories`, transversal, no
-  month-awareness) plus a real join (`category_month`) that owns all
-  month-scoped state — row existence *is* activation, budget lives there
-  not on the catalog row.
-- Every month reference in the schema (`category_month`, later
-  `recurring_expense_instances`, `income_sources`) resolves through one
-  real `budget_months` row via `month_id`, not a repeated `YYYY-MM`
-  string — `budget_months` had to move up to this step instead of step 5
-  for that reason alone.
-- `category_month` and `transactions` ended up **hard-deleted, no undo**
-  — a deliberate simplification partway through the session, reversing an
-  earlier soft-delete-everywhere decision, because keeping `transactions`
-  soft-deleted while `category_month` was hard-deleted would let a
-  soft-deleted transaction dangle on a `category_month_id` that no longer
-  exists. `categories`' own catalog-level soft delete is unaffected.
-  `recurring_expense_instances` is flagged as an open question for step
-  4's own interview (structurally analogous, might want the same
-  treatment).
-- `Transaction.direction` is entirely server-derived (dropped from
-  `TransactionInput`) now that a transaction can only ever reach one
-  category with one fixed direction via `category_month`.
+Build Order step 4 (Recurring expenses) got its own extensive "grill me"
+pass (see `plan.md`'s Data Model section for `recurring_expense_templates`/
+`recurring_expense_instances`, and its "Recurring expenses vs. transactions",
+"Recurring expenses are not categories", and "Category activation is
+automatic for recurring expenses" prose sections) and is now fully
+implemented — service layer, GraphQL layer, and a real-Postgres smoke test —
+on branch `feature/recurring-expenses`, not yet pushed/PR'd. Key decisions
+from that interview, in case the reasoning is needed later:
+- `recurring_expense_templates` (soft-deleted, transversal — same shape as
+  `categories`) + `recurring_expense_instances` (hard-deleted, FK to
+  `budget_months` via `month_id` — same shape as `category_month`): a
+  recurring expense is its own identity, explicitly *not* a category, even
+  though creating/adding one to a month auto-activates its (existing)
+  category for that month — the one deliberate exception to categories'
+  otherwise-always-manual activation rule.
+- No derived default for the auto-created `category_month`'s budget —
+  `categoryMonthlyBudgetCents` must be given explicitly when activation
+  actually creates a new row. A category like Housing can bundle a fixed
+  recurring expense (rent) with variable ones (gas, electricity); deriving
+  the budget from any single recurring expense's `amountCents` would be
+  wrong on its face.
+- Recurring expenses allow **split payments**: `transactions.recurring_
+  expense_instance_id` has no uniqueness constraint, and `paidThisMonth` is
+  `SUM(linked transactions.amountCents) >= instance.amountCents`, not "any
+  payment exists."
+- `CategoryMonth.recurringCommittedCents` (computed, GraphQL-only) sums a
+  category's active recurring expenses for the month, specifically so a
+  future mobile "match budget to recurring total" action can read this and
+  feed it straight into `updateCategoryMonthBudget` — flagged under
+  plan.md's "Notes for Claude Code" so it isn't lost before Phase 2.
 
 Next actions, in order:
-1. Wait for the human review/approval on PR #3 per `CLAUDE.md`'s git
-   workflow — don't merge, don't start step 4 on this branch or a new one
-   until approved. The automated `pr-reviewer` passes are done; this is
-   the human review step.
-2. Once merged: sync `develop`, branch for step 4 (Recurring expenses),
-   and start with the usual "grill me" interview — it still needs its own
-   design pass; the `RecurringExpense` GraphQL type and the
-   `recurring_expense_templates`/`recurring_expense_instances` split are
-   sketched in `plan.md` but explicitly flagged not-yet-grilled.
+1. Push `feature/recurring-expenses`, open a PR into `develop`, run the
+   `pr-reviewer` subagent, and address findings per the usual multi-round
+   pattern from steps 2 and 3.
+2. Wait for human review/approval per `CLAUDE.md`'s git workflow — don't
+   merge, don't start step 5 until approved.
+3. Once merged: sync `develop`, branch for step 5 (Month lifecycle), and
+   start with its own "grill me" interview.
 
 ## Phase 1 — Backend
 
@@ -104,12 +96,41 @@ Next actions, in order:
       (full mutation/query lifecycle, duplicate-add rejection, blocked/
       then-allowed delete, unauthenticated rejection, cross-tenant
       rejection, malformed-month rejection). → PR #3
-      (`feature/categories-transactions` → `develop`), open, awaiting
-      human review.
-- [ ] **4. Recurring expenses** — CRUD on `recurring_expense_templates` +
-      generation of `recurring_expense_instances`; `markRecurringPaid`;
-      `paidThisMonth` computed, not stored. Needs its own "grill me" pass —
-      not yet interviewed.
+      (`feature/categories-transactions` → `develop`), reviewed
+      (4 rounds) and merged.
+- [x] **4. Recurring expenses** — `recurring_expense_templates` (soft-deleted,
+      transversal catalog, budget_type restricted to `need`/`want` — `savings`
+      rejected at runtime via `invalid_budget_type`) + `recurring_expense_
+      instances` (hard-deleted, FK to `budget_months`, `@@unique([templateId,
+      monthId])`). Two services: `recurringExpenseTemplateService` (create/
+      update/delete — delete blocked while any instance exists anywhere, past
+      or future) and `recurringExpenseInstanceService` (`createTemplateForMonth`
+      returns `{ template, instance }`; `addRecurringExpenseToMonth` reuses a
+      template into a new month; both auto-activate the category for that
+      month via `categoryMonthService.ensureActiveForCategory`, a new
+      idempotent "ensure active, no derived budget default" primitive distinct
+      from `addCategoryToMonth`'s error-on-duplicate semantics; `updateInstance`,
+      `removeFromMonth` — blocked while any transaction references it;
+      `markRecurringPaid` — always creates a *new* `Transaction` linked via
+      `recurringExpenseInstanceId`, callable more than once per instance for
+      split payments; `sumCommittedCentsForCategoryMonth` backs the new
+      `CategoryMonth.recurringCommittedCents` computed field).
+      `transactionService` gained an internal-only third `create` param
+      (`recurringExpenseInstanceId`, never client-settable) and
+      `listByRecurringExpenseInstanceIds` for DataLoader use. 191 Jest tests
+      total (was 149 after step 3), the fake-Prisma double consolidated into
+      one shared file per composition graph rather than duplicated per
+      service directory (a lesson carried over from a step-3 review finding).
+      Full GraphQL schema/resolvers (`RecurringExpenseTemplate`/
+      `RecurringExpenseInstance` types, their inputs, all seven mutations,
+      both queries) and four new DataLoaders (`recurringExpenseTemplateById`,
+      `recurringExpenseInstanceById`, `transactionsByRecurringExpenseInstanceId`,
+      `recurringCommittedCentsByCategoryMonthId`). Manually smoke-tested end
+      to end against real Postgres (25 checks: full mutation/query lifecycle,
+      split-payment `paidThisMonth` transition, `SAVINGS` budgetType
+      rejection, duplicate-add rejection, cross-tenant rejection, blocked
+      delete/remove while referenced, unauthenticated rejection). →
+      `feature/recurring-expenses`, not yet pushed.
 - [ ] **5. Month lifecycle** — carry-forward (with budget-inheritance for
       `category_month`), month locking + auto-lock cascade for empty months,
       recurring-template edit propagation, soft-delete + undo for the
