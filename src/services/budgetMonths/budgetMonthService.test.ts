@@ -54,6 +54,26 @@ describe('resolveBudgetMonthId', () => {
   });
 });
 
+describe('findManyByIds', () => {
+  it('returns BudgetMonth rows matching the given ids', async () => {
+    const { budgetMonthService } = setup();
+    const augustId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    const septemberId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-09');
+
+    const result = await budgetMonthService.findManyByIds([augustId, septemberId]);
+
+    expect(result.map((bm) => bm.month).sort()).toEqual(['2026-08', '2026-09']);
+  });
+
+  it('returns an empty array for an empty id list', async () => {
+    const { budgetMonthService } = setup();
+
+    const result = await budgetMonthService.findManyByIds([]);
+
+    expect(result).toEqual([]);
+  });
+});
+
 describe('findBudgetMonthId', () => {
   it('returns null without creating a row when none exists (read-only, no side effect)', async () => {
     const { prisma, budgetMonthService } = setup();

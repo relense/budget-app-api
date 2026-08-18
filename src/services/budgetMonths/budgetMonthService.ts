@@ -32,7 +32,13 @@ export function createBudgetMonthService({ prisma }: BudgetMonthServiceDeps) {
     return budgetMonth?.id ?? null;
   }
 
-  return { resolveBudgetMonthId, findBudgetMonthId };
+  /** Batch lookup for DataLoader use — trusts the caller to have already scoped the ids to one user. */
+  async function findManyByIds(ids: string[]) {
+    if (ids.length === 0) return [];
+    return prisma.budgetMonth.findMany({ where: { id: { in: ids } } });
+  }
+
+  return { resolveBudgetMonthId, findBudgetMonthId, findManyByIds };
 }
 
 export type BudgetMonthService = ReturnType<typeof createBudgetMonthService>;
