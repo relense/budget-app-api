@@ -24,6 +24,17 @@ function setup(now = () => new Date('2026-01-01T00:00:00.000Z')) {
 }
 
 describe('requestOtp', () => {
+  it('normalizes email casing/whitespace even when called directly (not via the route)', async () => {
+    const { prisma, emailService, authService } = setup();
+
+    await authService.requestOtp('  User@Example.com  ');
+
+    expect(prisma.otpCodes).toHaveLength(1);
+    expect(prisma.otpCodes[0]!.email).toBe('user@example.com');
+    const [emailedTo] = emailService.sendOtpEmail.mock.calls[0] as [string, string];
+    expect(emailedTo).toBe('user@example.com');
+  });
+
   it('stores a hashed code and emails the plaintext code to the user', async () => {
     const { prisma, emailService, authService, now } = setup();
 
@@ -46,6 +57,28 @@ describe('requestOtp', () => {
 });
 
 describe('verifyOtp', () => {
+  it('normalizes email casing/whitespace even when called directly (not via the route)', async () => {
+    const { prisma, authService } = setup();
+    prisma.otpCodes.push({
+      id: 'otp-1',
+      email: 'user@example.com',
+      codeHash: await hashOtpCode('123456'),
+      expiresAt: new Date('2026-01-01T00:10:00.000Z'),
+      used: false,
+      failedAttempts: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    const result = await authService.verifyOtp({
+      email: '  User@Example.com  ',
+      code: '123456',
+    });
+
+    expect(result.user.email).toBe('user@example.com');
+    expect(prisma.users).toHaveLength(1);
+    expect(prisma.users[0]!.email).toBe('user@example.com');
+  });
+
   it('throws not_found when no code was ever requested', async () => {
     const { authService } = setup();
 

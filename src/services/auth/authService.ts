@@ -8,6 +8,13 @@ const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_MAX_FAILED_ATTEMPTS = 5;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+// The HTTP routes already normalize email via a shared Zod schema, but
+// normalize again here so this invariant holds for any caller (a future
+// GraphQL resolver, a script) and doesn't depend on caller discipline.
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 export type OtpVerificationReason =
   'not_found' | 'expired' | 'too_many_attempts' | 'incorrect_code';
 
@@ -59,7 +66,8 @@ export function createAuthService({
   jwtSecret,
   now = () => new Date(),
 }: AuthServiceDeps) {
-  async function requestOtp(email: string): Promise<void> {
+  async function requestOtp(rawEmail: string): Promise<void> {
+    const email = normalizeEmail(rawEmail);
     const code = generateOtpCode();
     const codeHash = await hashOtpCode(code);
     const expiresAt = new Date(now().getTime() + OTP_TTL_MS);
@@ -69,7 +77,8 @@ export function createAuthService({
   }
 
   async function verifyOtp(input: VerifyOtpInput): Promise<{ tokens: AuthTokens; user: AuthUser }> {
-    const { email, code, deviceLabel } = input;
+    const email = normalizeEmail(input.email);
+    const { code, deviceLabel } = input;
 
     const otp = await prisma.otpCode.findFirst({
       where: { email },
