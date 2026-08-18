@@ -11,7 +11,6 @@ async function setup() {
   const categoryMonthService = createCategoryMonthService({
     prisma: prisma as never,
     budgetMonthService,
-    categoryService,
   });
 
   const categoryA = await categoryService.createCategory('user-1', {
@@ -197,6 +196,15 @@ describe('addCategoryToMonth', () => {
     ).rejects.toMatchObject({ reason: 'invalid_budget' });
     expect(prisma.categoryMonths).toHaveLength(0);
   });
+
+  it('throws invalid_budget for a non-integer monthlyBudgetCents', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 100.5),
+    ).rejects.toMatchObject({ reason: 'invalid_budget' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
 });
 
 describe('removeCategoryFromMonth', () => {
@@ -317,6 +325,20 @@ describe('updateCategoryMonthBudget', () => {
 
     await expect(
       categoryMonthService.updateCategoryMonthBudget('user-1', categoryMonth.id, -1),
+    ).rejects.toMatchObject({ reason: 'invalid_budget' });
+  });
+
+  it('throws invalid_budget for a non-integer monthlyBudgetCents', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      10000,
+    );
+
+    await expect(
+      categoryMonthService.updateCategoryMonthBudget('user-1', categoryMonth.id, 12000.75),
     ).rejects.toMatchObject({ reason: 'invalid_budget' });
   });
 });

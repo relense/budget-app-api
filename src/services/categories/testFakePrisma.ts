@@ -140,12 +140,16 @@ interface FakePrismaClient extends FakeDelegates {
   budgetMonths: FakeBudgetMonth[];
   categoryMonths: FakeCategoryMonth[];
   transactions: FakeTransaction[];
+  $transaction<T>(callback: (tx: FakeDelegates) => Promise<T>): Promise<T>;
 }
 
 /**
  * A minimal in-memory stand-in for the slice of PrismaClient the category
  * services depend on. Used instead of per-call jest mocks so tests exercise
- * real lookup/update semantics without a live DB.
+ * real lookup/update semantics without a live DB. $transaction is a plain
+ * pass-through (no real isolation) — same simplification the auth
+ * service's fake makes, since these tests care about the resulting calls,
+ * not true DB transaction semantics.
  */
 export function createFakePrisma(): FakePrismaClient {
   const categories: FakeCategory[] = [];
@@ -153,11 +157,14 @@ export function createFakePrisma(): FakePrismaClient {
   const categoryMonths: FakeCategoryMonth[] = [];
   const transactions: FakeTransaction[] = [];
 
-  return {
+  const client: FakePrismaClient = {
     categories,
     budgetMonths,
     categoryMonths,
     transactions,
+    async $transaction(callback) {
+      return callback(client);
+    },
     category: {
       async create({ data }) {
         const row: FakeCategory = {
@@ -292,6 +299,8 @@ export function createFakePrisma(): FakePrismaClient {
       },
     },
   };
+
+  return client;
 }
 
 export type FakePrisma = FakePrismaClient;

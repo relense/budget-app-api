@@ -130,7 +130,7 @@ model CategoryMonth {
   transactions Transaction[]
 
   @@unique([categoryId, monthId])
-  @@index([userId])
+  @@index([userId, monthId]) // serves listByMonth/transactions' where: { userId, monthId } filter directly; userId is a leading prefix so this also covers plain userId lookups
   @@map("category_month")
 }
 

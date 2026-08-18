@@ -12,7 +12,6 @@ async function setup() {
   const categoryMonthService = createCategoryMonthService({
     prisma: prisma as never,
     budgetMonthService,
-    categoryService,
   });
   const transactionService = createTransactionService({
     prisma: prisma as never,

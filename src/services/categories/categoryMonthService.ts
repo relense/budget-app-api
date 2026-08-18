@@ -1,5 +1,5 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
-import type { CategoryService } from './categoryService.js';
+import { CategoryServiceError } from './categoryService.js';
 import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 
@@ -19,9 +19,8 @@ export class CategoryMonthServiceError extends Error {
 }
 
 export interface CategoryMonthServiceDeps {
-  prisma: Pick<PrismaClient, 'categoryMonth' | 'transaction' | 'budgetMonth'>;
+  prisma: Pick<PrismaClient, 'category' | 'categoryMonth' | 'transaction' | 'budgetMonth' | '$transaction'>;
   budgetMonthService: Pick<BudgetMonthService, 'resolveBudgetMonthId' | 'findBudgetMonthId'>;
-  categoryService: Pick<CategoryService, 'getOwnedCategory'>;
 }
 
 function isUniqueConstraintError(error: unknown): boolean {
@@ -34,7 +33,7 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 function assertValidBudget(monthlyBudgetCents: number): void {
-  if (monthlyBudgetCents < 0) {
+  if (!Number.isInteger(monthlyBudgetCents) || monthlyBudgetCents < 0) {
     throw new CategoryMonthServiceError('invalid_budget');
   }
 }
@@ -45,11 +44,7 @@ function assertValidMonth(month: string): void {
   }
 }
 
-export function createCategoryMonthService({
-  prisma,
-  budgetMonthService,
-  categoryService,
-}: CategoryMonthServiceDeps) {
+export function createCategoryMonthService({ prisma, budgetMonthService }: CategoryMonthServiceDeps) {
   async function findOwnedCategoryMonth(userId: string, categoryMonthId: string) {
     const categoryMonth = await prisma.categoryMonth.findUnique({ where: { id: categoryMonthId } });
     if (!categoryMonth || categoryMonth.userId !== userId) {
@@ -87,16 +82,31 @@ export function createCategoryMonthService({
   ) {
     assertValidBudget(monthlyBudgetCents);
     assertValidMonth(month);
-    await categoryService.getOwnedCategory(userId, categoryId);
 
     const monthId = await budgetMonthService.resolveBudgetMonthId(userId, month);
     await assertMonthNotLocked(monthId);
 
     try {
-      return await prisma.categoryMonth.create({
-        data: { userId, categoryId, monthId, monthlyBudgetCents },
+      // The ownership check and the insert run in one transaction so a
+      // concurrent delete of this same category can't land in the gap
+      // between "verified owned and not deleted" and "row created" — that
+      // gap would otherwise let a category_month get created for a
+      // category that's already soft-deleted, breaking deleteCategory's
+      // invariant that a deleted category never has category_month rows.
+      return await prisma.$transaction(async (tx) => {
+        const category = await tx.category.findUnique({ where: { id: categoryId } });
+        if (!category || category.userId !== userId || category.deletedAt) {
+          throw new CategoryServiceError('category_not_found');
+        }
+
+        return tx.categoryMonth.create({
+          data: { userId, categoryId, monthId, monthlyBudgetCents },
+        });
       });
     } catch (error) {
+      if (error instanceof CategoryServiceError) {
+        throw error;
+      }
       if (isUniqueConstraintError(error)) {
         throw new CategoryMonthServiceError('category_month_already_active');
       }

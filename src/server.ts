@@ -32,7 +32,7 @@ export interface BuildServerOptions {
   env: Env;
   prisma: Pick<
     PrismaClient,
-    '$queryRaw' | 'category' | 'categoryMonth' | 'budgetMonth' | 'transaction'
+    '$queryRaw' | '$transaction' | 'category' | 'categoryMonth' | 'budgetMonth' | 'transaction'
   >;
   authService: Pick<
     AuthService,
@@ -58,11 +58,7 @@ export async function buildServer({
 
   const budgetMonthService = createBudgetMonthService({ prisma });
   const categoryService = createCategoryService({ prisma });
-  const categoryMonthService = createCategoryMonthService({
-    prisma,
-    budgetMonthService,
-    categoryService,
-  });
+  const categoryMonthService = createCategoryMonthService({ prisma, budgetMonthService });
   const transactionService = createTransactionService({ prisma, budgetMonthService });
   const buildGraphQLContext = createGraphQLContextBuilder({
     categoryService,
