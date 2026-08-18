@@ -120,7 +120,9 @@ interface FakeDelegates {
     }): Promise<FakeCategory>;
   };
   categoryMonth: {
-    findUnique(args: { where: { id: string } }): Promise<FakeCategoryMonth | null>;
+    findUnique(args: {
+      where: { id: string } | { categoryId_monthId: { categoryId: string; monthId: string } };
+    }): Promise<FakeCategoryMonth | null>;
     findFirst(args: {
       where: Partial<Pick<FakeCategoryMonth, 'categoryId' | 'monthId'>>;
     }): Promise<FakeCategoryMonth | null>;
@@ -298,6 +300,12 @@ export function createFakePrisma(): FakePrismaClient {
     budgetMonth: createFakeBudgetMonthDelegate(budgetMonths),
     categoryMonth: {
       async findUnique({ where }) {
+        if ('categoryId_monthId' in where) {
+          const { categoryId, monthId } = where.categoryId_monthId;
+          return (
+            categoryMonths.find((cm) => cm.categoryId === categoryId && cm.monthId === monthId) ?? null
+          );
+        }
         return categoryMonths.find((cm) => cm.id === where.id) ?? null;
       },
       async findFirst({ where }) {

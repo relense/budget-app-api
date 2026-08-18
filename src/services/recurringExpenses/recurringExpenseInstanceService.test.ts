@@ -42,6 +42,7 @@ async function setup() {
 
   return {
     prisma,
+    budgetMonthService,
     categoryService,
     categoryMonthService,
     templateService,
@@ -84,8 +85,8 @@ describe('createTemplateForMonth', () => {
     expect(prisma.categoryMonths[0]!.monthlyBudgetCents).toBe(90000);
   });
 
-  it('throws category_month_budget_required when the category is not yet active and no budget is given', async () => {
-    const { instanceService, housing } = await setup();
+  it('throws category_month_budget_required when the category is not yet active and no budget is given, without creating an orphaned template', async () => {
+    const { prisma, instanceService, housing } = await setup();
 
     await expect(
       instanceService.createTemplateForMonth(
@@ -94,6 +95,24 @@ describe('createTemplateForMonth', () => {
         '2026-08',
       ),
     ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
+    expect(prisma.recurringExpenseTemplates).toHaveLength(0);
+  });
+
+  it('throws month_locked without creating an orphaned template', async () => {
+    const { prisma, budgetMonthService, instanceService, housing } = await setup();
+    const monthId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    const budgetMonth = prisma.budgetMonths.find((bm) => bm.id === monthId);
+    budgetMonth!.locked = true;
+
+    await expect(
+      instanceService.createTemplateForMonth(
+        'user-1',
+        { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+        '2026-08',
+        90000,
+      ),
+    ).rejects.toMatchObject({ reason: 'month_locked' });
+    expect(prisma.recurringExpenseTemplates).toHaveLength(0);
   });
 
   it('throws category_not_found for a category belonging to another user', async () => {

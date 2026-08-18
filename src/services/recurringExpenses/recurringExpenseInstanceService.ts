@@ -77,6 +77,19 @@ export function createRecurringExpenseInstanceService({
     }
   }
 
+  async function createInstanceRow(userId: string, templateId: string, monthId: string, amountCents: number) {
+    try {
+      return await prisma.recurringExpenseInstance.create({
+        data: { userId, templateId, monthId, amountCents },
+      });
+    } catch (error) {
+      if (hasPrismaErrorCode(error, 'P2002')) {
+        throw new RecurringExpenseInstanceServiceError('instance_already_active');
+      }
+      throw error;
+    }
+  }
+
   async function createInstanceForTemplate(
     userId: string,
     templateId: string,
@@ -91,22 +104,7 @@ export function createRecurringExpenseInstanceService({
       month,
       categoryMonthlyBudgetCents,
     );
-
-    try {
-      return await prisma.recurringExpenseInstance.create({
-        data: {
-          userId,
-          templateId,
-          monthId: categoryMonth.monthId,
-          amountCents: templateAmountCents,
-        },
-      });
-    } catch (error) {
-      if (hasPrismaErrorCode(error, 'P2002')) {
-        throw new RecurringExpenseInstanceServiceError('instance_already_active');
-      }
-      throw error;
-    }
+    return createInstanceRow(userId, templateId, categoryMonth.monthId, templateAmountCents);
   }
 
   /**
@@ -114,6 +112,13 @@ export function createRecurringExpenseInstanceService({
    * (auto-activating the category if needed). Returns both records —
    * createRecurringExpenseTemplate's GraphQL return type is the template
    * itself, not the instance, per plan.md's schema sketch.
+   *
+   * ensureActiveForCategory runs *before* the template is created (using
+   * input.categoryId directly — no template needed for that call) so a
+   * locked target month or a missing categoryMonthlyBudgetCents fails before
+   * any row is written, rather than after the template is already committed.
+   * Without this ordering, that failure would leave an orphaned template
+   * attached to no instance and no month.
    */
   async function createTemplateForMonth(
     userId: string,
@@ -121,15 +126,14 @@ export function createRecurringExpenseInstanceService({
     month: string,
     categoryMonthlyBudgetCents?: number,
   ) {
-    const template = await templateService.createTemplate(userId, input);
-    const instance = await createInstanceForTemplate(
+    const categoryMonth = await categoryMonthService.ensureActiveForCategory(
       userId,
-      template.id,
-      template.categoryId,
-      template.amountCents,
+      input.categoryId,
       month,
       categoryMonthlyBudgetCents,
     );
+    const template = await templateService.createTemplate(userId, input);
+    const instance = await createInstanceRow(userId, template.id, categoryMonth.monthId, template.amountCents);
     return { template, instance };
   }
 
@@ -187,8 +191,8 @@ export function createRecurringExpenseInstanceService({
     if (!template) {
       throw new Error(`Data integrity error: RecurringExpenseTemplate ${instance.templateId} not found`);
     }
-    const categoryMonth = await prisma.categoryMonth.findFirst({
-      where: { categoryId: template.categoryId, monthId: instance.monthId },
+    const categoryMonth = await prisma.categoryMonth.findUnique({
+      where: { categoryId_monthId: { categoryId: template.categoryId, monthId: instance.monthId } },
     });
     if (!categoryMonth) {
       throw new Error(
@@ -221,7 +225,14 @@ export function createRecurringExpenseInstanceService({
     return prisma.recurringExpenseInstance.findMany({ where: { id: { in: ids } } });
   }
 
-  /** Sum of amountCents across every instance whose template belongs to categoryId, active in monthId. */
+  /**
+   * Sum of amountCents across every instance whose template belongs to
+   * categoryId, active in monthId. No userId parameter, unlike the
+   * findManyByIds-style batch functions above — safe because categoryId can
+   * only ever be one this user owns (assertOwnedCategory already ran when
+   * the caller resolved it, e.g. via the categoryById DataLoader), so there's
+   * no separate id list here that a caller could pass unscoped.
+   */
   async function sumCommittedCentsForCategoryMonth(categoryId: string, monthId: string): Promise<number> {
     const templates = await prisma.recurringExpenseTemplate.findMany({
       where: { categoryId, deletedAt: null },
