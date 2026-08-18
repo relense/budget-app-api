@@ -26,13 +26,38 @@ pushed:
   outside the `$transaction`). Fixed with a conditional atomic `updateMany`
   (`revoked: false`) inside the transaction (`42e7188`).
 
-5 suggestions and 3 nitpicks from the same review were *not* acted on (timing
-side-channel on verify-otp's not-found path, missing index on
-`refresh_tokens.user_id`, `tokenHash` not `@unique`, no refresh-token-reuse
-detection, PR bundling unrelated `.claude/` changes, no explicit
-`algorithms: ['HS256']` allowlist in `jwtVerify`, no upper bound on
-email/refreshToken field lengths, unconfirmed zod v4 `.email()` deprecation) —
-still backlog if wanted later.
+A follow-up review confirmed all 4 fixes and approved the PR. Two more items
+from that follow-up were then addressed too:
+- Email normalization only lived at the route layer — `authService.requestOtp`/
+  `verifyOtp` now also normalize (`normalizeEmail` in `authService.ts`), so
+  the invariant holds for any future caller (GraphQL resolver, script) that
+  bypasses the REST route, not just today's one caller (`da46e1e`).
+- Added `@@index([userId])` on `RefreshToken` — `logoutAll` and any future
+  cleanup job filtering by `user_id` would've table-scanned as the table
+  grows (`4fffc3c`, migration `20260818082055_add_refresh_token_user_id_index`).
+
+**Deliberately deferred, with reasoning** (explicit user decision, not an
+oversight — revisit only if the threat model changes, e.g. this data stops
+being "just personal finance line items" and becomes something more
+sensitive):
+- **OTP `failedAttempts` cap converges to 5 under heavy concurrency rather
+  than being a hard ceiling** (read-checked pre-verify, then atomically
+  incremented post-verify — the check itself isn't locked). Not fixed:
+  the outer per-IP+email rate limit on `/auth/verify-otp` (10/15min) still
+  bounds total attempts regardless, and the data behind this auth isn't
+  considered high-value enough to justify the added complexity right now.
+- **Timing side-channel on verify-otp's `not_found` path** (fast-paths
+  before the constant-time-ish argon2.verify, letting a caller infer
+  whether an email has a pending OTP). Not fixed: `request-otp` already
+  lets anyone probe any email with no auth at all, so this leaks little
+  beyond what's already exposed, and low-value data doesn't justify it.
+
+Remaining nitpicks from the same reviews, not acted on: `tokenHash` not
+`@unique`, no refresh-token-reuse detection, PR bundling unrelated
+`.claude/` changes, no explicit `algorithms: ['HS256']` allowlist in
+`jwtVerify`, no upper bound on email/refreshToken field lengths,
+unconfirmed zod v4 `.email()` deprecation — low-value, still backlog if
+ever wanted.
 
 Next actions, in order:
 1. Wait for PR #2 review/approval — do not merge, do not start step 3 work
