@@ -4,69 +4,51 @@ Tracks status against `plan.md`'s Build Order. Updated as each step lands.
 
 ## Where we left off (2026-08-18)
 
-On branch `feature/auth-otp`, PR #2 (`feature/auth-otp` → `develop`) is
-**open and waiting for review** — https://github.com/relense/budget-app-api/pull/2.
-Working tree is clean, local is pushed and in sync with `origin/feature/auth-otp`.
+PR #2 (auth/OTP) was reviewed (twice — a follow-up review after fixes),
+approved, and merged into `develop`. On branch `feature/categories-transactions`
+(branched from synced `develop`), Build Order step 3 is **functionally
+complete and not yet a PR** — working tree is clean, nothing pushed to
+origin yet, no PR opened. See the Phase 1 checklist below for what step 3
+covers and the commit-by-commit design trail.
 
-The `pr-reviewer` subagent (`.claude/agents/reviewer.md`) reviewed PR #2 and
-found 4 blocking issues, all now fixed with tests, one commit each, and
-pushed:
-- Email casing/whitespace wasn't normalized — bypassed the request-otp rate
-  limit via case variation and risked duplicate `User` rows. Fixed by
-  normalizing once in a shared Zod schema (`fe7f220`).
-- `POST /auth/verify-otp` had no rate limiting at all. Added a 10/15min
-  per-IP+email limit (looser than request-otp's 3/15min since the DB-level
-  `failedAttempts` cap is the primary defense) — this number was picked by
-  Claude, not explicitly specified by the user, flagging per CLAUDE.md's
-  "don't invent details" rule (`1ca64ec`).
-- `OtpCode.failedAttempts` was incremented via read-then-write, letting
-  concurrent guesses race past the 5-attempt cap. Fixed with Prisma's atomic
-  `increment` operator (`d8d3ca3`).
-- Refresh-token rotation had a TOCTOU race (revoked/expired check ran
-  outside the `$transaction`). Fixed with a conditional atomic `updateMany`
-  (`revoked: false`) inside the transaction (`42e7188`).
-
-A follow-up review confirmed all 4 fixes and approved the PR. Two more items
-from that follow-up were then addressed too:
-- Email normalization only lived at the route layer — `authService.requestOtp`/
-  `verifyOtp` now also normalize (`normalizeEmail` in `authService.ts`), so
-  the invariant holds for any future caller (GraphQL resolver, script) that
-  bypasses the REST route, not just today's one caller (`da46e1e`).
-- Added `@@index([userId])` on `RefreshToken` — `logoutAll` and any future
-  cleanup job filtering by `user_id` would've table-scanned as the table
-  grows (`4fffc3c`, migration `20260818082055_add_refresh_token_user_id_index`).
-
-**Deliberately deferred, with reasoning** (explicit user decision, not an
-oversight — revisit only if the threat model changes, e.g. this data stops
-being "just personal finance line items" and becomes something more
-sensitive):
-- **OTP `failedAttempts` cap converges to 5 under heavy concurrency rather
-  than being a hard ceiling** (read-checked pre-verify, then atomically
-  incremented post-verify — the check itself isn't locked). Not fixed:
-  the outer per-IP+email rate limit on `/auth/verify-otp` (10/15min) still
-  bounds total attempts regardless, and the data behind this auth isn't
-  considered high-value enough to justify the added complexity right now.
-- **Timing side-channel on verify-otp's `not_found` path** (fast-paths
-  before the constant-time-ish argon2.verify, letting a caller infer
-  whether an email has a pending OTP). Not fixed: `request-otp` already
-  lets anyone probe any email with no auth at all, so this leaks little
-  beyond what's already exposed, and low-value data doesn't justify it.
-
-Remaining nitpicks from the same reviews, not acted on: `tokenHash` not
-`@unique`, no refresh-token-reuse detection, PR bundling unrelated
-`.claude/` changes, no explicit `algorithms: ['HS256']` allowlist in
-`jwtVerify`, no upper bound on email/refreshToken field lengths,
-unconfirmed zod v4 `.email()` deprecation — low-value, still backlog if
-ever wanted.
+Before any code, step 3 got an extensive "grill me" pass that materially
+changed the shape of `plan.md` itself (not just this step's scope) — see
+`plan.md`'s "Month Lifecycle" section and its Data Model section for
+`budget_months`/`categories`/`category_month`. Key decisions, in case the
+reasoning is needed later:
+- Categories split into a pure catalog (`categories`, transversal, no
+  month-awareness) plus a real join (`category_month`) that owns all
+  month-scoped state — row existence *is* activation, budget lives there
+  not on the catalog row.
+- Every month reference in the schema (`category_month`, later
+  `recurring_expense_instances`, `income_sources`) resolves through one
+  real `budget_months` row via `month_id`, not a repeated `YYYY-MM`
+  string — `budget_months` had to move up to this step instead of step 5
+  for that reason alone.
+- `category_month` and `transactions` ended up **hard-deleted, no undo**
+  — a deliberate simplification partway through the session, reversing an
+  earlier soft-delete-everywhere decision, because keeping `transactions`
+  soft-deleted while `category_month` was hard-deleted would let a
+  soft-deleted transaction dangle on a `category_month_id` that no longer
+  exists. `categories`' own catalog-level soft delete is unaffected.
+  `recurring_expense_instances` is flagged as an open question for step
+  4's own interview (structurally analogous, might want the same
+  treatment).
+- `Transaction.direction` is entirely server-derived (dropped from
+  `TransactionInput`) now that a transaction can only ever reach one
+  category with one fixed direction via `category_month`.
 
 Next actions, in order:
-1. Wait for PR #2 review/approval — do not merge, do not start step 3 work
-   on this branch or a new one until it's approved, per `CLAUDE.md`'s git
-   workflow.
-2. Once PR #2 is approved and merged into `develop` by the user: sync local
-   `develop`, branch `feature/categories-transactions` (or similar) from
-   it, and start Build Order step 3 with the usual "grill me" interview
-   first — don't jump straight to code.
+1. Review the diff on `feature/categories-transactions` (or ask for a
+   `pr-reviewer` pass, as was done for PR #2).
+2. Open the PR (`feature/categories-transactions` → `develop`) when ready,
+   then wait for review/approval per `CLAUDE.md`'s git workflow — don't
+   merge, don't start step 4 on this branch or a new one until approved.
+3. Once merged: sync `develop`, branch for step 4 (Recurring expenses),
+   and start with the usual "grill me" interview — it still needs its own
+   design pass; the `RecurringExpense` GraphQL type and the
+   `recurring_expense_templates`/`recurring_expense_instances` split are
+   sketched in `plan.md` but explicitly flagged not-yet-grilled.
 
 ## Phase 1 — Backend
 
@@ -90,15 +72,38 @@ Next actions, in order:
       GraphQL context. Email delivery via a console-log `EmailService` (real
       provider deferred, per plan.md). Manually smoke-tested end to end
       against real Postgres. → branch `feature/auth-otp`.
-- [ ] **3. Categories + Transactions** — types, queries, mutations, scoped by
-      user; DataLoader for `Category.transactions`.
-- [ ] **4. Recurring expenses** — CRUD + `markRecurringPaid`; `paidThisMonth`
-      computed, not stored.
-- [ ] **5. Savings funds + movements** — CRUD + `addSavingsMovement` updating
+- [x] **3. Categories + Transactions** — `budget_months` (schema only, `locked`
+      inert until step 5), `categories` (pure catalog), `category_month` (the
+      real join — row existence = active, budget lives here, hard-deleted,
+      `@@unique([categoryId, monthId])`, `onDelete: Restrict` everywhere as a
+      DB-level backstop), `transactions` (FK to `category_month` not
+      `category` — structurally enforces "must be active that month"; hard-
+      deleted, `direction` server-derived). Four services (`budgetMonthService`,
+      `categoryService`, `categoryMonthService`, `transactionService`),
+      129 Jest tests including three tests that seed a `locked: true` row
+      directly to prove the locked-month guard works before step 5 has any
+      mutation that sets it. Full GraphQL schema/resolvers/DataLoaders
+      (`category`/`categoryMonth`/`budgetMonth`/`transactionsByCategoryMonthId`),
+      per-field `requireUserId` auth checks, service errors mapped to
+      `GraphQLError` with a stable `extensions.code`. Manually smoke-tested
+      end to end against real Postgres (full mutation/query lifecycle +
+      duplicate-add rejection + blocked/then-allowed delete + unauthenticated
+      rejection). → branch `feature/categories-transactions`, not yet a PR.
+- [ ] **4. Recurring expenses** — CRUD on `recurring_expense_templates` +
+      generation of `recurring_expense_instances`; `markRecurringPaid`;
+      `paidThisMonth` computed, not stored. Needs its own "grill me" pass —
+      not yet interviewed.
+- [ ] **5. Month lifecycle** — carry-forward (with budget-inheritance for
+      `category_month`), month locking + auto-lock cascade for empty months,
+      recurring-template edit propagation, soft-delete + undo for the
+      entities that still have it. Depends on steps 3 and 4 both being done.
+- [ ] **6. Savings funds + movements** — CRUD + `addSavingsMovement` updating
       `currentAmountCents`; DataLoader for `SavingsFund.movements`.
-- [ ] **6. Income sources** — CRUD.
-- [ ] **7. Seed script** — real categories/funds from the Excel tracker.
-- [ ] **8. Basic tests** — auth boundary tests (user A can't read user B's
+- [ ] **7. Income sources** — CRUD; `income_sources.month_id` already
+      designed to reference `budget_months`, per step 3's month-modeling
+      decision.
+- [ ] **8. Seed script** — real categories/funds from the Excel tracker.
+- [ ] **9. Basic tests** — auth boundary tests (user A can't read user B's
       data), one DataLoader batching check.
 
 ## Phase 2 — Mobile app
