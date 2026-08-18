@@ -241,6 +241,51 @@ describe('POST /auth/verify-otp', () => {
     await app.close();
   });
 
+  it('rate-limits after 10 requests for the same IP + email within the window', async () => {
+    const authService = fakeAuthService();
+    const app = await buildTestApp(authService);
+
+    for (let i = 0; i < 10; i++) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/auth/verify-otp',
+        payload: { email: 'user@example.com', code: 'K7QXF3' },
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const limited = await app.inject({
+      method: 'POST',
+      url: '/auth/verify-otp',
+      payload: { email: 'user@example.com', code: 'K7QXF3' },
+    });
+    expect(limited.statusCode).toBe(429);
+
+    await app.close();
+  });
+
+  it('does not rate-limit a different email from the same IP', async () => {
+    const authService = fakeAuthService();
+    const app = await buildTestApp(authService);
+
+    for (let i = 0; i < 10; i++) {
+      await app.inject({
+        method: 'POST',
+        url: '/auth/verify-otp',
+        payload: { email: 'user@example.com', code: 'K7QXF3' },
+      });
+    }
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/verify-otp',
+      payload: { email: 'someone-else@example.com', code: 'K7QXF3' },
+    });
+    expect(response.statusCode).toBe(200);
+
+    await app.close();
+  });
+
   it.each([
     ['not_found', 'code_not_found'],
     ['expired', 'code_expired'],

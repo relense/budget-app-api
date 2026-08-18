@@ -11,6 +11,18 @@ import {
 const OTP_RATE_LIMIT_MAX = 3;
 const OTP_RATE_LIMIT_WINDOW = '15 minutes';
 
+// Looser than the request-otp cap: the failedAttempts column already caps
+// guesses per code at 5, this is a secondary per-IP+email backstop against
+// brute-forcing across many codes/emails, not the primary defense.
+const OTP_VERIFY_RATE_LIMIT_MAX = 10;
+const OTP_VERIFY_RATE_LIMIT_WINDOW = '15 minutes';
+
+function emailRateLimitKeyGenerator(request: { ip: string; body: unknown }): string {
+  const body = request.body as { email?: string } | undefined;
+  const normalizedEmail = (body?.email ?? '').trim().toLowerCase();
+  return `${request.ip}:${normalizedEmail}`;
+}
+
 const emailSchema = z.string().trim().toLowerCase().email();
 
 const requestOtpSchema = z.object({
@@ -61,11 +73,7 @@ export async function registerAuthRoutes(
           max: OTP_RATE_LIMIT_MAX,
           timeWindow: OTP_RATE_LIMIT_WINDOW,
           hook: 'preHandler',
-          keyGenerator: (request) => {
-            const body = request.body as { email?: string } | undefined;
-            const normalizedEmail = (body?.email ?? '').trim().toLowerCase();
-            return `${request.ip}:${normalizedEmail}`;
-          },
+          keyGenerator: emailRateLimitKeyGenerator,
         },
       },
     },
@@ -80,27 +88,40 @@ export async function registerAuthRoutes(
     },
   );
 
-  app.post('/auth/verify-otp', async (request, reply) => {
-    const parsed = verifyOtpSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: 'validation_error', issues: parsed.error.issues });
-    }
-
-    try {
-      const { tokens, user } = await authService.verifyOtp(parsed.data);
-      return reply.status(200).send({ ...tokens, user });
-    } catch (error) {
-      if (error instanceof OtpVerificationError) {
-        return reply.status(401).send({
-          error: OTP_ERROR_CODE[error.reason],
-          ...(error.attemptsRemaining !== undefined
-            ? { attemptsRemaining: error.attemptsRemaining }
-            : {}),
-        });
+  app.post(
+    '/auth/verify-otp',
+    {
+      config: {
+        rateLimit: {
+          max: OTP_VERIFY_RATE_LIMIT_MAX,
+          timeWindow: OTP_VERIFY_RATE_LIMIT_WINDOW,
+          hook: 'preHandler',
+          keyGenerator: emailRateLimitKeyGenerator,
+        },
+      },
+    },
+    async (request, reply) => {
+      const parsed = verifyOtpSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'validation_error', issues: parsed.error.issues });
       }
-      throw error;
-    }
-  });
+
+      try {
+        const { tokens, user } = await authService.verifyOtp(parsed.data);
+        return reply.status(200).send({ ...tokens, user });
+      } catch (error) {
+        if (error instanceof OtpVerificationError) {
+          return reply.status(401).send({
+            error: OTP_ERROR_CODE[error.reason],
+            ...(error.attemptsRemaining !== undefined
+              ? { attemptsRemaining: error.attemptsRemaining }
+              : {}),
+          });
+        }
+        throw error;
+      }
+    },
+  );
 
   app.post('/auth/refresh', async (request, reply) => {
     const parsed = refreshSchema.safeParse(request.body);
