@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { createRecurringExpenseTemplateService } from './recurringExpenseTemplateService.js';
-import { createFakePrisma } from './testFakePrisma.js';
+import { createFakePrisma } from '../categories/testFakePrisma.js';
 
 function setup() {
   const prisma = createFakePrisma();
