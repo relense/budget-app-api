@@ -2,6 +2,27 @@
 
 Tracks status against `plan.md`'s Build Order. Updated as each step lands.
 
+## Where we left off (2026-08-18)
+
+On branch `feature/auth-otp`, PR #2 (`feature/auth-otp` → `develop`) is
+**open and waiting for review** — https://github.com/relense/budget-app-api/pull/2.
+Working tree is clean, local is in sync with `origin/feature/auth-otp`.
+Nothing is blocking except the review itself.
+
+Next actions, in order:
+1. Wait for PR #2 review/approval — do not merge, do not start step 3 work
+   on this branch or a new one until it's approved, per `CLAUDE.md`'s git
+   workflow.
+2. A `pr-reviewer` subagent now exists at `.claude/agents/reviewer.md`
+   (added by the user, read-only Sonnet agent, 12-point checklist) — use it
+   to review PR #2 if asked, once it shows up as an available agent type in
+   a fresh session (it didn't appear in the session that discovered it,
+   since agent definitions load at session start).
+3. Once PR #2 is approved and merged into `develop` by the user: sync local
+   `develop`, branch `feature/categories-transactions` (or similar) from
+   it, and start Build Order step 3 with the usual "grill me" interview
+   first — don't jump straight to code.
+
 ## Phase 1 — Backend
 
 - [x] **0. Ground truth** — `CLAUDE.md`, `GLOSSARY.md`, `plan.md`, `SCALING.md` committed.
