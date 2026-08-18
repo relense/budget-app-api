@@ -1,0 +1,55 @@
+import { describe, expect, it } from '@jest/globals';
+import { createBudgetMonthService } from './budgetMonthService.js';
+import { createFakePrisma } from './testFakePrisma.js';
+
+function setup() {
+  const prisma = createFakePrisma();
+  const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
+  return { prisma, budgetMonthService };
+}
+
+describe('resolveBudgetMonthId', () => {
+  it('creates a new BudgetMonth when none exists yet', async () => {
+    const { prisma, budgetMonthService } = setup();
+
+    const id = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+
+    expect(prisma.budgetMonths).toHaveLength(1);
+    expect(prisma.budgetMonths[0]).toMatchObject({
+      id,
+      userId: 'user-1',
+      month: '2026-08',
+      locked: false,
+    });
+  });
+
+  it('returns the existing id instead of creating a duplicate', async () => {
+    const { prisma, budgetMonthService } = setup();
+
+    const firstId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    const secondId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+
+    expect(secondId).toBe(firstId);
+    expect(prisma.budgetMonths).toHaveLength(1);
+  });
+
+  it('gives different users independent BudgetMonth rows for the same month string', async () => {
+    const { prisma, budgetMonthService } = setup();
+
+    const userOneId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    const userTwoId = await budgetMonthService.resolveBudgetMonthId('user-2', '2026-08');
+
+    expect(userOneId).not.toBe(userTwoId);
+    expect(prisma.budgetMonths).toHaveLength(2);
+  });
+
+  it('gives the same user independent BudgetMonth rows across years', async () => {
+    const { prisma, budgetMonthService } = setup();
+
+    const id2026 = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    const id2027 = await budgetMonthService.resolveBudgetMonthId('user-1', '2027-08');
+
+    expect(id2026).not.toBe(id2027);
+    expect(prisma.budgetMonths).toHaveLength(2);
+  });
+});
