@@ -43,22 +43,29 @@ Actual spending/income entries.
 
 ## 5. Recurring expenses ("Contas" — Rent, Netflix, etc.)
 
-*Currently the most layered part of the app — under active discussion for
-simplification.*
+One flat row per recurring expense per month it exists in — name, category,
+amount, due day, and paid-or-not (via a linked transaction). No separate
+"template" — that split was tried, then dropped (see `PLAN.md`'s Data Model
+section for the reasoning).
 
-- Step A: create the **template** — the reusable definition ("Rent, 800€,
-  category: Housing, due day 1"). Also auto-activates Housing for the month
-  if needed, and creates the first month's **instance**.
-- Step B, every following month: "add this recurring expense to the month"
-  — creates a new **instance** for that month, copying the template's
-  current amount (unless overridden).
-- Mark an instance paid → creates a transaction linked to it. Callable more
-  than once per instance for split payments (e.g. rent paid in two chunks);
-  tracks whether the total paid covers the full amount.
-- Edit the template (changes the default for *future new* instances only)
-  or edit one instance directly (just that month's amount).
-- Delete a template or remove an instance from a month (blocked if a
-  transaction already points at it).
+- Create one directly, for a given month: also auto-activates its category
+  for that month if needed, same "no dormant state" rule categories don't
+  get.
+- Moving to a new month **automatically** copies the previous month's list
+  forward (fresh, unpaid) — no per-item opt-in, and no link between one
+  month's row and the next month's copy (each is fully independent).
+  Whichever action first touches a brand-new month — adding a category or
+  creating a new recurring expense — triggers this, not just locking.
+- Mark one paid → creates a transaction linked to it. Callable more than
+  once for split payments (e.g. rent paid in two chunks); tracks whether
+  the total paid covers the full amount.
+- Edit one directly (name/category/budget type/due day/amount, all
+  together) — only ever changes that one month's row. No "apply to future
+  months too?" question, since there's no template default to reconcile
+  against.
+- Remove one from a month (blocked if a transaction already points at it).
+  The same name can't exist twice in the same month, but can repeat across
+  different months (e.g. "Rent" every month).
 
 ## 6. Savings funds
 
@@ -67,27 +74,3 @@ Not built yet — backlog item.
 ## 7. Income sources
 
 Expected vs. actual salary/income per month. Not built yet — backlog item.
-
----
-
-## Recurring expenses: redesign decided, not yet built
-
-Everything else in the app (categories, months, transactions) is a single
-flat thing you create/edit directly. Recurring expenses were the one place
-with two layers — a transversal "template" plus a per-month "instance" —
-mirroring the Category/CategoryMonth split. That split has been dropped:
-
-- A recurring expense is now one flat row that lives *in* a month — name,
-  category, budget amount, due day, and paid-or-not (via a linked
-  transaction), same as before.
-- Moving to a new month **automatically** copies last month's list forward
-  (fresh, unpaid) — no per-item opt-in, and no link between one month's row
-  and the next month's copy (each is fully independent).
-- Editing a row only ever changes that one month — there's no more "apply
-  this to future months too?" question, since there's no template default
-  to reconcile against.
-
-See `PLAN.md`'s Data Model section and `GLOSSARY.md`'s Recurring Expense
-entry for the full shape, and `PROGRESS.md` for build status — this is
-decided but not implemented yet; the code currently in `develop` (and
-`SERVICES.md`) still reflects the old template/instance design.
