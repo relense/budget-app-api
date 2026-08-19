@@ -2,7 +2,7 @@
 
 Tracks status against `plan.md`'s Build Order. Updated as each step lands.
 
-## Where we left off (2026-08-18)
+## Where we left off (2026-08-19)
 
 PR #2 (auth/OTP) and PR #3 (`feature/categories-transactions`, Build Order
 step 3) are both reviewed, approved, and merged into `develop`. After PR #3
@@ -16,41 +16,71 @@ Build Order step 4 (Recurring expenses) got its own extensive "grill me"
 pass (see `plan.md`'s Data Model section for `recurring_expense_templates`/
 `recurring_expense_instances`, and its "Recurring expenses vs. transactions",
 "Recurring expenses are not categories", and "Category activation is
-automatic for recurring expenses" prose sections) and is now fully
-implemented — service layer, GraphQL layer, and a real-Postgres smoke test —
-on branch `feature/recurring-expenses`, not yet pushed/PR'd. Key decisions
-from that interview, in case the reasoning is needed later:
-- `recurring_expense_templates` (soft-deleted, transversal — same shape as
-  `categories`) + `recurring_expense_instances` (hard-deleted, FK to
-  `budget_months` via `month_id` — same shape as `category_month`): a
+automatic for recurring expenses" prose sections) and is implemented —
+service layer, GraphQL layer, real-Postgres smoke tests. PR #4
+(`feature/recurring-expenses` → `develop`) is open, pushed, and has been
+through two `pr-reviewer` rounds — round 1 found no blocking issues but
+three suggestions, fixed; round 2 (verifying those fixes) found the
+`createTemplateForMonth` fix had actually introduced a worse regression
+(committed a real, budgeted `CategoryMonth` before validating the
+template's own input) — fixed by validating first. Key decisions, in case
+the reasoning is needed later:
+- `recurring_expense_templates` + `recurring_expense_instances`: a
   recurring expense is its own identity, explicitly *not* a category, even
   though creating/adding one to a month auto-activates its (existing)
   category for that month — the one deliberate exception to categories'
   otherwise-always-manual activation rule.
 - No derived default for the auto-created `category_month`'s budget —
   `categoryMonthlyBudgetCents` must be given explicitly when activation
-  actually creates a new row. A category like Housing can bundle a fixed
-  recurring expense (rent) with variable ones (gas, electricity); deriving
-  the budget from any single recurring expense's `amountCents` would be
-  wrong on its face.
-- Recurring expenses allow **split payments**: `transactions.recurring_
-  expense_instance_id` has no uniqueness constraint, and `paidThisMonth` is
+  actually creates a new row.
+- Recurring expenses allow **split payments**: `paidThisMonth` is
   `SUM(linked transactions.amountCents) >= instance.amountCents`, not "any
   payment exists."
 - `CategoryMonth.recurringCommittedCents` (computed, GraphQL-only) sums a
-  category's active recurring expenses for the month, specifically so a
-  future mobile "match budget to recurring total" action can read this and
-  feed it straight into `updateCategoryMonthBudget` — flagged under
-  plan.md's "Notes for Claude Code" so it isn't lost before Phase 2.
+  category's active recurring expenses for the month, for a future mobile
+  "match budget to recurring total" action — flagged under plan.md's
+  "Notes for Claude Code" so it isn't lost before Phase 2.
+- **Soft-delete + undo dropped for `categories` and
+  `recurring_expense_templates`**, mid-review-cycle, on an explicit user
+  call: either something can be deleted (nothing references it, ever) or
+  it's permanently blocked by what references it — no third "soft-deleted
+  but still around" state, for any entity built so far. Every entity that
+  exists in the schema as of step 4 is now hard-deleted, no undo (see
+  plan.md's "Soft delete + undo" paragraph). `recurring_expense_templates`
+  dropped `deleted_at` this step (migration
+  `20260819064613_recurring_expense_template_hard_delete`); `categories`'
+  own `deleted_at` removal is **out of scope for this branch** — flagged as
+  the next follow-up, its own branch/PR against `develop`, since `categories`
+  is already-merged code from step 3.
+- **Closing a real concurrency gap surfaced two review rounds in**:
+  `updateRecurringExpenseTemplate`'s new categoryId-change guard raced
+  against instance creation for the same template. A first attempt (lock
+  the template row right before the instance insert) *looked* right but
+  was empirically proven broken — a 40-trial real-Postgres concurrent test
+  showed 100% inconsistent results, because the category-to-activate
+  decision was read *before* the lock, not inside it. The actual fix
+  required threading a transactional client through
+  `budgetMonthService.resolveBudgetMonthId` and
+  `categoryMonthService.ensureActiveForCategory` (both gained a standalone,
+  client-parameterized variant, same pattern as `assertOwnedCategory`), so
+  the whole "lock → re-read category → activate → insert" sequence runs in
+  one real transaction. Re-verified with the same real-Postgres test: 150
+  trials, 0 inconsistent. `recurringExpenseInstanceService` no longer
+  depends on `categoryMonthService`/`templateService` at all as a result —
+  it does its own locked reads/writes now. The in-memory fake Prisma also
+  gained real rollback-on-throw simulation for `$transaction`, since
+  production code now genuinely depends on that semantics, not just on
+  which calls get made.
 
 Next actions, in order:
-1. Push `feature/recurring-expenses`, open a PR into `develop`, run the
-   `pr-reviewer` subagent, and address findings per the usual multi-round
-   pattern from steps 2 and 3.
-2. Wait for human review/approval per `CLAUDE.md`'s git workflow — don't
-   merge, don't start step 5 until approved.
-3. Once merged: sync `develop`, branch for step 5 (Month lifecycle), and
-   start with its own "grill me" interview.
+1. Wait for human review/approval on PR #4 per `CLAUDE.md`'s git
+   workflow — don't merge, don't start step 5 until approved.
+2. Separately: branch off `develop` for `categories`' soft→hard delete
+   follow-up (drop `deleted_at`, update `categoryService`/
+   `categoryMonthService` and their tests) — its own PR, not bundled into
+   step 4.
+3. Once both are merged: sync `develop`, branch for step 5 (Month
+   lifecycle), and start with its own "grill me" interview.
 
 ## Phase 1 — Backend
 
@@ -98,39 +128,58 @@ Next actions, in order:
       rejection, malformed-month rejection). → PR #3
       (`feature/categories-transactions` → `develop`), reviewed
       (4 rounds) and merged.
-- [x] **4. Recurring expenses** — `recurring_expense_templates` (soft-deleted,
-      transversal catalog, budget_type restricted to `need`/`want` — `savings`
-      rejected at runtime via `invalid_budget_type`) + `recurring_expense_
-      instances` (hard-deleted, FK to `budget_months`, `@@unique([templateId,
-      monthId])`). Two services: `recurringExpenseTemplateService` (create/
-      update/delete — delete blocked while any instance exists anywhere, past
-      or future) and `recurringExpenseInstanceService` (`createTemplateForMonth`
-      returns `{ template, instance }`; `addRecurringExpenseToMonth` reuses a
-      template into a new month; both auto-activate the category for that
-      month via `categoryMonthService.ensureActiveForCategory`, a new
-      idempotent "ensure active, no derived budget default" primitive distinct
-      from `addCategoryToMonth`'s error-on-duplicate semantics; `updateInstance`,
-      `removeFromMonth` — blocked while any transaction references it;
-      `markRecurringPaid` — always creates a *new* `Transaction` linked via
-      `recurringExpenseInstanceId`, callable more than once per instance for
-      split payments; `sumCommittedCentsForCategoryMonth` backs the new
-      `CategoryMonth.recurringCommittedCents` computed field).
-      `transactionService` gained an internal-only third `create` param
-      (`recurringExpenseInstanceId`, never client-settable) and
-      `listByRecurringExpenseInstanceIds` for DataLoader use. 191 Jest tests
-      total (was 149 after step 3), the fake-Prisma double consolidated into
-      one shared file per composition graph rather than duplicated per
-      service directory (a lesson carried over from a step-3 review finding).
-      Full GraphQL schema/resolvers (`RecurringExpenseTemplate`/
-      `RecurringExpenseInstance` types, their inputs, all seven mutations,
-      both queries) and four new DataLoaders (`recurringExpenseTemplateById`,
-      `recurringExpenseInstanceById`, `transactionsByRecurringExpenseInstanceId`,
+- [x] **4. Recurring expenses** — `recurring_expense_templates` (**hard-deleted**,
+      transversal catalog — revised mid-review from an initial soft-delete
+      design, see "Where we left off" — budget_type restricted to
+      `need`/`want`, `savings` rejected at runtime via `invalid_budget_type`)
+      + `recurring_expense_instances` (hard-deleted, FK to `budget_months`,
+      `@@unique([templateId, monthId])`). Two services:
+      `recurringExpenseTemplateService` (create/update/delete — delete
+      blocked while any instance exists anywhere, past or future, backed by
+      a real `onDelete: Restrict` FK now that it's a hard delete;
+      `updateTemplate` blocks a `categoryId` change once any instance exists,
+      race-safe via `lockTemplateRow`'s `SELECT ... FOR UPDATE`) and
+      `recurringExpenseInstanceService` (`createTemplateForMonth` — template
+      create + category activation + instance create all in one real
+      transaction, returns `{ template, instance }`; `addRecurringExpenseToMonth`
+      reuses a template into a new month, locks the template row and
+      re-reads its category *inside* that lock before activating — see
+      "Where we left off" for why the lock has to cover that read, not just
+      the final insert; `updateInstance`, `removeFromMonth` — blocked while
+      any transaction references it; `markRecurringPaid` — always creates a
+      *new* `Transaction` linked via `recurringExpenseInstanceId`, callable
+      more than once per instance for split payments;
+      `sumCommittedCentsForCategoryMonth` backs the new
+      `CategoryMonth.recurringCommittedCents` computed field). No longer
+      depends on `categoryMonthService`/`templateService` as injected
+      services — does its own locked reads/writes via `ensureActiveForCategoryOnClient`
+      and `resolveBudgetMonthId`, both new standalone client-parameterized
+      functions (same pattern as `assertOwnedCategory`) exported from
+      `categoryMonthService`/`budgetMonthService` respectively, so the whole
+      activate-then-insert sequence can run inside one transaction instead
+      of on separately-bound connections. `transactionService` gained an
+      internal-only third `create` param (`recurringExpenseInstanceId`,
+      never client-settable) and `listByRecurringExpenseInstanceIds` for
+      DataLoader use. 199 Jest tests total (was 149 after step 3), the
+      fake-Prisma double consolidated into one shared file per composition
+      graph (a lesson carried over from a step-3 review finding) and
+      extended to actually simulate transaction rollback-on-throw, since
+      production code now depends on that. Full GraphQL schema/resolvers
+      (`RecurringExpenseTemplate`/`RecurringExpenseInstance` types, their
+      inputs, all seven mutations, both queries) and four new DataLoaders
+      (`recurringExpenseTemplateById`, `recurringExpenseInstanceById`,
+      `transactionsByRecurringExpenseInstanceId`,
       `recurringCommittedCentsByCategoryMonthId`). Manually smoke-tested end
-      to end against real Postgres (25 checks: full mutation/query lifecycle,
-      split-payment `paidThisMonth` transition, `SAVINGS` budgetType
-      rejection, duplicate-add rejection, cross-tenant rejection, blocked
-      delete/remove while referenced, unauthenticated rejection). →
-      `feature/recurring-expenses`, not yet pushed.
+      to end against real Postgres repeatedly across review rounds (full
+      mutation/query lifecycle, split-payment `paidThisMonth` transition,
+      `SAVINGS` budgetType rejection, duplicate-add rejection, cross-tenant
+      rejection, blocked delete/remove while referenced, unauthenticated
+      rejection, real hard-delete-once-unused), plus a dedicated 150-trial
+      concurrent-request test against real Postgres proving the
+      categoryId-change-vs-instance-creation race is actually closed, not
+      just correct in the (non-concurrent) fake. → PR #4
+      (`feature/recurring-expenses` → `develop`), open, reviewed (2 rounds),
+      awaiting human review.
 - [ ] **5. Month lifecycle** — carry-forward (with budget-inheritance for
       `category_month`), month locking + auto-lock cascade for empty months,
       recurring-template edit propagation, soft-delete + undo for the
