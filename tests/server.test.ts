@@ -1,7 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import type { Env } from './lib/env.js';
-import { buildServer } from './server.js';
-import type { AuthService } from './services/auth/authService.js';
+import type { Env } from '../src/lib/env.js';
+import { buildServer } from '../src/server.js';
+import type { AuthService } from '../src/services/auth/authService.js';
 
 const testEnv: Env = {
   NODE_ENV: 'test',
@@ -12,7 +12,7 @@ const testEnv: Env = {
 };
 
 function fakePrisma(queryRaw: () => Promise<unknown>) {
-  return { $queryRaw: queryRaw } as unknown as import('./lib/prisma.js').PrismaClient;
+  return { $queryRaw: queryRaw } as unknown as import('../src/lib/prisma.js').PrismaClient;
 }
 
 const authService: Pick<

@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { loadEnv } from './env.js';
+import { loadEnv } from '../../src/lib/env.js';
 
 const validEnv = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/budget_app',

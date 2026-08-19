@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { isValidMonthFormat } from './monthFormat.js';
+import { isValidMonthFormat } from '../../src/lib/monthFormat.js';
 
 describe('isValidMonthFormat', () => {
   it('accepts a well-formed YYYY-MM string', () => {

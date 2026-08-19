@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { SignJWT } from 'jose';
-import { signAccessToken, verifyAccessToken } from './jwt.js';
+import { signAccessToken, verifyAccessToken } from '../../src/lib/jwt.js';
 
 const SECRET = 'test-secret-at-least-32-bytes-long-for-hs256';
 

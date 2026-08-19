@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { createBudgetMonthService } from './budgetMonthService.js';
+import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
 import { createFakePrisma } from './testFakePrisma.js';
 
 function setup() {

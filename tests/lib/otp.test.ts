@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { generateOtpCode, hashOtpCode, OTP_CODE_REGEX, verifyOtpCode } from './otp.js';
+import { generateOtpCode, hashOtpCode, OTP_CODE_REGEX, verifyOtpCode } from '../../src/lib/otp.js';
 
 describe('generateOtpCode', () => {
   it('returns a 6-character code from the allowed alphanumeric alphabet', () => {

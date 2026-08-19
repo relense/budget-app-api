@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { createCategoryService } from './categoryService.js';
+import { createCategoryService } from '../../../src/services/categories/categoryService.js';
 import { createFakePrisma } from './testFakePrisma.js';
 
 function setup() {

@@ -1,9 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
-import { createBudgetMonthService } from '../budgetMonths/budgetMonthService.js';
-import { createCategoryMonthService } from './categoryMonthService.js';
-import { createCategoryService } from './categoryService.js';
+import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
+import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
+import { createCategoryService } from '../../../src/services/categories/categoryService.js';
 import { createFakePrisma } from './testFakePrisma.js';
-import { createTransactionService } from './transactionService.js';
+import { createTransactionService } from '../../../src/services/categories/transactionService.js';
 
 async function setup() {
   const prisma = createFakePrisma();
