@@ -145,6 +145,30 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
         throw new TransactionServiceError('transaction_not_found');
       }
 
+      // When categoryMonthId is changing to a different month, this
+      // transaction ends up locking two distinct budget_months rows (the
+      // transaction's current month, and the target month). Pre-lock every
+      // distinct row involved in a canonical (sorted) order, regardless of
+      // which is "old" and which is "new" — otherwise two concurrent
+      // updates swapping a transaction between the same two months in
+      // opposite directions could lock them in opposite orders and
+      // deadlock (Postgres aborts one with 40P01). The checks below
+      // re-lock the same rows via assertOwnedTransactionMonthNotLocked/
+      // loadCategoryMonthForWrite — harmless, a transaction can re-acquire
+      // a row lock it already holds.
+      const existingCategoryMonth = await tx.categoryMonth.findUnique({
+        where: { id: existing.categoryMonthId },
+      });
+      const targetCategoryMonth = await tx.categoryMonth.findUnique({
+        where: { id: input.categoryMonthId },
+      });
+      const monthIdsToLock = new Set<string>();
+      if (existingCategoryMonth) monthIdsToLock.add(existingCategoryMonth.monthId);
+      if (targetCategoryMonth) monthIdsToLock.add(targetCategoryMonth.monthId);
+      for (const monthId of Array.from(monthIdsToLock).sort()) {
+        await lockBudgetMonthRow(tx, monthId);
+      }
+
       // The transaction's current month must not be locked, regardless of
       // whether categoryMonthId is changing — a locked month's rows are
       // immutable, editing-out-of-it included.

@@ -405,6 +405,46 @@ means a normalized GraphQL client can't auto-merge cache updates after
 `lockMonth`/`deleteBudgetMonth` — flagged for whoever picks up the
 frontend, not a backend concern. 312 Jest tests total (was 311).
 
+`pr-reviewer` round 2 on PR #8: **needs changes** again — the core race
+(write vs. `lockMonth`) traced as correctly closed by hand, but this pass
+surfaced two more, narrower issues in the same class:
+1. **Deadlock risk, new to this round**: `transactionService.update`
+   can lock two *different* `budget_months` rows in one transaction when
+   `categoryMonthId` moves to a different month — the existing month's
+   row, then the target month's row, always in that "old, new" order.
+   Two concurrent `update` calls swapping a transaction between the same
+   two months in opposite directions would lock them in opposite orders
+   and deadlock (Postgres aborts one with `40P01`). Zero test coverage
+   existed for `update` actually moving a transaction across months at
+   all. Fixed: pre-lock every distinct `budget_months` row a given
+   `update` call touches, in canonical (sorted) order, before running the
+   existing checks (which harmlessly re-lock rows already held by the
+   same transaction). Added the missing cross-month tests. Verified
+   against real Postgres: 20 trials of two transactions swapped in
+   opposite directions concurrently, 0 deadlocks.
+2. **Uncaught raw error, narrower than it looks**: `addCategoryToMonth`/
+   `ensureActiveForCategoryOnClient` are the *only* two paths that create
+   the first-ever `category_month` for a month (every other path
+   operates on a month a `category_month`/`recurring_expense_instance`
+   already references, which — thanks to `onDelete: Restrict` — makes
+   deletion structurally impossible while they exist). For that one case,
+   `assertMonthNotLockedOnClient`'s `budgetMonth?.locked` check silently
+   treated "row was deleted" (null, so `?.locked` is `undefined`, falsy)
+   the same as "not locked," letting the caller fall through into an
+   uncaught FK violation on the insert if a concurrent `deleteBudgetMonth`
+   won the race for that same (previously-empty) month. Fixed: explicit
+   `!budgetMonth` branch throwing a new `budget_month_not_found` reason
+   (added to `CategoryMonthServiceErrorReason`), plus a P2003 catch as a
+   backstop (structurally unreachable once the explicit check holds the
+   lock for the rest of the transaction, but matches this file's
+   established pre-check-plus-FK-catch style elsewhere). Added the
+   regression test. Verified against real Postgres: 20 trials of
+   `addCategoryToMonth` racing `deleteBudgetMonth` for the same
+   never-before-activated month — every rejection came back as a clean
+   typed error, zero raw ones.
+
+315 Jest tests total (was 312).
+
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-locking`.
 2. Still to design/build: recurring-template edit propagation ("apply to

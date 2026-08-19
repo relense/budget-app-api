@@ -218,6 +218,59 @@ describe('update', () => {
       }),
     ).rejects.toMatchObject({ reason: 'transaction_not_found' });
   });
+
+  it('moves a transaction to a categoryMonth in a different month', async () => {
+    const { transactionService, categoryMonthService, expenseCategory, expenseCategoryMonth } =
+      await setup();
+    const septemberCategoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      expenseCategory.id,
+      '2026-09',
+      50000,
+    );
+    const transaction = await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 2500,
+      date: '2026-08-15',
+    });
+
+    const updated = await transactionService.update('user-1', transaction.id, {
+      categoryMonthId: septemberCategoryMonth.id,
+      amountCents: 2500,
+      date: '2026-09-01',
+    });
+
+    expect(updated.categoryMonthId).toBe(septemberCategoryMonth.id);
+  });
+
+  it('rejects moving a transaction into a different month that is locked, even though its current month is unlocked', async () => {
+    // Exercises the two-distinct-lock path (current month + target month
+    // are different budget_months rows) — this and the mirror case above
+    // are the only tests that move a transaction across months at all.
+    const { prisma, transactionService, categoryMonthService, expenseCategory, expenseCategoryMonth } =
+      await setup();
+    const septemberCategoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      expenseCategory.id,
+      '2026-09',
+      50000,
+    );
+    const septemberBudgetMonth = prisma.budgetMonths.find((bm) => bm.month === '2026-09')!;
+    septemberBudgetMonth.locked = true;
+    const transaction = await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 2500,
+      date: '2026-08-15',
+    });
+
+    await expect(
+      transactionService.update('user-1', transaction.id, {
+        categoryMonthId: septemberCategoryMonth.id,
+        amountCents: 2500,
+        date: '2026-09-01',
+      }),
+    ).rejects.toMatchObject({ reason: 'month_locked' });
+  });
 });
 
 describe('deleteTransaction', () => {

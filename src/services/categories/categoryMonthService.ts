@@ -11,6 +11,7 @@ export type CategoryMonthServiceErrorReason =
   | 'category_month_has_transactions'
   | 'category_month_budget_required'
   | 'month_locked'
+  | 'budget_month_not_found'
   | 'invalid_budget'
   | 'invalid_month';
 
@@ -96,7 +97,18 @@ async function assertMonthNotLockedOnClient(
 ): Promise<void> {
   await lockBudgetMonthRow(client, monthId);
   const budgetMonth = await client.budgetMonth.findUnique({ where: { id: monthId } });
-  if (budgetMonth?.locked) {
+  if (!budgetMonth) {
+    // Only reachable for a month with zero category_month rows so far —
+    // resolveBudgetMonthId guarantees the row exists before this runs, so
+    // it can only be gone if a concurrent deleteBudgetMonth won the race
+    // for this same row (it takes the identical lock first). Surfaced
+    // explicitly rather than treating "gone" the same as "not locked"
+    // (budgetMonth?.locked would be undefined, falsy) — that would let the
+    // caller fall through into an uncaught FK violation on the insert
+    // that follows instead of a clean, typed error.
+    throw new CategoryMonthServiceError('budget_month_not_found');
+  }
+  if (budgetMonth.locked) {
     throw new CategoryMonthServiceError('month_locked');
   }
 }
@@ -138,6 +150,16 @@ export async function ensureActiveForCategoryOnClient(
       // just return the winner instead of erroring.
       const winner = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
       if (winner) return winner;
+    }
+    // Belt-and-suspenders, not expected to actually trigger: once
+    // assertMonthNotLockedOnClient above passes, this transaction holds
+    // the row lock on budget_months for its own remaining lifetime, so a
+    // concurrent deleteBudgetMonth can't win the row and delete out from
+    // under this insert. Kept anyway, matching this file's established
+    // pre-check-plus-FK-catch pattern elsewhere, in case that ordering
+    // ever changes.
+    if (hasPrismaErrorCode(error, 'P2003')) {
+      throw new CategoryMonthServiceError('budget_month_not_found');
     }
     throw error;
   }
@@ -214,6 +236,13 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
       }
       if (hasPrismaErrorCode(error, 'P2002')) {
         throw new CategoryMonthServiceError('category_month_already_active');
+      }
+      // Belt-and-suspenders, same reasoning as ensureActiveForCategoryOnClient's
+      // identical catch — not expected to actually trigger once
+      // assertMonthNotLockedOnClient holds the row lock for the rest of
+      // this transaction.
+      if (hasPrismaErrorCode(error, 'P2003')) {
+        throw new CategoryMonthServiceError('budget_month_not_found');
       }
       throw error;
     }
