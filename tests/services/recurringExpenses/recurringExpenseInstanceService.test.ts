@@ -7,13 +7,20 @@ import { createRecurringExpenseInstanceService } from '../../../src/services/rec
 import { createRecurringExpenseTemplateService } from '../../../src/services/recurringExpenses/recurringExpenseTemplateService.js';
 import { createFakePrisma } from '../categories/testFakePrisma.js';
 
-async function setup() {
+// Fixed rather than the real clock — several tests below activate
+// categories in 2026-08/2026-09, and now that the one-month planning
+// horizon is enforced server-side (relative to "today"), leaving this on
+// the real clock would make those tests silently start failing once
+// wall-clock time drifts past 2026-09, for reasons unrelated to any actual
+// code change.
+async function setup(now: () => Date = () => new Date('2026-08-15T00:00:00.000Z')) {
   const prisma = createFakePrisma();
   const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
   const categoryService = createCategoryService({ prisma: prisma as never });
   const categoryMonthService = createCategoryMonthService({
     prisma: prisma as never,
     budgetMonthService,
+    now,
   });
   const templateService = createRecurringExpenseTemplateService({ prisma: prisma as never });
   const transactionService = createTransactionService({ prisma: prisma as never, budgetMonthService });
@@ -21,6 +28,7 @@ async function setup() {
     prisma: prisma as never,
     budgetMonthService,
     transactionService,
+    now,
   });
 
   const housing = await categoryService.createCategory('user-1', {
@@ -110,6 +118,20 @@ describe('createTemplateForMonth', () => {
         90000,
       ),
     ).rejects.toMatchObject({ reason: 'month_locked' });
+    expect(prisma.recurringExpenseTemplates).toHaveLength(0);
+  });
+
+  it('throws category_month_beyond_planning_horizon without creating an orphaned template — the shared planning-horizon check applies to the auto-activation path too', async () => {
+    const { prisma, instanceService, housing } = await setup();
+
+    await expect(
+      instanceService.createTemplateForMonth(
+        'user-1',
+        { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+        '2026-10',
+        90000,
+      ),
+    ).rejects.toMatchObject({ reason: 'category_month_beyond_planning_horizon' });
     expect(prisma.recurringExpenseTemplates).toHaveLength(0);
   });
 

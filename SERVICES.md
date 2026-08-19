@@ -75,22 +75,47 @@ a future change to this rule can't silently drift from what gets seeded.
 ### `categoryMonthService` — `src/services/categories/categoryMonthService.ts`
 
 The real per-month join — a category is "active" in a month iff a row
-exists here. Owns the month's budget. Deps: `prisma`, `budgetMonthService`.
+exists here. Owns the month's budget. Deps: `prisma`, `budgetMonthService`,
+`now?` (defaults to the real clock; overridable for tests).
 
 | Function | Does |
 |---|---|
 | `listByMonth(userId, month)` | Every active category for that month. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
-| `addCategoryToMonth(userId, categoryId, month, monthlyBudgetCents?)` | Explicit activation; errors if already active that month (`category_month_already_active`). `monthlyBudgetCents` is optional — inherits the category's most recent (by real calendar month, not insertion order) `category_month`'s budget when omitted, or throws `category_month_budget_required` if this category has never been active anywhere yet. |
-| `ensureActiveForCategory(userId, categoryId, month, monthlyBudgetCents?)` | Idempotent — returns the existing row if already active. Same budget-inheritance rule as `addCategoryToMonth` when it actually creates one. Used by recurring-expense auto-activation. |
+| `addCategoryToMonth(userId, categoryId, month, monthlyBudgetCents?)` | Explicit activation; errors if already active that month (`category_month_already_active`). `monthlyBudgetCents` is optional — inherits the category's most recent (by real calendar month, not insertion order) `category_month`'s budget when omitted, or throws `category_month_budget_required` if this category has never been active anywhere yet. Rejects a genuinely new activation more than one month past the derived current month (`category_month_beyond_planning_horizon`) — see below. |
+| `ensureActiveForCategory(userId, categoryId, month, monthlyBudgetCents?)` | Idempotent — returns the existing row if already active (no planning-horizon check in that case — pre-provisioned activations are never retroactively rejected). Same budget-inheritance rule as `addCategoryToMonth` when it actually creates one. Used by recurring-expense auto-activation. |
 | `removeCategoryFromMonth(userId, categoryMonthId)` | Hard delete, blocked while any transaction references it that month. |
 | `updateCategoryMonthBudget(userId, categoryMonthId, monthlyBudgetCents)` | This month's budget only. |
 
-Also exports **`ensureActiveForCategoryOnClient(client, userId, categoryId, month, monthlyBudgetCents?)`**
+Also exports **`ensureActiveForCategoryOnClient(client, userId, categoryId, month, monthlyBudgetCents?, now?)`**
 standalone — lets a caller with its own open transaction (e.g.
 `recurringExpenseInstanceService`) run activation as part of that
 transaction, so a row lock taken earlier in the same transaction actually
 protects this step too.
+
+**Planning horizon.** A category can never be newly activated outside
+`[current, current + 1]` — the derived "current" month itself, or the one
+right after it, never further ahead and never in the past (see
+`budgetMonthService` below for "current") — plan.md's Month Lifecycle rule,
+enforced server-side via `assertWithinPlanningHorizon(currentMonth, month)`.
+It's a pure sync comparison, not a query — every call site must derive
+`currentMonth` via `findCurrentMonthOnClient` itself, and must do so
+*before* calling `resolveBudgetMonthId` for the target month:
+`resolveBudgetMonthId` upserts (permanently creates) a `BudgetMonth` row for
+that month, and since a freshly created row is always unlocked, calling it
+ahead of the check would let a rejected month leak a permanent row anyway.
+For a rejected *past* month specifically, that stray row would go on to
+become the new "earliest unlocked" row itself — silently dragging "current"
+backwards for every later call this user makes, no concurrency required.
+(This was caught by `pr-reviewer` before merge, via exactly that two-call
+sequential repro — not a race, a deterministic bug in the original
+future-only version of this check.) `ensureActiveForCategoryOnClient`
+determines the idempotent-return case (category already active this month)
+via a read-only `budgetMonth.findUnique` lookup, specifically so that path
+also never triggers `resolveBudgetMonthId`'s upsert before the horizon
+check has had a chance to reject. Exported standalone so
+`recurringExpenseInstanceService`'s auto-activation path enforces the
+identical rule, not a separately-maintained copy.
 
 ### `transactionService` — `src/services/categories/transactionService.ts`
 

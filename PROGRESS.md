@@ -530,14 +530,162 @@ integration-test infrastructure at all yet. Worth deciding deliberately
 (new test category, Postgres-in-CI implications) rather than bolting on
 unprompted — flagging for the user to weigh in on, not doing it silently.
 
+Third increment, on `feature/planning-horizon` (branched off
+`feature/month-locking`, not `develop` — depends on that PR's still-unmerged
+`findCurrentMonthOnClient`): server-side enforcement of the one-month
+planning horizon flagged as outstanding in PR #7 and PR #8's history above.
+Added `addMonths(month, delta)` to `monthFormat.ts`. New
+`assertWithinPlanningHorizon(currentMonth, month)` in `categoryMonthService`
+— a pure sync comparison against an already-derived current month, throwing
+the new `category_month_beyond_planning_horizon` reason. Wired into
+`addCategoryToMonth` (unconditionally) and the shared
+`ensureActiveForCategoryOnClient` (only when actually creating a new
+activation — the existing "already active" idempotent-return path is
+exempt, so a pre-provisioned month is never retroactively rejected), which
+means `recurringExpenseInstanceService`'s auto-activation path inherits the
+identical rule for free. `now` threaded through both services' deps for
+testability, matching the existing `authService`/`budgetMonthService`
+pattern.
+
+Caught a real bug myself before any review: `assertWithinPlanningHorizon`
+originally derived "current month" internally, on the same client, after
+`resolveBudgetMonthId` had already run for the target month.
+`resolveBudgetMonthId` upserts (permanently creates) a `BudgetMonth` row —
+and a freshly created row is always unlocked, so it would itself become the
+"earliest unlocked" row `findCurrentMonthOnClient` picks up whenever no
+other unlocked month exists yet, making current == the very month being
+checked and the horizon check self-satisfying for exactly the case (a
+brand-new activation, no prior unlocked months) it most needed to catch.
+First caught by a new test — `addCategoryToMonth('2026-10', ...)` against a
+fresh user was expected to reject but silently succeeded. Fixed by
+capturing `current` *before* `resolveBudgetMonthId` runs at both call sites
+and turning `assertWithinPlanningHorizon` into a plain sync function taking
+the already-derived value, rather than a client/`now`-taking async one that
+could re-derive it at the wrong moment. The TOCTOU gap this leaves between
+capturing `current` and the later insert is safe to leave open: current can
+only advance (via an explicit `lockMonth`), never retreat, so a race can
+only make the check *more* permissive by execution time than it was at the
+capture point, never less — no invariant this check protects can be
+violated by using a slightly stale value. This reasoning hasn't been
+reviewer-scrutinized yet, unlike the near-identical claim in PR #8's
+history, which is exactly why it's called out explicitly here rather than
+assumed settled.
+
+Also fixed a broader, previously-latent test-suite bug surfaced while
+chasing the above: most of the existing test suite's hardcoded month
+literals (`'2026-08'`, `'2026-09'`) only ever passed because the real
+wall-clock date happened to fall inside that window when tests defaulted to
+the real clock — not because anything pinned it. Left alone, the whole
+suite would have started silently failing once real time passed September
+2026, for reasons unrelated to any code change. Injected a fixed
+`now = () => new Date('2026-08-15T00:00:00.000Z')` into
+`categoryMonthService.test.ts`'s, `transactionService.test.ts`'s, and
+`recurringExpenseInstanceService.test.ts`'s `setup()` functions (matching
+`budgetMonthService.test.ts`'s existing pattern), even though only the
+first was visibly failing — the other two were equally fragile, just not
+caught yet. Two pre-existing "inherits by real calendar month, not
+insertion order" tests (in `addCategoryToMonth` and `ensureActiveForCategory`)
+had to be rewritten: their premise — activating one category across three
+non-contiguous months via chained live service calls with no locking in
+between — is no longer something a real user could produce once the
+horizon is enforced. Rewrote both to push pre-locked historical
+`BudgetMonth`/`CategoryMonth` fixture rows directly (bypassing the
+service/horizon-check for setup, the same way a real month's history could
+only ever be reached by locking each one in turn), keeping the actual
+regression coverage (real-month sort order, not insertion order) intact.
+Added new tests for the horizon rule itself: rejecting a brand-new
+activation beyond current+1, allowing one exactly at current+1, allowing an
+already-active far-future month through unchanged (idempotent-return
+exemption), and one on the recurring-expense path proving the shared check
+applies there too. 330 Jest tests total (was 329 before this increment's
+net test additions; two rewritten, six added).
+
+`pr-reviewer` round 1: **needs changes** — caught a real, deterministic bug
+(not a race) in the future-only version of the check above: "current" is
+the earliest *unlocked* `BudgetMonth` row, and nothing stopped a category
+from being newly activated in an arbitrary untouched past month, which
+would silently create a fresh (always-unlocked) row there — and that row
+would then become the new "earliest unlocked" row, dragging "current"
+itself backwards for every later call by that user. Reviewer's repro was
+two sequential, non-concurrent calls: activate a category in `2020-01`,
+then try to activate a different category in `2026-08` (the real current
+month) — the second call was incorrectly rejected as "beyond the planning
+horizon" because "current" had been hijacked to `2020-01` by the first
+call. This also broke the "TOCTOU gap is safe because current only ever
+advances" reasoning the design leaned on — it wasn't just unsafe under a
+race, it was wrong in ordinary sequential use.
+
+Brought the finding to the user rather than fixing unilaterally, since it
+implied a product decision (should past-month activation be allowed at
+all?), not just a code fix. User's call: never allow creating a new month
+in the past — a user can revisit a past month if it already exists, but
+can't newly activate a category in one that was never touched. Implemented
+as a symmetric bound: `assertWithinPlanningHorizon` now rejects any newly
+created activation outside `[current, current + 1]`, not just past
+`current + 1`. Both call sites (`addCategoryToMonth`,
+`ensureActiveForCategoryOnClient`) already captured `current` before
+`resolveBudgetMonthId`'s upsert (from the ordering fix earlier in this same
+increment) — extending that same ordering to the lower bound closes the
+hijack: a rejected month, past or future, now never reaches
+`resolveBudgetMonthId` at all, so it can never leave a stray row behind.
+`ensureActiveForCategoryOnClient`'s idempotent-return path (a pre-existing
+activation is always allowed regardless of the horizon) now determines
+"already active" via a read-only `budgetMonth.findUnique` lookup instead of
+via `resolveBudgetMonthId`'s upsert, so that path doesn't reopen the same
+hole for its own case; the lock check still runs unconditionally right
+before either the early return or the create, matching every other write
+path in this file. Fixed the 5 tests that broke as a result (two
+`month_locked` tests were relying on a *past* locked month, no longer
+reachable — moved to a locked *current* month instead, still exercising the
+lock check distinctly from the horizon check; three inheritance tests were
+using a past month as live-call setup scaffolding — moved to using the
+current month instead). Added regression coverage: rejecting a month before
+current, and the reviewer's exact two-call hijack repro asserting the
+second (legitimate, current-month) activation now succeeds. Also fixed
+finding #2 from this same review round — the idempotent-return test's
+fixture made "current" trivially equal to the far-future target month
+itself (the only unlocked row), so it would have passed even with the
+exemption deleted; added a distinct, earlier unlocked row so the test
+actually pins "current" somewhere the horizon check would fail if it ran.
+And finding #3: `resolveBudgetForActivation`'s docstring still said the
+horizon "isn't enforced server-side yet" — corrected. 333 Jest tests total
+(was 330).
+
+`pr-reviewer` round 2: **approved**. Confirmed the hijack is closed at both
+call sites (a rejected month, past or future, never reaches
+`resolveBudgetMonthId`, so it can never leave a row behind), confirmed both
+non-blocking round-1 findings were fixed, and confirmed the adjusted/new
+tests actually exercise what they claim. One further non-blocking
+observation, addressed by tightening a comment rather than the logic
+itself (out of scope for this PR — it concerns `lockMonth`, which lives on
+the still-unmerged `feature/month-locking`): the TOCTOU-is-always-safe
+claim in `addCategoryToMonth`'s comment was technically too strong.
+`lockMonth` can advance "current" by more than one month in a single jump
+if a user has a non-contiguous gap of pre-provisioned unlocked months
+(e.g. `2026-08` current, `2026-09` never provisioned, `2026-10` already
+pre-provisioned unlocked — locking `2026-08` jumps current straight to
+`2026-10`). A call racing in the middle of that jump, having captured
+`current = 2026-08` just before it committed, could in principle still let
+`2026-09` through even though a fully up-to-date check would have rejected
+it — a milder, race-and-precondition-gated echo of the original hijack.
+Comment corrected to state this precisely instead of claiming an absolute
+guarantee; the underlying question (should `lockMonth`'s current-advancement
+itself be bounded to rule this out?) is left as a follow-up, tracked below,
+since fixing it means touching `feature/month-locking`'s code, not this
+branch's. `npm run typecheck`, `npm test` (333 passing), `npm run lint`,
+`npm run build` all clean.
+
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-locking`.
-2. Still to design/build: recurring-template edit propagation ("apply to
-   future months too?" on `updateRecurringExpenseInstance`), and
-   server-side enforcement of the one-month planning horizon (still not
-   implemented anywhere — flagged again during this increment's review
-   groundwork, see PR #7's history).
-3. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
+2. Open a PR for `feature/planning-horizon` with `--base feature/month-locking`
+   (stacked, since it depends on that branch's `findCurrentMonthOnClient`) —
+   no `test-auditor` pass this round per user instruction.
+3. Follow-up, not blocking: decide whether `lockMonth` (on
+   `feature/month-locking`) should bound how far it can advance "current"
+   in one jump, per the narrow TOCTOU observation above.
+4. Still to design/build: recurring-template edit propagation ("apply to
+   future months too?" on `updateRecurringExpenseInstance`).
+5. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
    should check for a referencing `recurring_expense_instance`, not just
    `transaction`, before deleting a `category_month` row.
 

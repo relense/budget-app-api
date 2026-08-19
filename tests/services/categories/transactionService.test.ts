@@ -5,13 +5,19 @@ import { createCategoryService } from '../../../src/services/categories/category
 import { createFakePrisma } from './testFakePrisma.js';
 import { createTransactionService } from '../../../src/services/categories/transactionService.js';
 
-async function setup() {
+// Fixed rather than the real clock — setup() activates categories in
+// 2026-08, and now that the one-month planning horizon is enforced
+// server-side (relative to "today"), leaving this on the real clock would
+// make every test in this file silently start failing once wall-clock time
+// drifts past 2026-09, for reasons unrelated to any actual code change.
+async function setup(now: () => Date = () => new Date('2026-08-15T00:00:00.000Z')) {
   const prisma = createFakePrisma();
   const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
   const categoryService = createCategoryService({ prisma: prisma as never });
   const categoryMonthService = createCategoryMonthService({
     prisma: prisma as never,
     budgetMonthService,
+    now,
   });
   const transactionService = createTransactionService({
     prisma: prisma as never,
