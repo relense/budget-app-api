@@ -151,7 +151,7 @@ export const schema = createSchema<GraphQLContext>({
       updateCategory(id: ID!, input: CategoryInput!): Category!
       deleteCategory(id: ID!): Boolean!
 
-      addCategoryToMonth(categoryId: ID!, month: String!, monthlyBudgetCents: Int!): CategoryMonth!
+      addCategoryToMonth(categoryId: ID!, month: String!, monthlyBudgetCents: Int): CategoryMonth!
       removeCategoryFromMonth(categoryMonthId: ID!): Boolean!
       updateCategoryMonthBudget(categoryMonthId: ID!, monthlyBudgetCents: Int!): CategoryMonth!
 
@@ -245,7 +245,7 @@ export const schema = createSchema<GraphQLContext>({
       },
       addCategoryToMonth: async (
         _parent,
-        args: { categoryId: string; month: string; monthlyBudgetCents: number },
+        args: { categoryId: string; month: string; monthlyBudgetCents?: number | null },
         context,
       ) => {
         const userId = requireUserId(context.userId);
@@ -254,7 +254,7 @@ export const schema = createSchema<GraphQLContext>({
             userId,
             args.categoryId,
             args.month,
-            args.monthlyBudgetCents,
+            args.monthlyBudgetCents ?? undefined,
           );
         } catch (error) {
           toGraphQLError(error);

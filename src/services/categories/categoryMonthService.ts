@@ -39,6 +39,37 @@ function assertValidMonth(month: string): void {
 }
 
 /**
+ * When no budget is given explicitly, inherits the category's most
+ * recently created category_month's budget (carry-forward / pre-
+ * provisioning next month while it's already active) — or requires an
+ * explicit one if this category has never been active anywhere yet.
+ * "Most recently created" rather than "most recent month": the planning
+ * horizon cap (current month or the one right after, never further) means
+ * category_month rows are always created in chronological order in
+ * practice, and this avoids an extra join to BudgetMonth just to sort by
+ * month string.
+ */
+async function resolveBudgetForActivation(
+  client: Pick<PrismaClient, 'categoryMonth'>,
+  categoryId: string,
+  monthlyBudgetCents: number | undefined,
+): Promise<number> {
+  if (monthlyBudgetCents !== undefined) {
+    assertValidBudget(monthlyBudgetCents);
+    return monthlyBudgetCents;
+  }
+
+  const priorActivations = await client.categoryMonth.findMany({ where: { categoryId } });
+  if (priorActivations.length === 0) {
+    throw new CategoryMonthServiceError('category_month_budget_required');
+  }
+  const mostRecent = priorActivations.reduce((latest, row) =>
+    row.createdAt > latest.createdAt ? row : latest,
+  );
+  return mostRecent.monthlyBudgetCents;
+}
+
+/**
  * Client-parameterized core of ensureActiveForCategory — exported standalone
  * so a caller that already has its own open transaction (e.g.
  * recurringExpenseInstanceService's locked instance-creation flow) can run
@@ -65,13 +96,12 @@ export async function ensureActiveForCategoryOnClient(
   const existing = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
   if (existing) return existing;
 
-  if (monthlyBudgetCents === undefined) {
-    throw new CategoryMonthServiceError('category_month_budget_required');
-  }
-  assertValidBudget(monthlyBudgetCents);
+  const resolvedBudget = await resolveBudgetForActivation(client, categoryId, monthlyBudgetCents);
 
   try {
-    return await client.categoryMonth.create({ data: { userId, categoryId, monthId, monthlyBudgetCents } });
+    return await client.categoryMonth.create({
+      data: { userId, categoryId, monthId, monthlyBudgetCents: resolvedBudget },
+    });
   } catch (error) {
     if (hasPrismaErrorCode(error, 'P2002')) {
       // Lost a race to a concurrent create for the same (categoryId,
@@ -118,9 +148,9 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     userId: string,
     categoryId: string,
     month: string,
-    monthlyBudgetCents: number,
+    monthlyBudgetCents?: number,
   ) {
-    assertValidBudget(monthlyBudgetCents);
+    if (monthlyBudgetCents !== undefined) assertValidBudget(monthlyBudgetCents);
     assertValidMonth(month);
 
     // Checked before resolveBudgetMonthId deliberately: that call upserts a
@@ -142,9 +172,10 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
       // references an already-soft-deleted category.
       return await prisma.$transaction(async (tx) => {
         await assertOwnedCategory(tx, userId, categoryId);
+        const resolvedBudget = await resolveBudgetForActivation(tx, categoryId, monthlyBudgetCents);
 
         return tx.categoryMonth.create({
-          data: { userId, categoryId, monthId, monthlyBudgetCents },
+          data: { userId, categoryId, monthId, monthlyBudgetCents: resolvedBudget },
         });
       });
     } catch (error) {

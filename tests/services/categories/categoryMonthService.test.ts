@@ -210,6 +210,42 @@ describe('addCategoryToMonth', () => {
     ).rejects.toMatchObject({ reason: 'invalid_budget' });
     expect(prisma.categoryMonths).toHaveLength(0);
   });
+
+  it('throws category_month_budget_required when omitted and the category has never been active anywhere', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08'),
+    ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
+  it("inherits the category's most recent monthlyBudgetCents when omitted", async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 10000);
+
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+    );
+
+    expect(categoryMonth.monthlyBudgetCents).toBe(10000);
+  });
+
+  it('uses the given budget rather than inheriting when a prior activation exists but a budget is still passed', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 10000);
+
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      5000,
+    );
+
+    expect(categoryMonth.monthlyBudgetCents).toBe(5000);
+  });
 });
 
 describe('ensureActiveForCategory', () => {
@@ -248,6 +284,15 @@ describe('ensureActiveForCategory', () => {
     await expect(
       categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08'),
     ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
+  });
+
+  it("inherits the category's most recent monthlyBudgetCents when creating fresh with no budget given", async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 12000);
+
+    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08');
+
+    expect(result.monthlyBudgetCents).toBe(12000);
   });
 
   it('throws category_not_found for a category belonging to another user', async () => {

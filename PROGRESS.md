@@ -218,14 +218,46 @@ against it would be false confidence, the same class of gap that let the
 `25P02` bug through in the first place. That race path stays real-DB-only
 verified, not regression-tested in CI.
 
+PR #6 (`feature/default-categories`) is **merged into `develop`.**
+
+Resumed step 5's "grill me" interview on `feature/month-lifecycle`.
+Confirmed: `budget_months`' first row created lazily (existing pattern);
+auto-lock cascade's "empty month" = zero transactions only (activations
+alone don't block it); planning horizon (current month + 1, never
+further) enforced server-side, not just in the UI; carry-forward
+auto-inherits the just-locked month's budget per category. One nuance
+surfaced mid-interview that reshapes carry-forward: a user can pre-provision
+next month at any time (not gated on locking current first) — adding a
+category to a month it's already active in inherits that budget
+automatically too, same rule as lock-time carry-forward, not a separate
+mechanism. Locking's carry-forward only creates rows for what isn't
+already there (so pre-provisioned categories aren't touched again) — shown
+to the user as a checkbox list, everything pre-checked by default, uncheck
+to opt out (not an opt-in picker).
+
+Implemented the shared piece first (small, self-contained, used by both
+manual activation and recurring-expense auto-activation):
+`categoryMonthService`'s `addCategoryToMonth` and
+`ensureActiveForCategoryOnClient`/`ensureActiveForCategory` all take an
+optional `monthlyBudgetCents` now — inherits the category's most recently
+created `category_month`'s budget when omitted, still requires one
+explicitly the first time a category is ever activated anywhere (nothing
+to inherit from). GraphQL: `addCategoryToMonth`'s `monthlyBudgetCents`
+argument is now nullable (flagged up front — this is the interface change
+CLAUDE.md's rule covers). Verified against real Postgres. 278 Jest tests
+total (was 274). No `pr-reviewer`/`test-auditor` run on this one, per the
+user (token-conscious) — worth a look before merge regardless.
+
 Next actions, in order:
-1. Wait for human review/approval on `feature/default-categories`.
-2. Once merged: sync `develop`, branch `feature/month-lifecycle`, and
-   resume step 5's "grill me" interview from where it left off (empty-month
-   definition for auto-lock, budget-inheritance on carry-forward,
-   server-side enforcement of the one-month planning horizon, and the
-   GraphQL surface for month/lock state — none of the original four
-   questions got answered yet).
+1. Wait for human review/approval on `feature/month-lifecycle` (this first
+   increment — budget inheritance only).
+2. Still to design/build on this branch or the next: the `lockMonth`
+   mutation itself (checkbox-list carry-forward input, makes the month
+   immutable, provisions next month's `budget_months` row), the auto-lock
+   cascade for empty months, recurring-template edit propagation
+   ("apply to future months too?"), and the GraphQL surface for month/lock
+   state (no `BudgetMonth` type exists yet — nothing today lets a client
+   ask "what's my current month" or "is it locked").
 
 ## Phase 1 — Backend
 
