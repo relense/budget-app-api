@@ -384,6 +384,25 @@ describe('removeFromMonth', () => {
       reason: 'instance_has_transactions',
     });
   });
+
+  it('throws month_locked when the month is locked', async () => {
+    const { prisma, templateService, categoryMonthService, instanceService, housing } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
+    const template = await templateService.createTemplate('user-1', {
+      name: 'Gas',
+      amountCents: 4000,
+      categoryId: housing.id,
+      budgetType: 'want',
+      dueDay: 15,
+    });
+    const instance = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+    prisma.budgetMonths[0]!.locked = true;
+
+    await expect(instanceService.removeFromMonth('user-1', instance.id)).rejects.toMatchObject({
+      reason: 'month_locked',
+    });
+    expect(prisma.recurringExpenseInstances).toHaveLength(1);
+  });
 });
 
 describe('listByMonth', () => {

@@ -494,6 +494,42 @@ codebase: get it reviewed again after *every* fix to a locking fix, not
 just once at the end — each round's patch was exactly narrow enough to
 introduce its own new edge case.
 
+`test-auditor` after the four review rounds: no failures, four real gaps
+found and fixed. (1) `recurringExpenseInstanceService.removeFromMonth`
+had zero test coverage of its `month_locked` rejection — one of the two
+paths this PR moved into a transaction with a real
+`lockBudgetMonthRow`, untested despite the sibling `updateInstance` and
+`markRecurringPaid` both having the equivalent test; added it. (2) The
+new `budget_month_not_found` reason (on both `BudgetMonthServiceError`
+and `CategoryMonthServiceError` — same string, two classes) was never
+asserted through the GraphQL error-mapping boundary; added rows to
+`errors.test.ts`'s `it.each` table and a `schema.budgetMonths.test.ts`
+case for `lockMonth`. (3) `SERVICES.md` still said the month-locked
+check on transactions was "inert until Build Order step 5 wires up the
+mutation that actually locks a month" — this PR *is* that mutation;
+corrected. (4) The most substantive one: round 2's canonical-lock-ordering
+deadlock fix (`transactionService.update`'s `.sort()`) had no test
+proving the ordering itself, only the end-to-end outcome — a regression
+dropping `.sort()` would have passed every existing test. Added a
+`$queryRaw`-spy test with **deterministically hand-picked ids** (not the
+service's random UUIDs, which would only catch this by a coin flip
+depending on how two random UUIDs happened to compare) proving the two
+`budget_months` rows are locked in sorted order regardless of which is
+"old" and which is "new". Verified by temporarily dropping `.sort()`
+locally, confirming the test fails, then restoring it. Also verified the
+same way for finding (1)'s reciprocal check the auditor did
+independently on the round-3/4 ownership fix. 321 Jest tests total (was
+316).
+
+Noted, not implemented — a bigger scope call than a single-PR fix
+warrants without asking first: the auditor pointed out every concurrency
+guarantee in this PR (and, going back further, `lockTemplateRow`'s) is
+verified once by a throwaway real-Postgres script and then deleted, so
+none of it is re-checked by anything that runs in CI. This repo has no
+integration-test infrastructure at all yet. Worth deciding deliberately
+(new test category, Postgres-in-CI implications) rather than bolting on
+unprompted — flagging for the user to weigh in on, not doing it silently.
+
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-locking`.
 2. Still to design/build: recurring-template edit propagation ("apply to

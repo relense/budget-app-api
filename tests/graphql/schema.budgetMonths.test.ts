@@ -80,6 +80,17 @@ describe('Mutation.lockMonth', () => {
 
     expect(result.errors?.[0]?.extensions?.code).toBe('BUDGET_MONTH_NOT_CURRENT');
   });
+
+  it('maps budget_month_not_found to a GraphQLError', async () => {
+    const context = buildContext('user-1');
+    (context.budgetMonthService.lockMonth as jest.Mock).mockImplementation(async () => {
+      throw new BudgetMonthServiceError('budget_month_not_found');
+    });
+
+    const result = await run(mutation, context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('BUDGET_MONTH_NOT_FOUND');
+  });
 });
 
 describe('Mutation.deleteBudgetMonth', () => {

@@ -289,6 +289,76 @@ describe('update', () => {
     expect(updated.categoryMonthId).toBe(septemberCategoryMonth.id);
   });
 
+  it('locks the two involved budget_months rows in sorted order, not old-then-new', async () => {
+    // Proves the canonical-ordering fix itself, not just its end-to-end
+    // outcome: two concurrent updates swapping a transaction between the
+    // same two months in opposite directions only avoid a Postgres
+    // deadlock (40P01) if both always lock the pair in the same order,
+    // regardless of which side is "the transaction's current month" and
+    // which is "the target month" for that particular call. A regression
+    // that dropped the `.sort()` in transactionService.ts's update() would
+    // still pass every other test in this file (the end state is
+    // identical either way) but would fail this one.
+    //
+    // Ids are deliberately hand-picked (not the service's randomUUID
+    // output) so the "existing month sorts after target month" case is
+    // guaranteed, not a coin flip depending on what two random UUIDs
+    // happen to generate — insertion order (existing first, target
+    // second) and sorted order are only actually distinguishable here
+    // because "zzz-existing" > "aaa-target".
+    const { prisma, transactionService, expenseCategory } = await setup();
+    prisma.budgetMonths.push(
+      { id: 'bm-zzz-existing', userId: 'user-1', month: '2026-08', locked: false, lockedAt: null, createdAt: new Date() },
+      { id: 'bm-aaa-target', userId: 'user-1', month: '2026-09', locked: false, lockedAt: null, createdAt: new Date() },
+    );
+    prisma.categoryMonths.push(
+      {
+        id: 'cm-existing',
+        userId: 'user-1',
+        categoryId: expenseCategory.id,
+        monthId: 'bm-zzz-existing',
+        monthlyBudgetCents: 50000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: 'cm-target',
+        userId: 'user-1',
+        categoryId: expenseCategory.id,
+        monthId: 'bm-aaa-target',
+        monthlyBudgetCents: 50000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    );
+    const transaction = await transactionService.create('user-1', {
+      categoryMonthId: 'cm-existing',
+      amountCents: 2500,
+      date: '2026-08-15',
+    });
+
+    const lockedIds: string[] = [];
+    const originalQueryRaw = prisma.$queryRaw.bind(prisma);
+    prisma.$queryRaw = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      lockedIds.push(...(values as string[]));
+      return originalQueryRaw(strings, ...values);
+    }) as typeof prisma.$queryRaw;
+
+    await transactionService.update('user-1', transaction.id, {
+      categoryMonthId: 'cm-target',
+      amountCents: 2500,
+      date: '2026-09-01',
+    });
+
+    // The two rows get re-locked (harmlessly) by the checks that follow
+    // the pre-lock loop — de-dupe to first appearance so this asserts the
+    // pre-lock loop's own order, not just "both ids appear somewhere".
+    const firstOccurrenceOrder = [
+      ...new Set(lockedIds.filter((id) => id === 'bm-zzz-existing' || id === 'bm-aaa-target')),
+    ];
+    expect(firstOccurrenceOrder).toEqual(['bm-aaa-target', 'bm-zzz-existing']);
+  });
+
   it('rejects moving a transaction into a different month that is locked, even though its current month is unlocked', async () => {
     // Exercises the two-distinct-lock path (current month + target month
     // are different budget_months rows) — this and the mirror case above

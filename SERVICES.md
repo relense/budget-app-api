@@ -107,8 +107,11 @@ the category, never client-settable. Deps: `prisma`, `budgetMonthService`.
 | `listByRecurringExpenseInstanceIds(ids)` | Batch lookup for DataLoader use — backs `RecurringExpenseInstance.transactions` and `paidThisMonth`. |
 
 All writes are blocked once the target month is locked (`month_locked`) —
-inert until Build Order step 5 wires up the mutation that actually locks a
-month.
+live and race-safe as of `budgetMonthService.lockMonth` (Build Order step
+5): `create`/`update`/`deleteTransaction` all run inside a transaction
+that takes `lockBudgetMonthRow` (`SELECT ... FOR UPDATE`) before checking
+`locked`, so the check is genuinely serialized against a concurrent
+`lockMonth` call rather than racing a plain read.
 
 ### `recurringExpenseTemplateService` — `src/services/recurringExpenses/recurringExpenseTemplateService.ts`
 
