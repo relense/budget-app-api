@@ -16,6 +16,8 @@ function buildContext(userId: string | null): GraphQLContext {
     } as never,
     transactionService: {} as never,
     recurringExpenseService: {} as never,
+    savingsFundService: {} as never,
+    savingsMovementService: {} as never,
     loaders: {} as never,
   };
 }

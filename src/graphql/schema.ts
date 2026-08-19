@@ -6,8 +6,11 @@ import {
   budgetTypeToGraphQL,
   directionToDb,
   directionToGraphQL,
+  movementTypeToDb,
+  movementTypeToGraphQL,
   type GraphQLBudgetType,
   type GraphQLDirection,
+  type GraphQLMovementType,
 } from './enumMapping.js';
 import { requireUserId, toGraphQLError } from './errors.js';
 
@@ -42,8 +45,35 @@ interface MarkRecurringPaidGraphQLInput {
   note?: string | null;
 }
 
+interface CreateSavingsFundGraphQLInput {
+  name: string;
+  targetAmountCents?: number | null;
+  initialBalanceCents: number;
+  startDate?: string | null;
+  endDate?: string | null;
+  monthlyTargetCents?: number | null;
+}
+
+interface UpdateSavingsFundGraphQLInput {
+  name: string;
+  targetAmountCents?: number | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  monthlyTargetCents?: number | null;
+}
+
+interface SavingsMovementGraphQLInput {
+  amountCents: number;
+  type: GraphQLMovementType;
+  date: string;
+}
+
 function formatDate(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+function formatNullableDate(date: Date | null): string | null {
+  return date ? formatDate(date) : null;
 }
 
 export const schema = createSchema<GraphQLContext>({
@@ -57,6 +87,11 @@ export const schema = createSchema<GraphQLContext>({
     enum Direction {
       EXPENSE
       INCOME
+    }
+
+    enum MovementType {
+      DEPOSIT
+      WITHDRAW
     }
 
     type BudgetMonth {
@@ -111,6 +146,40 @@ export const schema = createSchema<GraphQLContext>({
       transactions: [Transaction!]!
     }
 
+    """
+    A long-running savings goal, unrelated to any single month (see
+    docs/GLOSSARY.md's "Category vs. Savings Fund"). currentAmountCents and
+    achieved are computed at read time (initialBalanceCents + the net of
+    every movement, and currentAmountCents >= targetAmountCents
+    respectively) — never stored, so they can't drift out of sync.
+    """
+    type SavingsFund {
+      id: ID!
+      name: String!
+      targetAmountCents: Int
+      initialBalanceCents: Int!
+      currentAmountCents: Int!
+      startDate: String
+      endDate: String
+      monthlyTargetCents: Int
+      achieved: Boolean!
+      movements: [SavingsMovement!]!
+    }
+
+    """
+    One deposit/withdrawal event against a fund — same relationship to
+    SavingsFund as Transaction has to CategoryMonth. Editable/deletable
+    after creation; every write re-validates the fund's resulting balance
+    can never go negative.
+    """
+    type SavingsMovement {
+      id: ID!
+      amountCents: Int!
+      type: MovementType!
+      date: String!
+      fund: SavingsFund!
+    }
+
     input CategoryInput {
       name: String!
       icon: String!
@@ -142,6 +211,38 @@ export const schema = createSchema<GraphQLContext>({
       note: String
     }
 
+    input CreateSavingsFundInput {
+      name: String!
+      targetAmountCents: Int
+      initialBalanceCents: Int!
+      startDate: String
+      endDate: String
+      monthlyTargetCents: Int
+    }
+
+    """initialBalanceCents deliberately absent — settable only at creation, never here (see the SavingsFund type doc)."""
+    input UpdateSavingsFundInput {
+      name: String!
+      targetAmountCents: Int
+      startDate: String
+      endDate: String
+      monthlyTargetCents: Int
+    }
+
+    input CreateSavingsMovementInput {
+      fundId: ID!
+      amountCents: Int!
+      type: MovementType!
+      date: String!
+    }
+
+    """fundId deliberately absent — a movement can't be reassigned to a different fund on update."""
+    input UpdateSavingsMovementInput {
+      amountCents: Int!
+      type: MovementType!
+      date: String!
+    }
+
     type Query {
       ping: String!
       currentMonth: BudgetMonth!
@@ -149,6 +250,7 @@ export const schema = createSchema<GraphQLContext>({
       categoryMonths(month: String!): [CategoryMonth!]!
       transactions(month: String!, categoryId: ID): [Transaction!]!
       recurringExpenses(month: String!): [RecurringExpense!]!
+      savingsFunds: [SavingsFund!]!
     }
 
     type Mutation {
@@ -175,6 +277,14 @@ export const schema = createSchema<GraphQLContext>({
       updateRecurringExpense(id: ID!, input: RecurringExpenseInput!): RecurringExpense!
       removeRecurringExpenseFromMonth(id: ID!): Boolean!
       markRecurringPaid(id: ID!, input: MarkRecurringPaidInput!): Transaction!
+
+      createSavingsFund(input: CreateSavingsFundInput!): SavingsFund!
+      updateSavingsFund(id: ID!, input: UpdateSavingsFundInput!): SavingsFund!
+      deleteSavingsFund(id: ID!): Boolean!
+
+      createSavingsMovement(input: CreateSavingsMovementInput!): SavingsMovement!
+      updateSavingsMovement(id: ID!, input: UpdateSavingsMovementInput!): SavingsMovement!
+      deleteSavingsMovement(id: ID!): Boolean!
     }
   `,
   resolvers: {
@@ -199,6 +309,10 @@ export const schema = createSchema<GraphQLContext>({
       recurringExpenses: async (_parent, args: { month: string }, context) => {
         const userId = requireUserId(context.userId);
         return context.recurringExpenseService.listByMonth(userId, args.month);
+      },
+      savingsFunds: async (_parent, _args: unknown, context) => {
+        const userId = requireUserId(context.userId);
+        return context.savingsFundService.listCatalog(userId);
       },
     },
     Mutation: {
@@ -414,6 +528,90 @@ export const schema = createSchema<GraphQLContext>({
           toGraphQLError(error);
         }
       },
+      createSavingsFund: async (_parent, args: { input: CreateSavingsFundGraphQLInput }, context) => {
+        const userId = requireUserId(context.userId);
+        try {
+          return await context.savingsFundService.createSavingsFund(userId, {
+            name: args.input.name,
+            targetAmountCents: args.input.targetAmountCents ?? undefined,
+            initialBalanceCents: args.input.initialBalanceCents,
+            startDate: args.input.startDate ?? undefined,
+            endDate: args.input.endDate ?? undefined,
+            monthlyTargetCents: args.input.monthlyTargetCents ?? undefined,
+          });
+        } catch (error) {
+          toGraphQLError(error);
+        }
+      },
+      updateSavingsFund: async (
+        _parent,
+        args: { id: string; input: UpdateSavingsFundGraphQLInput },
+        context,
+      ) => {
+        const userId = requireUserId(context.userId);
+        try {
+          return await context.savingsFundService.updateSavingsFund(userId, args.id, {
+            name: args.input.name,
+            targetAmountCents: args.input.targetAmountCents ?? undefined,
+            startDate: args.input.startDate ?? undefined,
+            endDate: args.input.endDate ?? undefined,
+            monthlyTargetCents: args.input.monthlyTargetCents ?? undefined,
+          });
+        } catch (error) {
+          toGraphQLError(error);
+        }
+      },
+      deleteSavingsFund: async (_parent, args: { id: string }, context) => {
+        const userId = requireUserId(context.userId);
+        try {
+          await context.savingsFundService.deleteSavingsFund(userId, args.id);
+          return true;
+        } catch (error) {
+          toGraphQLError(error);
+        }
+      },
+      createSavingsMovement: async (
+        _parent,
+        args: { input: SavingsMovementGraphQLInput & { fundId: string } },
+        context,
+      ) => {
+        const userId = requireUserId(context.userId);
+        try {
+          return await context.savingsMovementService.createSavingsMovement(userId, {
+            fundId: args.input.fundId,
+            amountCents: args.input.amountCents,
+            type: movementTypeToDb(args.input.type),
+            date: args.input.date,
+          });
+        } catch (error) {
+          toGraphQLError(error);
+        }
+      },
+      updateSavingsMovement: async (
+        _parent,
+        args: { id: string; input: SavingsMovementGraphQLInput },
+        context,
+      ) => {
+        const userId = requireUserId(context.userId);
+        try {
+          return await context.savingsMovementService.updateSavingsMovement(userId, args.id, {
+            amountCents: args.input.amountCents,
+            type: movementTypeToDb(args.input.type),
+            date: args.input.date,
+          });
+        } catch (error) {
+          toGraphQLError(error);
+        }
+      },
+      deleteSavingsMovement: async (_parent, args: { id: string }, context) => {
+        const userId = requireUserId(context.userId);
+        try {
+          await context.savingsMovementService.deleteSavingsMovement(userId, args.id);
+          return true;
+        } catch (error) {
+          toGraphQLError(error);
+        }
+      },
     },
     Category: {
       budgetType: (parent: { budgetType: 'need' | 'want' | 'savings' | null }) =>
@@ -472,6 +670,36 @@ export const schema = createSchema<GraphQLContext>({
         const transactions = await context.loaders.transactionsByRecurringExpenseId.load(parent.id);
         const paidCents = transactions.reduce((sum, transaction) => sum + transaction.amountCents, 0);
         return paidCents >= parent.amountCents;
+      },
+    },
+    SavingsFund: {
+      startDate: (parent: { startDate: Date | null }) => formatNullableDate(parent.startDate),
+      endDate: (parent: { endDate: Date | null }) => formatNullableDate(parent.endDate),
+      currentAmountCents: async (parent: { id: string }, _args: unknown, context) => {
+        return context.loaders.currentAmountCentsBySavingsFundId.load(parent.id);
+      },
+      achieved: async (
+        parent: { id: string; targetAmountCents: number | null },
+        _args: unknown,
+        context,
+      ) => {
+        if (parent.targetAmountCents === null) return false;
+        const currentAmountCents = await context.loaders.currentAmountCentsBySavingsFundId.load(parent.id);
+        return currentAmountCents >= parent.targetAmountCents;
+      },
+      movements: async (parent: { id: string }, _args: unknown, context) => {
+        return context.loaders.movementsBySavingsFundId.load(parent.id);
+      },
+    },
+    SavingsMovement: {
+      date: (parent: { date: Date }) => formatDate(parent.date),
+      type: (parent: { type: 'deposit' | 'withdraw' }) => movementTypeToGraphQL(parent.type),
+      fund: async (parent: { fundId: string }, _args: unknown, context) => {
+        const fund = await context.loaders.savingsFundById.load(parent.fundId);
+        if (!fund) {
+          throw new Error(`Data integrity error: SavingsFund ${parent.fundId} not found`);
+        }
+        return fund;
       },
     },
   },

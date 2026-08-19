@@ -4,6 +4,8 @@ import { CategoryMonthServiceError } from '../services/categories/categoryMonthS
 import { CategoryServiceError } from '../services/categories/categoryService.js';
 import { TransactionServiceError } from '../services/categories/transactionService.js';
 import { RecurringExpenseServiceError } from '../services/recurringExpenses/recurringExpenseService.js';
+import { SavingsFundServiceError } from '../services/savings/savingsFundService.js';
+import { SavingsMovementServiceError } from '../services/savings/savingsMovementService.js';
 
 /**
  * Maps known service-layer errors to a GraphQLError with a stable
@@ -17,7 +19,9 @@ export function toGraphQLError(error: unknown): never {
     error instanceof CategoryMonthServiceError ||
     error instanceof BudgetMonthServiceError ||
     error instanceof TransactionServiceError ||
-    error instanceof RecurringExpenseServiceError
+    error instanceof RecurringExpenseServiceError ||
+    error instanceof SavingsFundServiceError ||
+    error instanceof SavingsMovementServiceError
   ) {
     throw new GraphQLError(error.message, { extensions: { code: error.reason.toUpperCase() } });
   }

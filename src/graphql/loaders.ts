@@ -4,12 +4,16 @@ import type { CategoryMonthService } from '../services/categories/categoryMonthS
 import type { CategoryService } from '../services/categories/categoryService.js';
 import type { TransactionService } from '../services/categories/transactionService.js';
 import type { RecurringExpenseService } from '../services/recurringExpenses/recurringExpenseService.js';
+import type { SavingsFundService } from '../services/savings/savingsFundService.js';
+import type { SavingsMovementService } from '../services/savings/savingsMovementService.js';
 
 type CategoryRecord = Awaited<ReturnType<CategoryService['findManyByIds']>>[number];
 type CategoryMonthRecord = Awaited<ReturnType<CategoryMonthService['findManyByIds']>>[number];
 type BudgetMonthRecord = Awaited<ReturnType<BudgetMonthService['findManyByIds']>>[number];
 type TransactionRecord = Awaited<ReturnType<TransactionService['listByCategoryMonthIds']>>[number];
 type RecurringExpenseRecord = Awaited<ReturnType<RecurringExpenseService['findManyByIds']>>[number];
+type SavingsFundRecord = Awaited<ReturnType<SavingsFundService['findManyByIds']>>[number];
+type SavingsMovementRecord = Awaited<ReturnType<SavingsMovementService['listByFundIds']>>[number];
 
 export interface GraphQLLoaders {
   categoryById: DataLoader<string, CategoryRecord | null>;
@@ -19,6 +23,9 @@ export interface GraphQLLoaders {
   recurringExpenseById: DataLoader<string, RecurringExpenseRecord | null>;
   transactionsByRecurringExpenseId: DataLoader<string, TransactionRecord[]>;
   recurringCommittedCentsByCategoryMonthId: DataLoader<string, number>;
+  savingsFundById: DataLoader<string, SavingsFundRecord | null>;
+  movementsBySavingsFundId: DataLoader<string, SavingsMovementRecord[]>;
+  currentAmountCentsBySavingsFundId: DataLoader<string, number>;
 }
 
 export interface GraphQLLoaderDeps {
@@ -30,6 +37,8 @@ export interface GraphQLLoaderDeps {
     RecurringExpenseService,
     'findManyByIds' | 'sumCommittedCentsForCategoryMonth'
   >;
+  savingsFundService: Pick<SavingsFundService, 'findManyByIds'>;
+  savingsMovementService: Pick<SavingsMovementService, 'listByFundIds' | 'computeCurrentAmountCents'>;
 }
 
 /**
@@ -104,6 +113,39 @@ export function createGraphQLLoaders(deps: GraphQLLoaderDeps): GraphQLLoaders {
     );
   });
 
+  const savingsFundById = new DataLoader<string, SavingsFundRecord | null>(async (ids) => {
+    const rows = await deps.savingsFundService.findManyByIds([...ids]);
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return ids.map((id) => byId.get(id) ?? null);
+  });
+
+  const movementsBySavingsFundId = new DataLoader<string, SavingsMovementRecord[]>(async (ids) => {
+    const rows = await deps.savingsMovementService.listByFundIds([...ids]);
+    const byFundId = new Map<string, SavingsMovementRecord[]>();
+    for (const row of rows) {
+      const list = byFundId.get(row.fundId) ?? [];
+      list.push(row);
+      byFundId.set(row.fundId, list);
+    }
+    return ids.map((id) => byFundId.get(id) ?? []);
+  });
+
+  // Not a single batched query underneath, same reasoning as
+  // recurringCommittedCentsByCategoryMonthId above — still collapses N
+  // field resolutions (SavingsFund.currentAmountCents and .achieved both
+  // hit this same loader) into one batch tick per request.
+  const currentAmountCentsBySavingsFundId = new DataLoader<string, number>(async (ids) => {
+    const funds = await deps.savingsFundService.findManyByIds([...ids]);
+    const byId = new Map(funds.map((fund) => [fund.id, fund]));
+    return Promise.all(
+      ids.map(async (id) => {
+        const fund = byId.get(id);
+        if (!fund) return 0;
+        return deps.savingsMovementService.computeCurrentAmountCents(id, fund.initialBalanceCents);
+      }),
+    );
+  });
+
   return {
     categoryById,
     categoryMonthById,
@@ -112,5 +154,8 @@ export function createGraphQLLoaders(deps: GraphQLLoaderDeps): GraphQLLoaders {
     recurringExpenseById,
     transactionsByRecurringExpenseId,
     recurringCommittedCentsByCategoryMonthId,
+    savingsFundById,
+    movementsBySavingsFundId,
+    currentAmountCentsBySavingsFundId,
   };
 }
