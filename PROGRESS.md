@@ -206,7 +206,17 @@ pinning test asserting every `DEFAULT_CATEGORIES` entry passes it — a
 rule change now fails the test suite instead of shipping silently-invalid
 seed data. Also took the reviewer's nitpick: `hasPrismaErrorCode` was
 duplicated in five services; extracted to `src/lib/prismaErrors.ts`.
-274 Jest tests total (was 268).
+274 Jest tests total (was 268). `test-auditor` re-run after: verdict
+"tests trustworthy," no blocking findings — flagged one gap worth
+recording rather than fixing: the concurrent-brand-new-signup race
+(two simultaneous `verifyOtp` calls for the same never-before-seen
+email) is only verified by the now-removed real-Postgres smoke script,
+not by anything in the Jest suite. Deliberately not backfilled with a
+fake-based test — `testFakePrisma.ts`'s `$transaction` is a synchronous
+passthrough with no real isolation semantics, so a "concurrency" test
+against it would be false confidence, the same class of gap that let the
+`25P02` bug through in the first place. That race path stays real-DB-only
+verified, not regression-tested in CI.
 
 Next actions, in order:
 1. Wait for human review/approval on `feature/default-categories`.
