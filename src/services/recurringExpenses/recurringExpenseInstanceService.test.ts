@@ -20,8 +20,6 @@ async function setup() {
   const instanceService = createRecurringExpenseInstanceService({
     prisma: prisma as never,
     budgetMonthService,
-    categoryMonthService,
-    templateService,
     transactionService,
   });
 

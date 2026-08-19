@@ -50,7 +50,6 @@ export interface FakeRecurringExpenseTemplate {
   categoryId: string;
   budgetType: FakeRecurringBudgetType;
   dueDay: number;
-  deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -96,6 +95,13 @@ export class FakeForeignKeyConstraintError extends Error {
 }
 
 interface FakeDelegates {
+  /**
+   * No-op — the fake has no real Postgres, so it can't simulate row-level
+   * locking. Only proves the code calls it in the right places; real
+   * concurrency-safety for lockTemplateRow's callers needs verification
+   * against a live database.
+   */
+  $queryRaw(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
   budgetMonth: FakeBudgetMonthDelegate;
   category: {
     create(args: {
@@ -153,20 +159,15 @@ interface FakeDelegates {
     }): Promise<FakeRecurringExpenseTemplate>;
     findUnique(args: { where: { id: string } }): Promise<FakeRecurringExpenseTemplate | null>;
     findMany(args: {
-      where:
-        | { userId: string; deletedAt: null }
-        | { categoryId: string; deletedAt: null }
-        | { id: { in: string[] } };
+      where: { userId: string } | { categoryId: string } | { id: { in: string[] } };
     }): Promise<FakeRecurringExpenseTemplate[]>;
     update(args: {
       where: { id: string };
       data: Partial<
-        Pick<
-          FakeRecurringExpenseTemplate,
-          'name' | 'amountCents' | 'categoryId' | 'budgetType' | 'dueDay' | 'deletedAt'
-        >
+        Pick<FakeRecurringExpenseTemplate, 'name' | 'amountCents' | 'categoryId' | 'budgetType' | 'dueDay'>
       >;
     }): Promise<FakeRecurringExpenseTemplate>;
+    delete(args: { where: { id: string } }): Promise<FakeRecurringExpenseTemplate>;
   };
   recurringExpenseInstance: {
     create(args: {
@@ -243,7 +244,10 @@ interface FakePrismaClient extends FakeDelegates {
  * real lookup/update semantics without a live DB. $transaction is a plain
  * pass-through (no real isolation) — same simplification the auth
  * service's fake makes, since these tests care about the resulting calls,
- * not true DB transaction semantics.
+ * not true DB transaction semantics — with one exception: rollback-on-throw
+ * is simulated (snapshot every array, restore it if the callback throws),
+ * since real code now depends on a thrown error inside $transaction
+ * actually undoing everything the callback wrote, not just the final step.
  */
 export function createFakePrisma(): FakePrismaClient {
   const categories: FakeCategory[] = [];
@@ -261,7 +265,34 @@ export function createFakePrisma(): FakePrismaClient {
     recurringExpenseInstances,
     transactions,
     async $transaction(callback) {
-      return callback(client);
+      const snapshot = {
+        categories: [...categories],
+        budgetMonths: [...budgetMonths],
+        categoryMonths: [...categoryMonths],
+        recurringExpenseTemplates: [...recurringExpenseTemplates],
+        recurringExpenseInstances: [...recurringExpenseInstances],
+        transactions: [...transactions],
+      };
+      try {
+        return await callback(client);
+      } catch (error) {
+        categories.length = 0;
+        categories.push(...snapshot.categories);
+        budgetMonths.length = 0;
+        budgetMonths.push(...snapshot.budgetMonths);
+        categoryMonths.length = 0;
+        categoryMonths.push(...snapshot.categoryMonths);
+        recurringExpenseTemplates.length = 0;
+        recurringExpenseTemplates.push(...snapshot.recurringExpenseTemplates);
+        recurringExpenseInstances.length = 0;
+        recurringExpenseInstances.push(...snapshot.recurringExpenseInstances);
+        transactions.length = 0;
+        transactions.push(...snapshot.transactions);
+        throw error;
+      }
+    },
+    async $queryRaw() {
+      return [];
     },
     category: {
       async create({ data }) {
@@ -376,7 +407,6 @@ export function createFakePrisma(): FakePrismaClient {
           categoryId: data.categoryId,
           budgetType: data.budgetType,
           dueDay: data.dueDay,
-          deletedAt: null,
           createdAt: nextTimestamp(),
           updatedAt: nextTimestamp(),
         };
@@ -391,13 +421,9 @@ export function createFakePrisma(): FakePrismaClient {
           return recurringExpenseTemplates.filter((t) => where.id.in.includes(t.id));
         }
         if ('categoryId' in where) {
-          return recurringExpenseTemplates.filter(
-            (t) => t.categoryId === where.categoryId && t.deletedAt === null,
-          );
+          return recurringExpenseTemplates.filter((t) => t.categoryId === where.categoryId);
         }
-        return recurringExpenseTemplates.filter(
-          (t) => t.userId === where.userId && t.deletedAt === null,
-        );
+        return recurringExpenseTemplates.filter((t) => t.userId === where.userId);
       },
       async update({ where, data }) {
         const row = recurringExpenseTemplates.find((t) => t.id === where.id);
@@ -405,6 +431,18 @@ export function createFakePrisma(): FakePrismaClient {
         Object.assign(row, data);
         row.updatedAt = nextTimestamp();
         return row;
+      },
+      async delete({ where }) {
+        const index = recurringExpenseTemplates.findIndex((t) => t.id === where.id);
+        if (index === -1) throw new Error('not found');
+        // Mimics the real onDelete: Restrict FK from recurring_expense_instances —
+        // simulates an instance landing between an app-level "no active
+        // instances" check and this delete.
+        if (recurringExpenseInstances.some((i) => i.templateId === where.id)) {
+          throw new FakeForeignKeyConstraintError();
+        }
+        const [row] = recurringExpenseTemplates.splice(index, 1);
+        return row!;
       },
     },
     recurringExpenseInstance: {

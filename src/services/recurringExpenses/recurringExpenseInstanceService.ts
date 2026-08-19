@@ -1,11 +1,12 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
-import type { CategoryMonthService } from '../categories/categoryMonthService.js';
+import { ensureActiveForCategoryOnClient } from '../categories/categoryMonthService.js';
 import type { TransactionService } from '../categories/transactionService.js';
-import { assertOwnedTemplate, assertValidTemplateInput } from './recurringExpenseTemplateService.js';
-import type {
-  RecurringExpenseTemplateInput,
-  RecurringExpenseTemplateService,
+import {
+  assertOwnedTemplate,
+  assertValidTemplateInput,
+  lockTemplateRow,
 } from './recurringExpenseTemplateService.js';
+import type { RecurringExpenseTemplateInput } from './recurringExpenseTemplateService.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 
 export type RecurringExpenseInstanceServiceErrorReason =
@@ -38,10 +39,10 @@ export interface RecurringExpenseInstanceServiceDeps {
     | 'transaction'
     | 'budgetMonth'
     | 'categoryMonth'
+    | '$transaction'
+    | '$queryRaw'
   >;
   budgetMonthService: Pick<BudgetMonthService, 'findBudgetMonthId'>;
-  categoryMonthService: Pick<CategoryMonthService, 'ensureActiveForCategory'>;
-  templateService: Pick<RecurringExpenseTemplateService, 'createTemplate'>;
   transactionService: Pick<TransactionService, 'create'>;
 }
 
@@ -63,8 +64,6 @@ function assertValidAmount(amountCents: number): void {
 export function createRecurringExpenseInstanceService({
   prisma,
   budgetMonthService,
-  categoryMonthService,
-  templateService,
   transactionService,
 }: RecurringExpenseInstanceServiceDeps) {
   async function findOwnedInstance(userId: string, instanceId: string) {
@@ -82,10 +81,56 @@ export function createRecurringExpenseInstanceService({
     }
   }
 
-  async function createInstanceRow(userId: string, templateId: string, monthId: string, amountCents: number) {
+  /**
+   * First-time creation: makes the template, then adds it to `month`
+   * (auto-activating the category if needed). Returns both records —
+   * createRecurringExpenseTemplate's GraphQL return type is the template
+   * itself, not the instance, per plan.md's schema sketch.
+   *
+   * assertValidTemplateInput (read-only) runs before the transaction opens,
+   * catching invalid amountCents/dueDay/budgetType or an unowned category
+   * before any write happens. Everything else — creating the template,
+   * activating the category-month, creating the instance — runs inside one
+   * real transaction: if activation fails (locked month, missing budget) or
+   * the instance insert fails, the template creation rolls back with it, so
+   * no orphaned template or category-month can be left behind by this call.
+   */
+  async function createTemplateForMonth(
+    userId: string,
+    input: RecurringExpenseTemplateInput,
+    month: string,
+    categoryMonthlyBudgetCents?: number,
+  ) {
+    await assertValidTemplateInput(prisma, userId, input);
+
     try {
-      return await prisma.recurringExpenseInstance.create({
-        data: { userId, templateId, monthId, amountCents },
+      return await prisma.$transaction(async (tx) => {
+        const template = await tx.recurringExpenseTemplate.create({
+          data: {
+            userId,
+            name: input.name,
+            amountCents: input.amountCents,
+            categoryId: input.categoryId,
+            budgetType: input.budgetType,
+            dueDay: input.dueDay,
+          },
+        });
+        const categoryMonth = await ensureActiveForCategoryOnClient(
+          tx,
+          userId,
+          template.categoryId,
+          month,
+          categoryMonthlyBudgetCents,
+        );
+        const instance = await tx.recurringExpenseInstance.create({
+          data: {
+            userId,
+            templateId: template.id,
+            monthId: categoryMonth.monthId,
+            amountCents: template.amountCents,
+          },
+        });
+        return { template, instance };
       });
     } catch (error) {
       if (hasPrismaErrorCode(error, 'P2002')) {
@@ -95,82 +140,55 @@ export function createRecurringExpenseInstanceService({
     }
   }
 
-  async function createInstanceForTemplate(
-    userId: string,
-    templateId: string,
-    categoryId: string,
-    templateAmountCents: number,
-    month: string,
-    categoryMonthlyBudgetCents: number | undefined,
-  ) {
-    const categoryMonth = await categoryMonthService.ensureActiveForCategory(
-      userId,
-      categoryId,
-      month,
-      categoryMonthlyBudgetCents,
-    );
-    return createInstanceRow(userId, templateId, categoryMonth.monthId, templateAmountCents);
-  }
-
   /**
-   * First-time creation: makes the template, then adds it to `month`
-   * (auto-activating the category if needed). Returns both records —
-   * createRecurringExpenseTemplate's GraphQL return type is the template
-   * itself, not the instance, per plan.md's schema sketch.
+   * Reuses an existing template, carrying it into `month` (auto-activating
+   * the category if needed).
    *
-   * Ordering matters here, in two steps:
-   *  1. Validate the template's own input (assertValidTemplateInput — a
-   *     read-only check, writes nothing) *before* any write happens at all.
-   *     Catches invalid amountCents/dueDay/budgetType or an unowned category
-   *     up front, so none of them can leave a write behind.
-   *  2. Only then call ensureActiveForCategory (which, on first activation,
-   *     genuinely persists a CategoryMonth) *before* creating the template
-   *     row — so a locked target month or a missing
-   *     categoryMonthlyBudgetCents fails before the template is committed,
-   *     rather than after.
-   * Residual risk: templateService.createTemplate could still fail for a
-   * non-deterministic reason (e.g. a dropped connection) after
-   * ensureActiveForCategory has already committed a new CategoryMonth —
-   * these two writes aren't in one transaction (they're issued by
-   * separately-constructed services, each bound to its own prisma client).
-   * Accepted for now: every deterministic/reachable-from-bad-input failure
-   * mode is closed by step 1; this narrows the remaining window to a true
-   * infra failure, not something a client can trigger with input alone.
+   * lockTemplateRow, then re-reading the template *inside* that lock, is
+   * what actually closes the race with updateTemplate's categoryId-change
+   * guard (which takes the identical lock before its own check-then-write):
+   * an earlier version of this read the template's categoryId *before*
+   * locking anything, which meant the category-activation decision could
+   * already be based on a stale value by the time the lock was taken — the
+   * lock has to cover the read that decides which category to activate,
+   * not just the final insert.
    */
-  async function createTemplateForMonth(
-    userId: string,
-    input: RecurringExpenseTemplateInput,
-    month: string,
-    categoryMonthlyBudgetCents?: number,
-  ) {
-    await assertValidTemplateInput(prisma, userId, input);
-    const categoryMonth = await categoryMonthService.ensureActiveForCategory(
-      userId,
-      input.categoryId,
-      month,
-      categoryMonthlyBudgetCents,
-    );
-    const template = await templateService.createTemplate(userId, input);
-    const instance = await createInstanceRow(userId, template.id, categoryMonth.monthId, template.amountCents);
-    return { template, instance };
-  }
-
-  /** Reuses an existing template, carrying it into `month` (auto-activating the category if needed). */
   async function addRecurringExpenseToMonth(
     userId: string,
     templateId: string,
     month: string,
     categoryMonthlyBudgetCents?: number,
   ) {
-    const template = await assertOwnedTemplate(prisma, userId, templateId);
-    return createInstanceForTemplate(
-      userId,
-      template.id,
-      template.categoryId,
-      template.amountCents,
-      month,
-      categoryMonthlyBudgetCents,
-    );
+    // Cheap ownership check first, before opening a transaction for a
+    // request that's going to fail regardless.
+    await assertOwnedTemplate(prisma, userId, templateId);
+
+    try {
+      return await prisma.$transaction(async (tx) => {
+        await lockTemplateRow(tx, templateId);
+        const template = await assertOwnedTemplate(tx, userId, templateId);
+        const categoryMonth = await ensureActiveForCategoryOnClient(
+          tx,
+          userId,
+          template.categoryId,
+          month,
+          categoryMonthlyBudgetCents,
+        );
+        return tx.recurringExpenseInstance.create({
+          data: {
+            userId,
+            templateId: template.id,
+            monthId: categoryMonth.monthId,
+            amountCents: template.amountCents,
+          },
+        });
+      });
+    } catch (error) {
+      if (hasPrismaErrorCode(error, 'P2002')) {
+        throw new RecurringExpenseInstanceServiceError('instance_already_active');
+      }
+      throw error;
+    }
   }
 
   async function updateInstance(userId: string, instanceId: string, amountCents: number) {
@@ -252,9 +270,7 @@ export function createRecurringExpenseInstanceService({
    * no separate id list here that a caller could pass unscoped.
    */
   async function sumCommittedCentsForCategoryMonth(categoryId: string, monthId: string): Promise<number> {
-    const templates = await prisma.recurringExpenseTemplate.findMany({
-      where: { categoryId, deletedAt: null },
-    });
+    const templates = await prisma.recurringExpenseTemplate.findMany({ where: { categoryId } });
     if (templates.length === 0) return 0;
 
     // One query per template rather than a single `templateId: { in: [...] }`

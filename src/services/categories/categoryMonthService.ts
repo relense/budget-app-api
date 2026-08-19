@@ -1,4 +1,5 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
+import { resolveBudgetMonthId } from '../budgetMonths/budgetMonthService.js';
 import { assertOwnedCategory, CategoryServiceError } from './categoryService.js';
 import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
@@ -42,6 +43,52 @@ function assertValidBudget(monthlyBudgetCents: number): void {
 function assertValidMonth(month: string): void {
   if (!isValidMonthFormat(month)) {
     throw new CategoryMonthServiceError('invalid_month');
+  }
+}
+
+/**
+ * Client-parameterized core of ensureActiveForCategory — exported standalone
+ * so a caller that already has its own open transaction (e.g.
+ * recurringExpenseInstanceService's locked instance-creation flow) can run
+ * this as part of that same transaction. No nested transaction here (Prisma
+ * doesn't support nesting $transaction calls) — the bound service method
+ * below supplies one for regular (non-nested) callers.
+ */
+export async function ensureActiveForCategoryOnClient(
+  client: Pick<PrismaClient, 'category' | 'categoryMonth' | 'budgetMonth'>,
+  userId: string,
+  categoryId: string,
+  month: string,
+  monthlyBudgetCents?: number,
+) {
+  assertValidMonth(month);
+  await assertOwnedCategory(client, userId, categoryId);
+
+  const monthId = await resolveBudgetMonthId(client, userId, month);
+  const budgetMonth = await client.budgetMonth.findUnique({ where: { id: monthId } });
+  if (budgetMonth?.locked) {
+    throw new CategoryMonthServiceError('month_locked');
+  }
+
+  const existing = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
+  if (existing) return existing;
+
+  if (monthlyBudgetCents === undefined) {
+    throw new CategoryMonthServiceError('category_month_budget_required');
+  }
+  assertValidBudget(monthlyBudgetCents);
+
+  try {
+    return await client.categoryMonth.create({ data: { userId, categoryId, monthId, monthlyBudgetCents } });
+  } catch (error) {
+    if (hasPrismaErrorCode(error, 'P2002')) {
+      // Lost a race to a concurrent create for the same (categoryId,
+      // monthId) — fine here, "ensure active" is idempotent by design,
+      // just return the winner instead of erroring.
+      const winner = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
+      if (winner) return winner;
+    }
+    throw error;
   }
 }
 
@@ -132,40 +179,9 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     month: string,
     monthlyBudgetCents?: number,
   ) {
-    assertValidMonth(month);
-    await assertOwnedCategory(prisma, userId, categoryId);
-
-    const monthId = await budgetMonthService.resolveBudgetMonthId(userId, month);
-    await assertMonthNotLocked(monthId);
-
-    const existing = await prisma.categoryMonth.findFirst({ where: { categoryId, monthId } });
-    if (existing) return existing;
-
-    if (monthlyBudgetCents === undefined) {
-      throw new CategoryMonthServiceError('category_month_budget_required');
-    }
-    assertValidBudget(monthlyBudgetCents);
-
-    try {
-      return await prisma.$transaction(async (tx) => {
-        await assertOwnedCategory(tx, userId, categoryId);
-        return tx.categoryMonth.create({
-          data: { userId, categoryId, monthId, monthlyBudgetCents },
-        });
-      });
-    } catch (error) {
-      if (error instanceof CategoryServiceError) {
-        throw error;
-      }
-      if (hasPrismaErrorCode(error, 'P2002')) {
-        // Lost a race to a concurrent create for the same (categoryId,
-        // monthId) — fine here, "ensure active" is idempotent by design,
-        // just return the winner instead of erroring.
-        const winner = await prisma.categoryMonth.findFirst({ where: { categoryId, monthId } });
-        if (winner) return winner;
-      }
-      throw error;
-    }
+    return prisma.$transaction((tx) =>
+      ensureActiveForCategoryOnClient(tx, userId, categoryId, month, monthlyBudgetCents),
+    );
   }
 
   async function removeCategoryFromMonth(userId: string, categoryMonthId: string): Promise<void> {

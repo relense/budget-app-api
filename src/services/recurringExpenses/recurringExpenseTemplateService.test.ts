@@ -54,7 +54,6 @@ describe('createTemplate', () => {
       categoryId: 'cat-housing',
       budgetType: 'need',
       dueDay: 1,
-      deletedAt: null,
     });
   });
 
@@ -292,7 +291,7 @@ describe('updateTemplate', () => {
 });
 
 describe('deleteTemplate', () => {
-  it('soft-deletes a template with no instances', async () => {
+  it('hard-deletes a template with no instances', async () => {
     const { prisma, service } = setup();
     const template = await service.createTemplate('user-1', {
       name: 'Rent',
@@ -304,7 +303,7 @@ describe('deleteTemplate', () => {
 
     await service.deleteTemplate('user-1', template.id);
 
-    expect(prisma.recurringExpenseTemplates[0]!.deletedAt).not.toBeNull();
+    expect(prisma.recurringExpenseTemplates).toHaveLength(0);
   });
 
   it('throws template_has_active_instances when an instance exists', async () => {
@@ -331,7 +330,7 @@ describe('deleteTemplate', () => {
     });
   });
 
-  it('throws template_has_active_instances (not a silent soft-delete) when an instance is created between the check and the delete', async () => {
+  it('throws template_has_active_instances (not a raw FK error) when an instance is created between the check and the delete', async () => {
     const { prisma, service } = setup();
     const template = await service.createTemplate('user-1', {
       name: 'Rent',
@@ -341,41 +340,33 @@ describe('deleteTemplate', () => {
       dueDay: 1,
     });
 
-    // Simulate the race: the first "no instances" check passes (as if it ran
-    // a moment before a concurrent addRecurringExpenseToMonth), but an
-    // instance lands right after — the fix re-checks inside a transaction
-    // immediately before the soft-delete write, so this exercises the same
+    // Simulate the race: the "no instances" check reports none (as if it
+    // ran a moment before the concurrent insert), but an instance lands in
+    // the table right after — the fake's delete() enforces
+    // onDelete: Restrict just like the real DB, so this exercises the same
     // path a concurrent request would hit.
-    const originalFindFirst = prisma.recurringExpenseInstance.findFirst.bind(
-      prisma.recurringExpenseInstance,
-    );
-    let firstCall = true;
-    prisma.recurringExpenseInstance.findFirst = (async (args) => {
-      const result = await originalFindFirst(args);
-      if (firstCall) {
-        firstCall = false;
-        prisma.recurringExpenseInstances.push({
-          id: 'inst-race',
-          userId: 'user-1',
-          templateId: template.id,
-          monthId: 'month-race',
-          amountCents: 80000,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-      }
-      return result;
+    prisma.recurringExpenseInstance.findFirst = (async () => {
+      prisma.recurringExpenseInstances.push({
+        id: 'inst-race',
+        userId: 'user-1',
+        templateId: template.id,
+        monthId: 'month-race',
+        amountCents: 80000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return null;
     }) as typeof prisma.recurringExpenseInstance.findFirst;
 
     await expect(service.deleteTemplate('user-1', template.id)).rejects.toMatchObject({
       reason: 'template_has_active_instances',
     });
-    expect(prisma.recurringExpenseTemplates[0]!.deletedAt).toBeNull();
+    expect(prisma.recurringExpenseTemplates).toHaveLength(1);
   });
 });
 
 describe('listCatalog', () => {
-  it('returns only the user\'s non-deleted templates', async () => {
+  it('excludes deleted templates', async () => {
     const { service } = setup();
     const mine = await service.createTemplate('user-1', {
       name: 'Rent',

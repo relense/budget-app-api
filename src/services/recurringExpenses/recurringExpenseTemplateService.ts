@@ -32,8 +32,17 @@ export class RecurringExpenseTemplateServiceError extends Error {
 export interface RecurringExpenseTemplateServiceDeps {
   prisma: Pick<
     PrismaClient,
-    'category' | 'recurringExpenseTemplate' | 'recurringExpenseInstance' | '$transaction'
+    'category' | 'recurringExpenseTemplate' | 'recurringExpenseInstance' | '$transaction' | '$queryRaw'
   >;
+}
+
+function hasPrismaErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === code
+  );
 }
 
 function assertValidAmount(amountCents: number): void {
@@ -78,15 +87,32 @@ export async function assertOwnedTemplate(
   id: string,
 ) {
   const template = await client.recurringExpenseTemplate.findUnique({ where: { id } });
-  if (!template || template.userId !== userId || template.deletedAt) {
+  if (!template || template.userId !== userId) {
     throw new RecurringExpenseTemplateServiceError('template_not_found');
   }
   return template;
 }
 
+/**
+ * Takes a row lock on the template (SELECT ... FOR UPDATE) — must be called
+ * inside a $transaction. Public so recurringExpenseInstanceService can take
+ * the same lock before inserting an instance, so a concurrent
+ * updateTemplate categoryId change and a concurrent instance creation for
+ * the same template can never interleave: whichever transaction acquires
+ * the lock first fully commits (or rolls back) before the other proceeds.
+ * Table/column names are the raw SQL ones (@@map/@map in schema.prisma),
+ * not the Prisma model names.
+ */
+export async function lockTemplateRow(
+  tx: Pick<PrismaClient, '$queryRaw'>,
+  id: string,
+): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM recurring_expense_templates WHERE id = ${id} FOR UPDATE`;
+}
+
 export function createRecurringExpenseTemplateService({ prisma }: RecurringExpenseTemplateServiceDeps) {
   async function listCatalog(userId: string) {
-    return prisma.recurringExpenseTemplate.findMany({ where: { userId, deletedAt: null } });
+    return prisma.recurringExpenseTemplate.findMany({ where: { userId } });
   }
 
   /** Batch lookup for DataLoader use — trusts the caller to have already scoped the ids to one user. */
@@ -117,30 +143,37 @@ export function createRecurringExpenseTemplateService({ prisma }: RecurringExpen
     assertValidBudgetType(input.budgetType);
     await assertOwnedCategory(prisma, userId, input.categoryId);
 
+    const data = {
+      name: input.name,
+      amountCents: input.amountCents,
+      categoryId: input.categoryId,
+      budgetType: input.budgetType,
+      dueDay: input.dueDay,
+    };
+
+    if (input.categoryId === existing.categoryId) {
+      return prisma.recurringExpenseTemplate.update({ where: { id }, data });
+    }
+
     // Instances don't snapshot their own categoryId — recurringCommittedCents
     // always looks it up via the template's *current* categoryId. Changing it
     // once an instance exists would retroactively move that instance's
     // amount out of one category's committed total and into another's for
     // months that have already happened (possibly already locked). Mirrors
     // updateCategory's direction_change_blocked guard.
-    if (input.categoryId !== existing.categoryId) {
-      const existingInstance = await prisma.recurringExpenseInstance.findFirst({
-        where: { templateId: id },
-      });
+    //
+    // No onDelete: Restrict backstop applies here (this is an UPDATE, not a
+    // delete), so the check-then-write race is closed explicitly: lock the
+    // template row before checking, inside the same transaction as the
+    // write. createInstanceRow takes the identical lock before inserting an
+    // instance, so the two paths can never interleave.
+    return prisma.$transaction(async (tx) => {
+      await lockTemplateRow(tx, id);
+      const existingInstance = await tx.recurringExpenseInstance.findFirst({ where: { templateId: id } });
       if (existingInstance) {
         throw new RecurringExpenseTemplateServiceError('category_change_blocked');
       }
-    }
-
-    return prisma.recurringExpenseTemplate.update({
-      where: { id },
-      data: {
-        name: input.name,
-        amountCents: input.amountCents,
-        categoryId: input.categoryId,
-        budgetType: input.budgetType,
-        dueDay: input.dueDay,
-      },
+      return tx.recurringExpenseTemplate.update({ where: { id }, data });
     });
   }
 
@@ -154,18 +187,18 @@ export function createRecurringExpenseTemplateService({ prisma }: RecurringExpen
       throw new RecurringExpenseTemplateServiceError('template_has_active_instances');
     }
 
-    // Re-checked inside the transaction, right before the write: this is a
-    // soft delete (no onDelete: Restrict FK to catch a concurrent instance
-    // insert the way removeFromMonth's hard delete does), so without this
-    // re-check a race could leave a soft-deleted template with a live
-    // instance still pointing at it.
-    await prisma.$transaction(async (tx) => {
-      const raceInstance = await tx.recurringExpenseInstance.findFirst({ where: { templateId: id } });
-      if (raceInstance) {
+    try {
+      // Hard delete now, backed by RecurringExpenseInstance.template's
+      // onDelete: Restrict FK — the DB-level backstop closes the race the
+      // pre-check above can't (a concurrent instance insert landing between
+      // the check and this delete), same pattern as removeFromMonth.
+      await prisma.recurringExpenseTemplate.delete({ where: { id } });
+    } catch (error) {
+      if (hasPrismaErrorCode(error, 'P2003')) {
         throw new RecurringExpenseTemplateServiceError('template_has_active_instances');
       }
-      await tx.recurringExpenseTemplate.update({ where: { id }, data: { deletedAt: new Date() } });
-    });
+      throw error;
+    }
   }
 
   return { listCatalog, findManyByIds, createTemplate, updateTemplate, deleteTemplate };

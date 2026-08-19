@@ -73,8 +73,6 @@ export async function buildServer({
   const instanceService = createRecurringExpenseInstanceService({
     prisma,
     budgetMonthService,
-    categoryMonthService,
-    templateService,
     transactionService,
   });
   const buildGraphQLContext = createGraphQLContextBuilder({
