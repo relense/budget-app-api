@@ -29,7 +29,7 @@ refresh tokens, log out. Deps: `prisma`, `emailService`, `jwtSecret`.
 | Function | Does |
 |---|---|
 | `requestOtp(email)` | Generates a 6-char alphanumeric code (A-Z, 2-9, no ambiguous chars), argon2-hashes it, stores it (10 min TTL), emails it. |
-| `verifyOtp({ email, code, deviceLabel? })` | Validates the latest unused code for that email (not expired, under 5 failed attempts), upserts the `User` row, issues an access token (JWT, 15 min) + refresh token (random, sha256-hashed at rest, 30 day TTL). |
+| `verifyOtp({ email, code, deviceLabel? })` | Validates the latest unused code for that email (not expired, under 5 failed attempts), creates the `User` row on a genuine first-time signup (seeding the default category catalog, see `defaultCategories.ts`) or reuses the existing one on a returning login, issues an access token (JWT, 15 min) + refresh token (random, sha256-hashed at rest, 30 day TTL). |
 | `refreshSession(token)` | Looks up the refresh token by hash, rejects if revoked/expired, atomically revokes it and issues a new one (mandatory rotation — a reused old token fails). |
 | `logout(token)` | Revokes one refresh token. |
 | `logoutAll(userId)` | Revokes every refresh token for that user (all devices). |
@@ -64,7 +64,9 @@ Pure catalog CRUD for categories — no month-awareness at all. Deps: `prisma`.
 Also exports **`assertOwnedCategory(client, userId, id)`** standalone — the
 shared ownership-check, reused by `categoryMonthService` and
 `recurringExpenseTemplateService` against either the outer `prisma` or a
-transactional client.
+transactional client — and **`assertValidBudgetType(direction, budgetType)`**
+standalone, reused by `authService`'s default-category seeding on signup so
+a future change to this rule can't silently drift from what gets seeded.
 
 ### `categoryMonthService` — `src/services/categories/categoryMonthService.ts`
 

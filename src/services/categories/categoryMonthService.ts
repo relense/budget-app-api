@@ -3,6 +3,7 @@ import { resolveBudgetMonthId } from '../budgetMonths/budgetMonthService.js';
 import { assertOwnedCategory, CategoryServiceError } from './categoryService.js';
 import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
+import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 
 export type CategoryMonthServiceErrorReason =
   | 'category_month_not_found'
@@ -23,15 +24,6 @@ export class CategoryMonthServiceError extends Error {
 export interface CategoryMonthServiceDeps {
   prisma: Pick<PrismaClient, 'category' | 'categoryMonth' | 'transaction' | 'budgetMonth' | '$transaction'>;
   budgetMonthService: Pick<BudgetMonthService, 'resolveBudgetMonthId' | 'findBudgetMonthId'>;
-}
-
-function hasPrismaErrorCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === code
-  );
 }
 
 function assertValidBudget(monthlyBudgetCents: number): void {

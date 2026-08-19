@@ -151,11 +151,81 @@ template-without-a-`category_month` case, all three behaving as expected.
 266 Jest tests total (was 264, +2 for this branch: the FK-race canary and
 the template-only-reference case).
 
+PR #5 (`fix/categories-hard-delete`) is **merged into `develop`.**
+
+Started the "grill me" interview for step 5 (Month lifecycle) on a fresh
+`feature/month-lifecycle` branch; the first question (what creates a user's
+first `budget_months` row) surfaced a real, separate product decision the
+user wanted instead: **every new signup gets a default starter category
+catalog** (Supermarket, Eating Out, Gas/Transport, Health, Hobbies —
+catalog only, not auto-activated into any month, budgets stay
+user-entered), not just the existing personal seed script. Deliberately
+out of Month Lifecycle's scope (it's a signup-flow change, not
+locking/carry-forward) — the `feature/month-lifecycle` branch was dropped
+(no commits yet) and rebuilt as `feature/default-categories` to do this
+first, on its own.
+
+`defaultCategories.ts` holds the fixed list. `authService.verifyOtp`
+previously used `user.upsert`, which can't distinguish a genuine first-time
+signup from a returning login (both hit the same code path) — needed that
+distinction to know when to seed. Replaced with an explicit
+create-then-catch-`P2002`-then-`findUnique` pattern. **Caught by the
+real-Postgres smoke test, not the fake-Prisma suite**: the first version
+nested that recovery `findUnique` inside the same `$transaction` as the
+failed `create` — Postgres poisons an entire transaction after any failed
+statement (`25P02`) until it's rolled back, so the recovery read failed
+too. Fixed by running the create-or-find as standalone statements *before*
+opening the transaction that seeds categories + creates the refresh token.
+Verified against real Postgres: first signup seeds exactly 5 categories, a
+second login doesn't reseed, and two concurrent `verifyOtp` calls for the
+same brand-new email still result in one user row and exactly one seeding
+pass. 268 Jest tests total (was 266).
+
+`pr-reviewer` on PR #6: **approved**, two suggestions (not blocking).
+(1) The first version's code comment framed the standalone-create tradeoff
+as a narrow "process crash" window, but the reviewer pointed out it's
+broader than that — *any* `$transaction` failure after the user row
+commits (DB blip, deadlock, a future bug in the `createMany` call) would
+permanently and silently skip seeding for that email on every retry, with
+no signal. Fixed properly rather than just correcting the comment: added a
+self-healing check — a genuinely returning user always has at least one
+`refreshToken` row (even if since revoked, from a real prior login), so
+"user exists but has zero refresh tokens ever" reliably means a previous
+signup attempt died before its transaction committed (categories and the
+refresh token are seeded in that same atomic transaction, so neither one
+alone can partially exist). Re-seeds in that case instead of skipping
+silently forever. Verified against real Postgres with a second throwaway
+smoke script (removed after): a manually-inserted user row with no refresh
+tokens gets seeded on next login; a genuine returning user (has a refresh
+token + already deleted the extras down to one custom category) does not.
+(2) Seeding bypassed `categoryService`'s validation entirely (calls
+`tx.category.createMany` directly), so a future rule change there
+wouldn't be caught. Exported `assertValidBudgetType` standalone from
+`categoryService.ts` (same pattern as `assertOwnedCategory`) and added a
+pinning test asserting every `DEFAULT_CATEGORIES` entry passes it — a
+rule change now fails the test suite instead of shipping silently-invalid
+seed data. Also took the reviewer's nitpick: `hasPrismaErrorCode` was
+duplicated in five services; extracted to `src/lib/prismaErrors.ts`.
+274 Jest tests total (was 268). `test-auditor` re-run after: verdict
+"tests trustworthy," no blocking findings — flagged one gap worth
+recording rather than fixing: the concurrent-brand-new-signup race
+(two simultaneous `verifyOtp` calls for the same never-before-seen
+email) is only verified by the now-removed real-Postgres smoke script,
+not by anything in the Jest suite. Deliberately not backfilled with a
+fake-based test — `testFakePrisma.ts`'s `$transaction` is a synchronous
+passthrough with no real isolation semantics, so a "concurrency" test
+against it would be false confidence, the same class of gap that let the
+`25P02` bug through in the first place. That race path stays real-DB-only
+verified, not regression-tested in CI.
+
 Next actions, in order:
-1. Wait for human review/approval on `fix/categories-hard-delete` per
-   `CLAUDE.md`'s git workflow.
-2. Once merged: sync `develop`, branch for step 5 (Month lifecycle), and
-   start with its own "grill me" interview.
+1. Wait for human review/approval on `feature/default-categories`.
+2. Once merged: sync `develop`, branch `feature/month-lifecycle`, and
+   resume step 5's "grill me" interview from where it left off (empty-month
+   definition for auto-lock, budget-inheritance on carry-forward,
+   server-side enforcement of the one-month planning horizon, and the
+   GraphQL surface for month/lock state — none of the original four
+   questions got answered yet).
 
 ## Phase 1 — Backend
 

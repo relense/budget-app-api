@@ -3,6 +3,7 @@ import { verifyAccessToken } from '../../../src/lib/jwt.js';
 import { hashOtpCode, OTP_CODE_REGEX, verifyOtpCode } from '../../../src/lib/otp.js';
 import { hashRefreshToken } from '../../../src/lib/refreshToken.js';
 import { createAuthService } from '../../../src/services/auth/authService.js';
+import { DEFAULT_CATEGORIES } from '../../../src/services/auth/defaultCategories.js';
 import { createFakePrisma } from './testFakePrisma.js';
 
 const JWT_SECRET = 'test-secret-at-least-32-bytes-long-for-hs256';
@@ -256,6 +257,14 @@ describe('verifyOtp', () => {
   it('reuses the existing user on a second login (no duplicate user row)', async () => {
     const { prisma, authService } = setup();
     prisma.users.push({ id: 'existing-user', email: 'user@example.com' });
+    prisma.refreshTokens.push({
+      id: 'rt-1',
+      userId: 'existing-user',
+      tokenHash: 'prior-login-hash',
+      deviceLabel: null,
+      expiresAt: new Date('2026-06-01T00:00:00.000Z'),
+      revoked: false,
+    });
     prisma.otpCodes.push({
       id: 'otp-1',
       email: 'user@example.com',
@@ -270,6 +279,84 @@ describe('verifyOtp', () => {
 
     expect(prisma.users).toHaveLength(1);
     expect(result.user.id).toBe('existing-user');
+  });
+
+  it('seeds the default category catalog for a brand-new signup', async () => {
+    const { prisma, authService } = setup();
+    prisma.otpCodes.push({
+      id: 'otp-1',
+      email: 'new@example.com',
+      codeHash: await hashOtpCode('123456'),
+      expiresAt: new Date('2026-01-01T00:10:00.000Z'),
+      used: false,
+      failedAttempts: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    const result = await authService.verifyOtp({ email: 'new@example.com', code: '123456' });
+
+    expect(prisma.categories.length).toBe(DEFAULT_CATEGORIES.length);
+    expect(prisma.categories.every((c) => c.userId === result.user.id)).toBe(true);
+    expect(prisma.categories.map((c) => c.name).sort()).toEqual(
+      DEFAULT_CATEGORIES.map((c) => c.name).sort(),
+    );
+  });
+
+  it('does not reseed default categories on a second login', async () => {
+    const { prisma, authService } = setup();
+    prisma.users.push({ id: 'existing-user', email: 'user@example.com' });
+    prisma.refreshTokens.push({
+      id: 'rt-1',
+      userId: 'existing-user',
+      tokenHash: 'prior-login-hash',
+      deviceLabel: null,
+      expiresAt: new Date('2026-06-01T00:00:00.000Z'),
+      revoked: false,
+    });
+    prisma.categories.push({
+      id: 'cat-1',
+      userId: 'existing-user',
+      name: 'Custom',
+      icon: 'x',
+      color: '#000',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    prisma.otpCodes.push({
+      id: 'otp-1',
+      email: 'user@example.com',
+      codeHash: await hashOtpCode('123456'),
+      expiresAt: new Date('2026-01-01T00:10:00.000Z'),
+      used: false,
+      failedAttempts: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    await authService.verifyOtp({ email: 'user@example.com', code: '123456' });
+
+    expect(prisma.categories).toHaveLength(1);
+  });
+
+  it("seeds default categories for an existing user who has never had a refresh token — self-heals a signup whose earlier transaction never committed", async () => {
+    const { prisma, authService } = setup();
+    // Simulates the crash-recovery case: a previous verifyOtp call created
+    // this user row, then failed before its $transaction (which would have
+    // seeded categories and created a refresh token) ever committed.
+    prisma.users.push({ id: 'half-signed-up-user', email: 'user@example.com' });
+    prisma.otpCodes.push({
+      id: 'otp-1',
+      email: 'user@example.com',
+      codeHash: await hashOtpCode('123456'),
+      expiresAt: new Date('2026-01-01T00:10:00.000Z'),
+      used: false,
+      failedAttempts: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    await authService.verifyOtp({ email: 'user@example.com', code: '123456' });
+
+    expect(prisma.categories.length).toBe(DEFAULT_CATEGORIES.length);
+    expect(prisma.categories.every((c) => c.userId === 'half-signed-up-user')).toBe(true);
   });
 });
 

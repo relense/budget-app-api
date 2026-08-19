@@ -8,6 +8,7 @@ import {
 } from './recurringExpenseTemplateService.js';
 import type { RecurringExpenseTemplateInput } from './recurringExpenseTemplateService.js';
 import type { PrismaClient } from '../../lib/prisma.js';
+import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 
 export type RecurringExpenseInstanceServiceErrorReason =
   | 'invalid_amount'
@@ -44,15 +45,6 @@ export interface RecurringExpenseInstanceServiceDeps {
   >;
   budgetMonthService: Pick<BudgetMonthService, 'findBudgetMonthId'>;
   transactionService: Pick<TransactionService, 'create'>;
-}
-
-function hasPrismaErrorCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === code
-  );
 }
 
 function assertValidAmount(amountCents: number): void {

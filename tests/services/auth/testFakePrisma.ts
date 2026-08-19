@@ -15,6 +15,27 @@ export interface FakeUser {
   email: string;
 }
 
+export type FakeBudgetType = 'need' | 'want' | 'savings';
+export type FakeDirection = 'expense' | 'income';
+
+export interface FakeCategory {
+  id: string;
+  userId: string;
+  name: string;
+  icon: string;
+  color: string;
+  budgetType: FakeBudgetType;
+  direction: FakeDirection;
+}
+
+/** Mimics the shape of Prisma's PrismaClientKnownRequestError for P2002 (unique constraint). */
+export class FakeUniqueConstraintError extends Error {
+  readonly code = 'P2002';
+  constructor() {
+    super('Unique constraint failed');
+  }
+}
+
 export interface FakeRefreshToken {
   id: string;
   userId: string;
@@ -38,17 +59,21 @@ interface FakeDelegates {
     }): Promise<FakeOtpCode>;
   };
   user: {
-    upsert(args: {
-      where: { email: string };
-      create: { email: string };
-      update: Record<string, never>;
-    }): Promise<FakeUser>;
+    create(args: { data: { email: string } }): Promise<FakeUser>;
+    findUnique(args: { where: { email: string } }): Promise<FakeUser | null>;
+  };
+  category: {
+    createMany(args: {
+      data: Array<Omit<FakeCategory, 'id'>>;
+    }): Promise<{ count: number }>;
   };
   refreshToken: {
     create(args: {
       data: { userId: string; tokenHash: string; deviceLabel: string | null; expiresAt: Date };
     }): Promise<FakeRefreshToken>;
-    findFirst(args: { where: { tokenHash: string } }): Promise<FakeRefreshToken | null>;
+    findFirst(args: {
+      where: { tokenHash: string } | { userId: string };
+    }): Promise<FakeRefreshToken | null>;
     update(args: {
       where: { id: string };
       data: Partial<Pick<FakeRefreshToken, 'revoked'>>;
@@ -64,6 +89,7 @@ interface FakePrismaClient extends FakeDelegates {
   otpCodes: FakeOtpCode[];
   users: FakeUser[];
   refreshTokens: FakeRefreshToken[];
+  categories: FakeCategory[];
   $transaction<T>(callback: (tx: FakeDelegates) => Promise<T>): Promise<T>;
 }
 
@@ -76,11 +102,13 @@ export function createFakePrisma(): FakePrismaClient {
   const otpCodes: FakeOtpCode[] = [];
   const users: FakeUser[] = [];
   const refreshTokens: FakeRefreshToken[] = [];
+  const categories: FakeCategory[] = [];
 
   const client: FakePrismaClient = {
     otpCodes,
     users,
     refreshTokens,
+    categories,
     otpCode: {
       async create({ data }) {
         const row: FakeOtpCode = {
@@ -114,12 +142,23 @@ export function createFakePrisma(): FakePrismaClient {
       },
     },
     user: {
-      async upsert({ where, create }) {
-        const existing = users.find((u) => u.email === where.email);
-        if (existing) return existing;
-        const row: FakeUser = { id: randomUUID(), email: create.email };
+      async create({ data }) {
+        if (users.some((u) => u.email === data.email)) {
+          throw new FakeUniqueConstraintError();
+        }
+        const row: FakeUser = { id: randomUUID(), email: data.email };
         users.push(row);
         return row;
+      },
+      async findUnique({ where }) {
+        return users.find((u) => u.email === where.email) ?? null;
+      },
+    },
+    category: {
+      async createMany({ data }) {
+        const rows: FakeCategory[] = data.map((entry) => ({ id: randomUUID(), ...entry }));
+        categories.push(...rows);
+        return { count: rows.length };
       },
     },
     refreshToken: {
@@ -136,7 +175,10 @@ export function createFakePrisma(): FakePrismaClient {
         return row;
       },
       async findFirst({ where }) {
-        return refreshTokens.find((row) => row.tokenHash === where.tokenHash) ?? null;
+        if ('tokenHash' in where) {
+          return refreshTokens.find((row) => row.tokenHash === where.tokenHash) ?? null;
+        }
+        return refreshTokens.find((row) => row.userId === where.userId) ?? null;
       },
       async update({ where, data }) {
         const row = refreshTokens.find((r) => r.id === where.id);
