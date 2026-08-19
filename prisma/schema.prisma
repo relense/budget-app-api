@@ -73,7 +73,7 @@ enum Direction {
 // "2027-03" are distinct rows) — not a recurring 1-12 bucket. `locked`/
 // `lockedAt` are inert until Build Order step 5 wires up the locking
 // mutation; the columns exist now so category_month/recurring instances
-// have a real FK target instead of a raw month string. See PLAN.md's
+// have a real FK target instead of a raw month string. See docs/PLAN.md's
 // "Month Lifecycle" section.
 model BudgetMonth {
   id       String    @id @default(uuid()) @db.Uuid
@@ -93,7 +93,7 @@ model BudgetMonth {
 
 // Pure catalog — transversal across months, no month-awareness at all.
 // Month-scoped state (is it active, what's its budget) lives on
-// CategoryMonth, not here. Hard-deleted, not soft-deleted (see PLAN.md's
+// CategoryMonth, not here. Hard-deleted, not soft-deleted (see docs/PLAN.md's
 // "Month Lifecycle" section) — blocked while any category_month row
 // references it, for any month past or future.
 model Category {
@@ -116,7 +116,7 @@ model Category {
 }
 
 // The real join: a category is "active" in a month iff a row exists here
-// for it. Hard-deleted, not soft-deleted (see PLAN.md's "Month Lifecycle"
+// for it. Hard-deleted, not soft-deleted (see docs/PLAN.md's "Month Lifecycle"
 // section) — deletion is only allowed once no Transaction references it.
 model CategoryMonth {
   id                 String @id @default(uuid()) @db.Uuid
@@ -137,7 +137,7 @@ model CategoryMonth {
   @@map("category_month")
 }
 
-// Hard-deleted, not soft-deleted (see PLAN.md's "Month Lifecycle" section)
+// Hard-deleted, not soft-deleted (see docs/PLAN.md's "Month Lifecycle" section)
 // — no undo, no batching, single or bulk delete is immediate and permanent.
 model Transaction {
   id                         String    @id @default(uuid()) @db.Uuid
@@ -164,7 +164,7 @@ model Transaction {
 
 // Pure catalog — transversal across months, no month-awareness. Points at
 // an existing Category (never creates one). Hard-deleted, not soft-deleted
-// (see PLAN.md's "Month Lifecycle" section) — blocked while any instance
+// (see docs/PLAN.md's "Month Lifecycle" section) — blocked while any instance
 // references it, for any month, past or future.
 model RecurringExpenseTemplate {
   id          String     @id @default(uuid()) @db.Uuid
@@ -187,7 +187,7 @@ model RecurringExpenseTemplate {
 
 // The real join, one row per template per month it's carried into — same
 // role as CategoryMonth. Hard-deleted, matching CategoryMonth, for the
-// identical reason (see PLAN.md's step 4 design notes) — deletion is only
+// identical reason (see docs/PLAN.md's step 4 design notes) — deletion is only
 // allowed once no Transaction references it. Not one-to-one with
 // Transaction: split payments are allowed, no uniqueness constraint here.
 model RecurringExpenseInstance {

@@ -123,7 +123,7 @@ export function createBudgetMonthService({ prisma, now = () => new Date() }: Bud
    * calendar month. Read-only: never creates a row, same rule
    * findBudgetMonthId follows for query paths. No auto-lock cascade, no
    * automatic next-month creation — locking and planning ahead are both
-   * separate, explicit user actions (see PROGRESS.md).
+   * separate, explicit user actions (see docs/PROGRESS.md).
    */
   async function findCurrentMonth(userId: string): Promise<{ month: string; locked: boolean }> {
     return findCurrentMonthOnClient(prisma, userId, now);

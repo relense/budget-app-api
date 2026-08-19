@@ -785,6 +785,21 @@ GraphQL `RecurringExpenseTemplate`/`RecurringExpenseInstance` types, all
 their mutations) still reflects the old design; see `SERVICES.md` for what's
 actually live until this gets built.
 
+**Repo root cleanup.** User wanted the project-level `.md` files out of the
+repo root. `GLOSSARY.md`, `PLAN.md`, `PROGRESS.md`, `SCALING.md`,
+`SERVICES.md`, `FUNCTIONALITIES.md` moved into a new `docs/` folder.
+`CLAUDE.md` moved to `.claude/CLAUDE.md` — confirmed via Claude Code's own
+memory documentation that this is an equally-supported auto-discovery
+location (not just root `./CLAUDE.md`), so it's still read automatically
+every session. Every cross-reference across the docs, `.claude/CLAUDE.md`,
+source comments (`src/lib/monthFormat.ts`,
+`src/services/auth/defaultCategories.ts`,
+`src/services/recurringExpenses/recurringExpenseInstanceService.ts`,
+`src/services/categories/categoryMonthService.ts`,
+`src/services/budgetMonths/budgetMonthService.ts`), a test comment, and
+`prisma/schema.prisma` updated to `docs/`-prefixed paths (docs referencing
+each other, as siblings within `docs/`, keep bare filenames).
+
 Next actions, in order:
 1. Design/build the recurring-expenses flat redesign: drop
    `recurring_expense_templates`, collapse `recurring_expense_instances`
@@ -804,7 +819,7 @@ Next actions, in order:
 
 ## Phase 1 — Backend
 
-- [x] **0. Ground truth** — `CLAUDE.md`, `GLOSSARY.md`, `PLAN.md`, `SCALING.md` committed.
+- [x] **0. Ground truth** — `.claude/CLAUDE.md`, `docs/GLOSSARY.md`, `docs/PLAN.md`, `docs/SCALING.md` committed (originally flat at the repo root — moved into `.claude/`/`docs/` later, see "Where we left off").
 - [x] **1. Project scaffold** — Fastify + TypeScript (ESM, pnpm), GraphQL Yoga
       mounted at `/graphql` with a trivial `Query.ping`, Prisma + Postgres via
       Docker Compose (`@prisma/adapter-pg`, required by Prisma 7's client

@@ -124,7 +124,7 @@ async function assertMonthNotLockedOnClient(
 /**
  * A brand-new activation is only ever allowed in the current month or the
  * one right after it — never further ahead, and never in the past either
- * (PLAN.md's "Month Lifecycle" section; the future-only cap is the phase-1
+ * (docs/PLAN.md's "Month Lifecycle" section; the future-only cap is the phase-1
  * rule, further-ahead planning is a candidate paid-tier feature). Blocking
  * the past isn't just a symmetry nicety: "current" is derived elsewhere
  * (findCurrentMonthOnClient) as the *earliest unlocked* BudgetMonth row, so
@@ -356,7 +356,7 @@ export function createCategoryMonthService({
    * if the category is already active that month, only creates one (and only
    * then requires an explicit budget — never derived from anything) if it
    * isn't. For callers (recurring expenses) where "already active" is a
-   * success case, not an error — see PLAN.md's step 4 design notes.
+   * success case, not an error — see docs/PLAN.md's step 4 design notes.
    */
   async function ensureActiveForCategory(
     userId: string,

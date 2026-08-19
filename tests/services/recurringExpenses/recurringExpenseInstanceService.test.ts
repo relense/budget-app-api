@@ -215,7 +215,7 @@ describe('addRecurringExpenseToMonth', () => {
     // but it can catch a *structural* regression: an earlier version of
     // this code read the template's category before taking the lock at
     // all, which is exactly the bug a real-Postgres concurrent test caught
-    // (see PROGRESS.md). This asserts the call order stays lock-then-read.
+    // (see docs/PROGRESS.md). This asserts the call order stays lock-then-read.
     const { prisma, categoryMonthService, templateService, instanceService, housing } = await setup();
     await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
     const template = await templateService.createTemplate('user-1', {

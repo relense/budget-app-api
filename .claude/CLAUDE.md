@@ -1,13 +1,13 @@
 # Budget Tracker — Project Instructions
 
-Full architecture, data model, and build order: `PLAN.md`.
-Domain terminology: `GLOSSARY.md` — use these terms exactly in code (types, variables, function names).
-Current services + full API surface (GraphQL schema, REST routes) at a glance: `SERVICES.md` — update it in the same commit whenever a service's functions or the API surface change.
-Growth/scaling reference (not relevant yet): `SCALING.md`.
+Full architecture, data model, and build order: `docs/PLAN.md`.
+Domain terminology: `docs/GLOSSARY.md` — use these terms exactly in code (types, variables, function names).
+Current services + full API surface (GraphQL schema, REST routes) at a glance: `docs/SERVICES.md` — update it in the same commit whenever a service's functions or the API surface change.
+Growth/scaling reference (not relevant yet): `docs/SCALING.md`.
 
 ## Rules (apply every session, not just the first)
 
-- **Never invent details.** If something isn't decided in `PLAN.md`, ask before writing code — don't fill the gap with a "reasonable" default.
+- **Never invent details.** If something isn't decided in `docs/PLAN.md`, ask before writing code — don't fill the gap with a "reasonable" default.
 - **Interview before coding ("grill me").** Before starting a new module or feature, ask about edge cases, data shapes, and error behavior until there's a shared understanding — don't jump from a one-line request straight to code.
 - **TDD, small steps.** Failing test → minimal code to pass → refactor. Don't generate a whole module in one shot.
 - **Money is always integer cents** (`amountCents` etc.), never float. The ×100/÷100 conversion happens only in the frontend.
