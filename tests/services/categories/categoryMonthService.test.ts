@@ -246,6 +246,25 @@ describe('addCategoryToMonth', () => {
 
     expect(categoryMonth.monthlyBudgetCents).toBe(5000);
   });
+
+  it('inherits by real calendar month, not insertion order, when multiple prior activations exist', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    // Deliberately created out of chronological order: the later calendar
+    // month is inserted first, so a selection bug that just picked
+    // "first"/"last created" instead of "latest real month" would pick
+    // the wrong one here.
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 30000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-06', 10000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 20000);
+
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-10',
+    );
+
+    expect(categoryMonth.monthlyBudgetCents).toBe(30000);
+  });
 });
 
 describe('ensureActiveForCategory', () => {
@@ -293,6 +312,17 @@ describe('ensureActiveForCategory', () => {
     const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08');
 
     expect(result.monthlyBudgetCents).toBe(12000);
+  });
+
+  it('inherits by real calendar month, not insertion order, when multiple prior activations exist', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 30000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-06', 10000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 20000);
+
+    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-10');
+
+    expect(result.monthlyBudgetCents).toBe(30000);
   });
 
   it('throws category_not_found for a category belonging to another user', async () => {

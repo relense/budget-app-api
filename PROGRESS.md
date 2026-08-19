@@ -245,8 +245,32 @@ explicitly the first time a category is ever activated anywhere (nothing
 to inherit from). GraphQL: `addCategoryToMonth`'s `monthlyBudgetCents`
 argument is now nullable (flagged up front — this is the interface change
 CLAUDE.md's rule covers). Verified against real Postgres. 278 Jest tests
-total (was 274). No `pr-reviewer`/`test-auditor` run on this one, per the
-user (token-conscious) — worth a look before merge regardless.
+total (was 274).
+
+`pr-reviewer` on PR #7: **needs changes (minor)**, caught a real bug. The
+first version's doc comment justified sorting candidate `category_month`
+rows by `createdAt` instead of real calendar month by claiming the
+one-month planning horizon keeps them in chronological order — the
+reviewer checked and **that horizon isn't actually enforced anywhere
+server-side yet** (still an open item, see below), so a category_month
+can be created for any month in any order today. `createdAt` and real
+month order can diverge, silently inheriting the wrong budget. Fixed by
+sorting by the actual linked `BudgetMonth.month` string instead (a second
+`findMany` + a `Map`, not a Prisma `include` — cheap at this row count,
+and keeps the fake-Prisma test double simple). Also: the reviewer noted
+every inheritance test only ever set up *one* prior activation, so the
+"most recent" selection logic itself was untested (a broken
+first/last-element bug would have passed) — added a test per call site
+that creates three prior activations **out of chronological insertion
+order** and asserts the real-latest-month one wins. Two nitpicks also
+taken: `resolveBudgetForActivation` now scopes its lookup by `userId` too
+(defense-in-depth — both callers already check ownership first) instead
+of trusting categoryId alone; and a comment now explains why
+`assertValidBudget` is deliberately called twice in `addCategoryToMonth`
+(fail-fast outer check, plus the inner one that also has to cover
+`ensureActiveForCategoryOnClient`'s callers, which lack the outer one).
+280 Jest tests total (was 278). Re-verified the corrected sort against
+real Postgres with the same out-of-order scenario the new unit tests use.
 
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-lifecycle` (this first

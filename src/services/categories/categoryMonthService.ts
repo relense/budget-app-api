@@ -40,17 +40,18 @@ function assertValidMonth(month: string): void {
 
 /**
  * When no budget is given explicitly, inherits the category's most
- * recently created category_month's budget (carry-forward / pre-
- * provisioning next month while it's already active) — or requires an
- * explicit one if this category has never been active anywhere yet.
- * "Most recently created" rather than "most recent month": the planning
- * horizon cap (current month or the one right after, never further) means
- * category_month rows are always created in chronological order in
- * practice, and this avoids an extra join to BudgetMonth just to sort by
- * month string.
+ * recent (by calendar month, not insertion order — the one-month planning
+ * horizon isn't enforced server-side yet, so a category_month can in
+ * principle be created for any month in any order) category_month's
+ * budget — carry-forward / pre-provisioning next month while it's already
+ * active — or requires an explicit one if this category has never been
+ * active anywhere yet. Scoped by userId too: both call sites already run
+ * assertOwnedCategory first, so this is defense-in-depth, not the only
+ * thing standing between users.
  */
 async function resolveBudgetForActivation(
-  client: Pick<PrismaClient, 'categoryMonth'>,
+  client: Pick<PrismaClient, 'categoryMonth' | 'budgetMonth'>,
+  userId: string,
   categoryId: string,
   monthlyBudgetCents: number | undefined,
 ): Promise<number> {
@@ -59,13 +60,24 @@ async function resolveBudgetForActivation(
     return monthlyBudgetCents;
   }
 
-  const priorActivations = await client.categoryMonth.findMany({ where: { categoryId } });
+  const priorActivations = await client.categoryMonth.findMany({ where: { userId, categoryId } });
   if (priorActivations.length === 0) {
     throw new CategoryMonthServiceError('category_month_budget_required');
   }
-  const mostRecent = priorActivations.reduce((latest, row) =>
-    row.createdAt > latest.createdAt ? row : latest,
-  );
+
+  // "YYYY-MM" sorts lexicographically the same as chronologically, so a
+  // plain string comparison is enough once each row is paired with its
+  // real month — no need to parse dates.
+  const budgetMonths = await client.budgetMonth.findMany({
+    where: { id: { in: priorActivations.map((row) => row.monthId) } },
+  });
+  const monthById = new Map(budgetMonths.map((budgetMonth) => [budgetMonth.id, budgetMonth.month]));
+
+  const mostRecent = priorActivations.reduce((latest, row) => {
+    const rowMonth = monthById.get(row.monthId) ?? '';
+    const latestMonth = monthById.get(latest.monthId) ?? '';
+    return rowMonth > latestMonth ? row : latest;
+  });
   return mostRecent.monthlyBudgetCents;
 }
 
@@ -96,7 +108,7 @@ export async function ensureActiveForCategoryOnClient(
   const existing = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
   if (existing) return existing;
 
-  const resolvedBudget = await resolveBudgetForActivation(client, categoryId, monthlyBudgetCents);
+  const resolvedBudget = await resolveBudgetForActivation(client, userId, categoryId, monthlyBudgetCents);
 
   try {
     return await client.categoryMonth.create({
@@ -150,6 +162,11 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     month: string,
     monthlyBudgetCents?: number,
   ) {
+    // Deliberately duplicated with the check inside resolveBudgetForActivation
+    // below: this one is a cheap fail-fast before resolveBudgetMonthId's
+    // permanent upsert (see the comment on assertOwnedCategory right
+    // after), the one inside also has to cover ensureActiveForCategoryOnClient's
+    // callers, which don't have this outer check at all.
     if (monthlyBudgetCents !== undefined) assertValidBudget(monthlyBudgetCents);
     assertValidMonth(month);
 
@@ -172,7 +189,7 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
       // references an already-soft-deleted category.
       return await prisma.$transaction(async (tx) => {
         await assertOwnedCategory(tx, userId, categoryId);
-        const resolvedBudget = await resolveBudgetForActivation(tx, categoryId, monthlyBudgetCents);
+        const resolvedBudget = await resolveBudgetForActivation(tx, userId, categoryId, monthlyBudgetCents);
 
         return tx.categoryMonth.create({
           data: { userId, categoryId, monthId, monthlyBudgetCents: resolvedBudget },
