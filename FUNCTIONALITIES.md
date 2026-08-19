@@ -1,7 +1,7 @@
 # Functionalities — What The App Can Do Right Now
 
 Plain-language walkthrough of the app from the user's perspective, as built
-today. Not a design-rationale doc (see `plan.md` for that) and not the API
+today. Not a design-rationale doc (see `PLAN.md` for that) and not the API
 reference (see `SERVICES.md` for that) — just "what can I actually do."
 
 ## 1. Sign up / log in
@@ -87,7 +87,7 @@ mirroring the Category/CategoryMonth split. That split has been dropped:
   this to future months too?" question, since there's no template default
   to reconcile against.
 
-See `plan.md`'s Data Model section and `GLOSSARY.md`'s Recurring Expense
+See `PLAN.md`'s Data Model section and `GLOSSARY.md`'s Recurring Expense
 entry for the full shape, and `PROGRESS.md` for build status — this is
 decided but not implemented yet; the code currently in `develop` (and
 `SERVICES.md`) still reflects the old template/instance design.

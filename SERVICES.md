@@ -3,12 +3,12 @@
 Quick lookup of what exists right now: every service and what it does, every
 GraphQL query/mutation, every REST route. This is a **map of the current
 surface**, not a design-rationale doc — for *why* something works the way it
-does, see `plan.md`; for domain terminology, see `GLOSSARY.md`.
+does, see `PLAN.md`; for domain terminology, see `GLOSSARY.md`.
 
 **Keep this current.** Whenever a service gains/loses a function, a
 dependency changes, or the GraphQL schema/REST routes change, update the
 relevant section here in the same commit — same "living document" rule as
-`plan.md`.
+`PLAN.md`.
 
 ---
 
@@ -96,7 +96,7 @@ protects this step too.
 **Planning horizon.** A category can never be newly activated outside
 `[current, current + 1]` — the derived "current" month itself, or the one
 right after it, never further ahead and never in the past (see
-`budgetMonthService` below for "current") — plan.md's Month Lifecycle rule,
+`budgetMonthService` below for "current") — PLAN.md's Month Lifecycle rule,
 enforced server-side via `assertWithinPlanningHorizon(currentMonth, month)`.
 It's a pure sync comparison, not a query — every call site must derive
 `currentMonth` via `findCurrentMonthOnClient` itself, and must do so
@@ -184,7 +184,7 @@ whole lock → activate → insert sequence runs in one transaction).
 
 Both instance-creation paths auto-activate the category via
 `ensureActiveForCategoryOnClient` — the one deliberate exception to
-categories' otherwise-always-manual activation rule (see `plan.md`).
+categories' otherwise-always-manual activation rule (see `PLAN.md`).
 
 ---
 
@@ -198,7 +198,7 @@ Not services (no `userId`-scoped business logic), but worth knowing exist:
 | `jwt.ts` | `signAccessToken`/`verifyAccessToken` — jose, HS256. |
 | `otp.ts` | `generateOtpCode`/`hashOtpCode`/`verifyOtpCode`/`OTP_CODE_REGEX` — argon2. |
 | `refreshToken.ts` | `generateRefreshToken`/`hashRefreshToken` — sha256 (already high-entropy, unlike OTP codes). |
-| `email.ts` | `EmailService` interface + `createConsoleEmailService` (logs instead of sending — real provider deferred per `plan.md`). |
+| `email.ts` | `EmailService` interface + `createConsoleEmailService` (logs instead of sending — real provider deferred per `PLAN.md`). |
 | `env.ts` | `loadEnv` — Zod-validated env vars, fails fast at startup. |
 | `monthFormat.ts` | `isValidMonthFormat` — the one place `"YYYY-MM"` validation lives. |
 | `shutdown.ts` | `createShutdownHandler` — `SIGTERM`/`SIGINT` + crash handlers. |
