@@ -876,11 +876,46 @@ month, one via `createRecurringExpense` and one via `addCategoryToMonth`,
 run with `Promise.all`) — no crash, carry-forward happened exactly once,
 no duplicate rows.
 
+`pr-reviewer` on `feature/recurring-expenses-flat-redesign`, round 1: found
+one blocking issue — `addCategoryToMonth` ran
+`resolveBudgetMonthIdWithCreatedFlag` and the `categoryMonth` insert in two
+separate transactions, so a failure in the second (e.g.
+`category_month_budget_required`) left the first transaction's
+`BudgetMonth` row committed anyway, permanently and silently losing the
+carry-forward trigger for that month on retry (`wasCreated: false` even
+though the retry was genuinely the first successful activity there). Fixed
+by merging both into one transaction, matching `createRecurringExpense`'s
+already-correct pattern; re-verified against real Postgres with the exact
+failing-then-retrying sequence. Also addressed two suggestions from the
+same round: `onNewBudgetMonth`/`seedNewMonth` calls now wrapped in
+try/catch and swallowed, matching their own doc comments' already-stated
+"never allowed to fail the action that already succeeded" intent (the code
+didn't actually enforce that before); and a new test proving
+`seedNewMonth`'s per-item collision skip continues to the next item rather
+than just not throwing overall. Plus a nitpick: `withSavepoint` now
+releases its savepoint on the success path. 288 Jest tests total (was 286).
+
+Round 2 (verifying those fixes): **approved**. Traced the merged
+transaction's control flow and confirmed the bug is genuinely closed, both
+try/catch swallows are correctly scoped, and the new collision-continuation
+test proves what it claims. Two minor non-blocking notes for a future
+pass, not blockers for this PR: no test yet exercises the swallow itself
+(a test that makes `seedNewMonth` throw and asserts the outer call still
+succeeds), and the swallowed path has no logging — a genuine bug there
+would currently be invisible in production. Tracked here rather than
+addressed now, since round 2 explicitly called them out as follow-up
+material.
+
 Next actions, in order:
-1. Wait for human review/approval on `feature/recurring-expenses-flat-redesign`.
-2. Recurring-template edit propagation no longer exists as a concept under
+1. Wait for human review/merge on `feature/recurring-expenses-flat-redesign`
+   (`pr-reviewer`-approved as of round 2).
+2. Small tracked follow-up, not blocking: add a test exercising the
+   `onNewBudgetMonth`/`seedNewMonth` swallow itself, and consider logging
+   the swallowed error (this service layer has no logger dependency
+   anywhere yet — `src/lib/shutdown.ts` is the only existing precedent).
+3. Recurring-template edit propagation no longer exists as a concept under
    the flat design — nothing outstanding there.
-3. Still open from step 5's original scope: soft-delete + undo for
+4. Still open from step 5's original scope: soft-delete + undo for
    `savings_funds`/`savings_movements`/`income_sources` (steps 6-7, not yet
    built) — re-grill when those steps are actually interviewed, per the
    callout under "Soft delete + undo" above.
