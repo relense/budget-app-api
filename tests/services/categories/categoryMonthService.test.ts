@@ -376,13 +376,15 @@ describe('addCategoryToMonth', () => {
   });
 });
 
-describe('lockMonth cannot skip more than one month (pr-reviewer PR #10 round-2 follow-up)', () => {
+describe('lockMonth/deleteBudgetMonth cannot skip more than one month (pr-reviewer PR #10 round-2 follow-up)', () => {
   // pr-reviewer flagged a theoretical "milder echo" of the original
-  // past-month hijack: could lockMonth ever jump "current" by more than one
-  // month, e.g. current=2026-08, 2026-09 never provisioned, 2026-10
-  // pre-provisioned and unlocked? These prove the precondition itself is
-  // unreachable — see the comment above assertWithinPlanningHorizon's call
-  // site in addCategoryToMonth for the induction argument.
+  // past-month hijack: could advancing "current" (via lockMonth, or via
+  // deleteBudgetMonth removing the current row once it's empty) ever jump
+  // by more than one month, e.g. current=2026-08, 2026-09 never
+  // provisioned, 2026-10 pre-provisioned and unlocked? These prove the
+  // precondition itself is unreachable under either mechanism — see the
+  // comment above assertWithinPlanningHorizon's call site in
+  // addCategoryToMonth for the induction argument.
   it('deleting an intervening pre-provisioned month does not open up a later one while the earlier month is still current', async () => {
     const { categoryMonthService, budgetMonthService, categoryA, categoryB } = await setup();
 
@@ -423,6 +425,46 @@ describe('lockMonth cannot skip more than one month (pr-reviewer PR #10 round-2 
     await budgetMonthService.lockMonth('user-1', '2026-09');
     // October already existing doesn't let this jump skip past it.
     expect((await budgetMonthService.findCurrentMonth('user-1')).month).toBe('2026-10');
+  });
+
+  it('deleting the current month always advances "current" by exactly one month, never more, even once a further-out month exists', async () => {
+    // deleteBudgetMonth is the other path (besides lockMonth) that can
+    // advance "current" — removing the current, empty, unlocked row makes
+    // the next-earliest unlocked row become current. Same induction
+    // argument applies: a row two months out can only exist once current
+    // has already reached one month out, so this can't skip further either.
+    const { categoryMonthService, budgetMonthService, categoryA, categoryB } = await setup();
+
+    const augustActivation = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      10000,
+    );
+    const septemberActivation = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryB.id,
+      '2026-09',
+      10000,
+    );
+
+    await categoryMonthService.removeCategoryFromMonth('user-1', augustActivation.id);
+    await budgetMonthService.deleteBudgetMonth('user-1', '2026-08');
+    expect((await budgetMonthService.findCurrentMonth('user-1')).month).toBe('2026-09');
+
+    // Only reachable now that current has advanced to 2026-09.
+    const octoberActivation = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-10',
+      10000,
+    );
+
+    await categoryMonthService.removeCategoryFromMonth('user-1', septemberActivation.id);
+    await budgetMonthService.deleteBudgetMonth('user-1', '2026-09');
+    // October already existing doesn't let this jump skip past it.
+    expect((await budgetMonthService.findCurrentMonth('user-1')).month).toBe('2026-10');
+    expect(octoberActivation.monthlyBudgetCents).toBe(10000);
   });
 });
 
