@@ -286,16 +286,28 @@ export function createCategoryMonthService({
     // before the insert" without reopening the exact bug it exists to
     // prevent, so this is the only check of it there is. The TOCTOU gap
     // between this read and the transaction below is left open
-    // deliberately, not just tolerated: "current" usually only advances by
-    // lockMonth (elsewhere), so a race ordinarily just makes this check
-    // slightly more permissive by execution time, not less. That's *not*
-    // an absolute guarantee, though — lockMonth can advance "current" by
-    // more than one month in one jump if the user has a non-contiguous gap
-    // of pre-provisioned unlocked months, and a call racing in the middle
-    // of that jump could in principle still slip a month through that a
-    // fully up-to-date check would have rejected. Narrow and
-    // concurrency-dependent, flagged by pr-reviewer as a follow-up rather
-    // than fixed here — see PROGRESS.md.
+    // deliberately, not just tolerated: "current" only ever advances by
+    // lockMonth or deleteBudgetMonth removing the current (empty, unlocked)
+    // row (both elsewhere, in budgetMonthService), so a race ordinarily
+    // just makes this check slightly more permissive by execution time, not
+    // less — never less permissive, and never by more than one month.
+    // pr-reviewer flagged a theoretical "milder echo" of the original
+    // hijack: could either of those ever jump "current" by *more* than one
+    // month (e.g. current=2026-08, 2026-09 never provisioned, 2026-10
+    // pre-provisioned and unlocked), making a stale `current` captured here
+    // more than one month behind reality? Worked out with the user and
+    // proven by the regression tests below ("lockMonth/deleteBudgetMonth
+    // cannot skip more than one month"): it can't happen. This horizon
+    // check's own lower bound (month >= current) means any BudgetMonth row
+    // that exists anywhere is always within one month of whatever "current"
+    // was at the moment it was created — by induction, that invariant holds
+    // no matter how many creates/deletes/locks happen, since "current" is
+    // never cached, only ever derived live from whichever rows currently
+    // exist. So a row at current+2 can only exist once current has already
+    // reached current+1, i.e. once the month that would otherwise jump
+    // current there is already locked or gone — never while it's still
+    // pending. The TOCTOU gap is therefore bounded to at most one month of
+    // staleness, same as the ordinary case.
     const current = await findCurrentMonthOnClient(prisma, userId, now);
     assertWithinPlanningHorizon(current.month, month);
 
