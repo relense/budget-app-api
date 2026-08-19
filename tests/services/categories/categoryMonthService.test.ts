@@ -249,12 +249,12 @@ describe('addCategoryToMonth', () => {
 
   it('inherits by real calendar month, not insertion order, when multiple prior activations exist', async () => {
     const { categoryMonthService, categoryA } = await setup();
-    // Deliberately created out of chronological order: the later calendar
-    // month is inserted first, so a selection bug that just picked
-    // "first"/"last created" instead of "latest real month" would pick
-    // the wrong one here.
-    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 30000);
+    // Deliberately created out of chronological order, with the real-latest
+    // month (2026-09) inserted neither first nor last — this rules out
+    // "first created wins" and "last created wins" as well as the actual
+    // bug that shipped ("most recently created wins"), not just the one.
     await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-06', 10000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 30000);
     await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 20000);
 
     const categoryMonth = await categoryMonthService.addCategoryToMonth(
@@ -316,8 +316,10 @@ describe('ensureActiveForCategory', () => {
 
   it('inherits by real calendar month, not insertion order, when multiple prior activations exist', async () => {
     const { categoryMonthService, categoryA } = await setup();
-    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 30000);
+    // Real-latest month (2026-09) inserted neither first nor last — rules
+    // out "first/last created wins" as well as the actual bug that shipped.
     await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-06', 10000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 30000);
     await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 20000);
 
     const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-10');

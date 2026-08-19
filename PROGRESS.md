@@ -271,6 +271,22 @@ of trusting categoryId alone; and a comment now explains why
 `ensureActiveForCategoryOnClient`'s callers, which lack the outer one).
 280 Jest tests total (was 278). Re-verified the corrected sort against
 real Postgres with the same out-of-order scenario the new unit tests use.
+Re-ran `pr-reviewer`: **approved**, one trivial nitpick (a stale
+`SERVICES.md` line still saying "most recently created" after the fix
+changed the rule to "most recent by real month") — fixed.
+
+`test-auditor` on PR #7: **tests trustworthy**, two low-cost suggestions,
+both taken. The multi-candidate test's fixture had the real-latest month
+also be the first-inserted row, so it ruled out the actual bug that
+shipped ("most recently created wins") but not a hypothetical "first
+created wins" — reordered the fixture so the real-latest month is
+inserted neither first nor last, ruling out both. Also added GraphQL
+resolver-level tests for `addCategoryToMonth` (`tests/graphql/schema.categories.test.ts`,
+new file) — this mutation had zero GraphQL-layer coverage before, and
+this PR is exactly where its `monthlyBudgetCents` argument became
+meaningfully different (required → optional), so it's a good time to
+start closing that gap rather than a place to widen it further. 283 Jest
+tests total (was 280).
 
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-lifecycle` (this first
