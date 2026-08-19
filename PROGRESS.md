@@ -71,6 +71,27 @@ the reasoning is needed later:
   gained real rollback-on-throw simulation for `$transaction`, since
   production code now genuinely depends on that semantics, not just on
   which calls get made.
+- **A recurring expense template's category must be `expense`-direction**
+  (surfaced by round 4's review, confirmed with the user): nothing
+  previously stopped pointing a template at an income category (e.g.
+  Salary) — `markRecurringPaid` derives the resulting transaction's
+  `direction` from the category, so that would have let a "recurring
+  expense" payment land as income. New `invalid_category_direction` error
+  reason, enforced in `assertValidTemplateInput`.
+
+PR #4 went through four `pr-reviewer` rounds total: round 1 (3 suggestions,
+fixed), round 2 (1 blocking regression + the hard-delete/soft-delete
+decision + the concurrency fix above), round 3 (1 blocking fix — a
+concurrent-delete race in `updateTemplate`'s locked transaction leaking a
+raw Prisma error instead of the typed `template_not_found` — plus
+hardening: deep-clone the fake's rollback snapshot, a lock-ordering canary
+test), round 4 (**approved**, 2 suggestions — the direction check above and
+a stale schema comment — both fixed).
+
+Also added `SERVICES.md`: a living reference listing every service's
+functions and the full API surface (GraphQL schema + REST routes), kept
+current alongside `plan.md`/`GLOSSARY.md` — not a design-rationale doc, a
+quick "what exists right now" lookup.
 
 Next actions, in order:
 1. Wait for human review/approval on PR #4 per `CLAUDE.md`'s git
@@ -160,7 +181,7 @@ Next actions, in order:
       of on separately-bound connections. `transactionService` gained an
       internal-only third `create` param (`recurringExpenseInstanceId`,
       never client-settable) and `listByRecurringExpenseInstanceIds` for
-      DataLoader use. 199 Jest tests total (was 149 after step 3), the
+      DataLoader use. 203 Jest tests total (was 149 after step 3), the
       fake-Prisma double consolidated into one shared file per composition
       graph (a lesson carried over from a step-3 review finding) and
       extended to actually simulate transaction rollback-on-throw, since
@@ -177,9 +198,13 @@ Next actions, in order:
       rejection, real hard-delete-once-unused), plus a dedicated 150-trial
       concurrent-request test against real Postgres proving the
       categoryId-change-vs-instance-creation race is actually closed, not
-      just correct in the (non-concurrent) fake. → PR #4
-      (`feature/recurring-expenses` → `develop`), open, reviewed (2 rounds),
-      awaiting human review.
+      just correct in the (non-concurrent) fake. Also validates a
+      template's category is `expense`-direction (`invalid_category_direction`)
+      — `markRecurringPaid` derives the resulting transaction's `direction`
+      from the category, so an income category would otherwise silently
+      produce an income transaction from a "recurring expense" payment. →
+      PR #4 (`feature/recurring-expenses` → `develop`), open, reviewed
+      (4 rounds, approved on round 4), awaiting human review.
 - [ ] **5. Month lifecycle** — carry-forward (with budget-inheritance for
       `category_month`), month locking + auto-lock cascade for empty months,
       recurring-template edit propagation, soft-delete + undo for the
