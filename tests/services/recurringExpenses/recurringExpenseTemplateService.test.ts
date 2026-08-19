@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { createRecurringExpenseTemplateService } from './recurringExpenseTemplateService.js';
+import { createRecurringExpenseTemplateService } from '../../../src/services/recurringExpenses/recurringExpenseTemplateService.js';
 import { createFakePrisma } from '../categories/testFakePrisma.js';
 
 function setup() {
@@ -83,13 +83,13 @@ describe('createTemplate', () => {
     ).rejects.toMatchObject({ reason: 'category_not_found' });
   });
 
-  it('rejects a non-positive amountCents', async () => {
+  it.each([0, -100, 1.5])('rejects an invalid amountCents of %p', async (amountCents) => {
     const { service } = setup();
 
     await expect(
       service.createTemplate('user-1', {
         name: 'Rent',
-        amountCents: 0,
+        amountCents,
         categoryId: 'cat-housing',
         budgetType: 'need',
         dueDay: 1,
@@ -477,5 +477,66 @@ describe('listCatalog', () => {
     const result = await service.listCatalog('user-1');
 
     expect(result.map((t) => t.id)).toEqual([mine.id]);
+  });
+
+  it("excludes another user's templates", async () => {
+    const { service } = setup();
+    const mine = await service.createTemplate('user-1', {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: 'cat-housing',
+      budgetType: 'need',
+      dueDay: 1,
+    });
+    await service.createTemplate('user-2', {
+      name: 'Their rent',
+      amountCents: 50000,
+      categoryId: 'cat-other-user',
+      budgetType: 'need',
+      dueDay: 1,
+    });
+
+    const result = await service.listCatalog('user-1');
+
+    expect(result.map((t) => t.id)).toEqual([mine.id]);
+  });
+});
+
+describe('findManyByIds', () => {
+  it('returns templates matching the given ids', async () => {
+    const { service } = setup();
+    const a = await service.createTemplate('user-1', {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: 'cat-housing',
+      budgetType: 'need',
+      dueDay: 1,
+    });
+    const b = await service.createTemplate('user-1', {
+      name: 'Gas',
+      amountCents: 4000,
+      categoryId: 'cat-housing',
+      budgetType: 'want',
+      dueDay: 15,
+    });
+    await service.createTemplate('user-1', {
+      name: 'Water',
+      amountCents: 2000,
+      categoryId: 'cat-housing',
+      budgetType: 'want',
+      dueDay: 20,
+    });
+
+    const result = await service.findManyByIds([a.id, b.id]);
+
+    expect(result.map((t) => t.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it('returns an empty array for an empty id list', async () => {
+    const { service } = setup();
+
+    const result = await service.findManyByIds([]);
+
+    expect(result).toEqual([]);
   });
 });

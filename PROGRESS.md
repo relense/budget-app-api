@@ -93,6 +93,17 @@ functions and the full API surface (GraphQL schema + REST routes), kept
 current alongside `plan.md`/`GLOSSARY.md` — not a design-rationale doc, a
 quick "what exists right now" lookup.
 
+Ran the new `test-auditor` subagent against the branch: all tests passed,
+but the GraphQL resolver/context/loader layer wiring `userId` from auth into
+every recurring-expense mutation had zero coverage beyond `Query.ping`, plus
+a handful of service-layer gaps (`findManyByIds`, cross-user list isolation,
+non-integer `amountCents`) that sibling services already covered. Closed all
+of it: `schema.recurringExpenses.test.ts` (23 tests — one success + one
+`UNAUTHENTICATED` case per recurring-expense query/mutation, plus service-error→`extensions.code`
+mapping checks), `errors.test.ts`, `loaders.test.ts`, `context.test.ts`, and
+targeted additions to the two recurring-expense service test files. 256 Jest
+tests total (was 203).
+
 Next actions, in order:
 1. Wait for human review/approval on PR #4 per `CLAUDE.md`'s git
    workflow — don't merge, don't start step 5 until approved.

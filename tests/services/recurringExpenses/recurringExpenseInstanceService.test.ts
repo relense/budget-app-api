@@ -1,10 +1,10 @@
 import { describe, expect, it } from '@jest/globals';
-import { createBudgetMonthService } from '../budgetMonths/budgetMonthService.js';
-import { createCategoryMonthService } from '../categories/categoryMonthService.js';
-import { createCategoryService } from '../categories/categoryService.js';
-import { createTransactionService } from '../categories/transactionService.js';
-import { createRecurringExpenseInstanceService } from './recurringExpenseInstanceService.js';
-import { createRecurringExpenseTemplateService } from './recurringExpenseTemplateService.js';
+import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
+import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
+import { createCategoryService } from '../../../src/services/categories/categoryService.js';
+import { createTransactionService } from '../../../src/services/categories/transactionService.js';
+import { createRecurringExpenseInstanceService } from '../../../src/services/recurringExpenses/recurringExpenseInstanceService.js';
+import { createRecurringExpenseTemplateService } from '../../../src/services/recurringExpenses/recurringExpenseTemplateService.js';
 import { createFakePrisma } from '../categories/testFakePrisma.js';
 
 async function setup() {
@@ -311,7 +311,7 @@ describe('updateInstance', () => {
     });
   });
 
-  it('rejects a non-positive amountCents', async () => {
+  it.each([0, -100, 1.5])('rejects an invalid amountCents of %p', async (amountCents) => {
     const { templateService, categoryMonthService, instanceService, housing } = await setup();
     await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
     const template = await templateService.createTemplate('user-1', {
@@ -323,7 +323,9 @@ describe('updateInstance', () => {
     });
     const instance = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
 
-    await expect(instanceService.updateInstance('user-1', instance.id, 0)).rejects.toMatchObject({
+    await expect(
+      instanceService.updateInstance('user-1', instance.id, amountCents),
+    ).rejects.toMatchObject({
       reason: 'invalid_amount',
     });
   });
@@ -403,6 +405,79 @@ describe('listByMonth', () => {
     const empty = await instanceService.listByMonth('user-1', '2030-01');
     expect(empty).toEqual([]);
     expect(prisma.budgetMonths.some((bm) => bm.month === '2030-01')).toBe(false);
+  });
+
+  it("excludes another user's instances active in the same month", async () => {
+    const {
+      categoryService,
+      templateService,
+      categoryMonthService,
+      instanceService,
+      housing,
+    } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
+    const template = await templateService.createTemplate('user-1', {
+      name: 'Gas',
+      amountCents: 4000,
+      categoryId: housing.id,
+      budgetType: 'want',
+      dueDay: 15,
+    });
+    const mine = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+
+    const theirCategory = await categoryService.createCategory('user-2', {
+      name: 'Their housing',
+      icon: 'home',
+      color: '#000',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    await categoryMonthService.addCategoryToMonth('user-2', theirCategory.id, '2026-08', 90000);
+    const theirTemplate = await templateService.createTemplate('user-2', {
+      name: 'Their gas',
+      amountCents: 3000,
+      categoryId: theirCategory.id,
+      budgetType: 'want',
+      dueDay: 15,
+    });
+    await instanceService.addRecurringExpenseToMonth('user-2', theirTemplate.id, '2026-08');
+
+    const result = await instanceService.listByMonth('user-1', '2026-08');
+
+    expect(result.map((i) => i.id)).toEqual([mine.id]);
+  });
+});
+
+describe('findManyByIds', () => {
+  it('returns instances matching the given ids', async () => {
+    const { templateService, categoryMonthService, instanceService, housing } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
+    const template = await templateService.createTemplate('user-1', {
+      name: 'Gas',
+      amountCents: 4000,
+      categoryId: housing.id,
+      budgetType: 'want',
+      dueDay: 15,
+    });
+    const a = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+    const b = await instanceService.addRecurringExpenseToMonth(
+      'user-1',
+      template.id,
+      '2026-09',
+      90000,
+    );
+
+    const result = await instanceService.findManyByIds([a.id, b.id]);
+
+    expect(result.map((i) => i.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it('returns an empty array for an empty id list', async () => {
+    const { instanceService } = await setup();
+
+    const result = await instanceService.findManyByIds([]);
+
+    expect(result).toEqual([]);
   });
 });
 
@@ -550,4 +625,27 @@ describe('markRecurringPaid', () => {
       }),
     ).rejects.toMatchObject({ reason: 'month_locked' });
   });
+
+  it.each([0, -100, 1.5])(
+    'rejects an invalid amountCents of %p (delegated to transactionService.create)',
+    async (amountCents) => {
+      const { categoryMonthService, templateService, instanceService, housing } = await setup();
+      await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
+      const template = await templateService.createTemplate('user-1', {
+        name: 'Rent',
+        amountCents: 80000,
+        categoryId: housing.id,
+        budgetType: 'need',
+        dueDay: 1,
+      });
+      const instance = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+
+      await expect(
+        instanceService.markRecurringPaid('user-1', instance.id, {
+          amountCents,
+          date: '2026-08-01',
+        }),
+      ).rejects.toMatchObject({ reason: 'invalid_amount' });
+    },
+  );
 });
