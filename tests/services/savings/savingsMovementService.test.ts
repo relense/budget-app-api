@@ -248,6 +248,43 @@ describe('updateSavingsMovement', () => {
       }),
     ).rejects.toMatchObject({ reason: 'movement_not_found' });
   });
+
+  it('throws movement_not_found (not a raw error) when the movement is deleted between the pre-check and the write', async () => {
+    // pr-reviewer (PR #15): a concurrent update/delete of the same
+    // movement (double-click, or a race between two devices/tabs) used to
+    // surface Prisma's raw P2025 once the write inside the transaction hit
+    // an already-gone row — this proves it's now mapped to the same typed
+    // error findOwnedMovement itself would throw.
+    const { prisma, savingsMovementService, savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 10000,
+    });
+    const movement = await savingsMovementService.createSavingsMovement('user-1', {
+      fundId: fund.id,
+      amountCents: 100,
+      type: 'deposit',
+      date: '2026-08-01',
+    });
+
+    // Simulates the race: the pre-transaction findOwnedMovement check
+    // succeeds (as if it ran a moment before a concurrent delete), but the
+    // row is gone by the time this call's own write runs.
+    const realFindUnique = prisma.savingsMovement.findUnique;
+    prisma.savingsMovement.findUnique = (async (args) => {
+      const result = await realFindUnique(args);
+      prisma.savingsMovements.length = 0;
+      return result;
+    }) as typeof prisma.savingsMovement.findUnique;
+
+    await expect(
+      savingsMovementService.updateSavingsMovement('user-1', movement.id, {
+        amountCents: 200,
+        type: 'deposit',
+        date: '2026-08-01',
+      }),
+    ).rejects.toMatchObject({ reason: 'movement_not_found' });
+  });
 });
 
 describe('deleteSavingsMovement', () => {
@@ -309,6 +346,33 @@ describe('deleteSavingsMovement', () => {
 
     await expect(
       savingsMovementService.deleteSavingsMovement('user-2', movement.id),
+    ).rejects.toMatchObject({ reason: 'movement_not_found' });
+  });
+
+  it('throws movement_not_found (not a raw error) when the movement is already gone by the time the write runs', async () => {
+    // pr-reviewer (PR #15): same concurrent-double-submit reasoning as
+    // updateSavingsMovement's identical regression test above.
+    const { prisma, savingsMovementService, savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 10000,
+    });
+    const movement = await savingsMovementService.createSavingsMovement('user-1', {
+      fundId: fund.id,
+      amountCents: 100,
+      type: 'deposit',
+      date: '2026-08-01',
+    });
+
+    const realFindUnique = prisma.savingsMovement.findUnique;
+    prisma.savingsMovement.findUnique = (async (args) => {
+      const result = await realFindUnique(args);
+      prisma.savingsMovements.length = 0;
+      return result;
+    }) as typeof prisma.savingsMovement.findUnique;
+
+    await expect(
+      savingsMovementService.deleteSavingsMovement('user-1', movement.id),
     ).rejects.toMatchObject({ reason: 'movement_not_found' });
   });
 });

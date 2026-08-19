@@ -54,7 +54,7 @@ Going with GraphQL from the start, since the API is being built once and used by
 ## System Design Notes
 
 - **Multi-tenancy**: every table has `user_id`; every query filters by the authenticated user. This is the single most important thing to get right before this goes live.
-- **Indexes**: `(user_id, date)` on transactions and savings_movements — you'll filter by user + month constantly. Also index `otp_codes.email` (looked up on every verify) and `refresh_tokens.token_hash` (looked up on every refresh) — both are hit on the hot path of every login/refresh, not just occasional queries.
+- **Indexes**: `(user_id, date)` on transactions — you'll filter by user + month constantly. `savings_movements` shipped as `(user_id, fund_id)` instead (step 6) — the actual query patterns filter by fund, not by date range (`computeNetMovementCents`/`listByFundIds`), so this index serves the real code better; a `(user_id, date)` one would only matter for a "movements across all funds in a date range" query that doesn't exist yet. Also index `otp_codes.email` (looked up on every verify) and `refresh_tokens.token_hash` (looked up on every refresh) — both are hit on the hot path of every login/refresh, not just occasional queries.
 - **Migrations**: versioned from commit 1 via Prisma, never hand-edit the DB schema directly.
 - **Config**: env vars for dev/staging/prod, nothing hardcoded (DB connection string, JWT secret).
 - **Auth boundary**: every non-auth route/resolver requires a valid access JWT, checked once in a shared context builder — resolvers read `userId` from context, they don't re-verify tokens themselves.

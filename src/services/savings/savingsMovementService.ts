@@ -1,4 +1,5 @@
 import type { PrismaClient } from '../../lib/prisma.js';
+import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 
 export type MovementType = 'deposit' | 'withdraw';
 
@@ -142,14 +143,34 @@ export function createSavingsMovementService({ prisma }: SavingsMovementServiceD
         throw new SavingsMovementServiceError('insufficient_funds');
       }
 
-      return tx.savingsMovement.update({
-        where: { id },
-        data: {
-          amountCents: input.amountCents,
-          type: input.type,
-          date: new Date(input.date),
-        },
-      });
+      try {
+        // Re-checked here, not just via the pre-transaction findOwnedMovement
+        // above: a concurrent update/delete of this same movement (e.g. a
+        // double-click, or a race between two devices) could have removed
+        // the row in the gap between that check and this write, landing
+        // after this call serializes on the fund's lock. Mapped to the same
+        // typed error findOwnedMovement would have thrown, rather than
+        // letting Prisma's raw P2025 through — same "pre-check plus DB-level
+        // backstop" pattern this codebase already uses for referential
+        // integrity (e.g. deleteSavingsFund's P2003 catch), applied here to
+        // existence instead. Caught and immediately rethrown, with no
+        // further query on tx afterward, so this doesn't reopen the
+        // transaction-poisoning issue withSavepoint exists for (see
+        // src/lib/prismaSavepoint.ts) — a plain rollback on throw is safe.
+        return await tx.savingsMovement.update({
+          where: { id },
+          data: {
+            amountCents: input.amountCents,
+            type: input.type,
+            date: new Date(input.date),
+          },
+        });
+      } catch (error) {
+        if (hasPrismaErrorCode(error, 'P2025')) {
+          throw new SavingsMovementServiceError('movement_not_found');
+        }
+        throw error;
+      }
     });
   }
 
@@ -168,7 +189,16 @@ export function createSavingsMovementService({ prisma }: SavingsMovementServiceD
         throw new SavingsMovementServiceError('insufficient_funds');
       }
 
-      await tx.savingsMovement.delete({ where: { id } });
+      try {
+        // Same concurrent-double-submit reasoning as updateSavingsMovement's
+        // identical catch above.
+        await tx.savingsMovement.delete({ where: { id } });
+      } catch (error) {
+        if (hasPrismaErrorCode(error, 'P2025')) {
+          throw new SavingsMovementServiceError('movement_not_found');
+        }
+        throw error;
+      }
     });
   }
 

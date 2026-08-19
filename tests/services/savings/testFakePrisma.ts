@@ -41,6 +41,14 @@ export class FakeForeignKeyConstraintError extends Error {
   }
 }
 
+/** Mimics the shape of Prisma's PrismaClientKnownRequestError for P2025 (record not found on update/delete). */
+export class FakeRecordNotFoundError extends Error {
+  readonly code = 'P2025';
+  constructor() {
+    super('Record not found');
+  }
+}
+
 interface FakeDelegates {
   /**
    * No-op — the fake has no real Postgres, so it can't simulate row-level
@@ -202,14 +210,17 @@ export function createFakePrisma(): FakePrismaClient {
       },
       async update({ where, data }) {
         const row = savingsMovements.find((m) => m.id === where.id);
-        if (!row) throw new Error('not found');
+        // Mimics Prisma's real P2025 — the row disappearing between an
+        // app-level pre-check and this write (a concurrent double-submit)
+        // hits this, not a generic error.
+        if (!row) throw new FakeRecordNotFoundError();
         Object.assign(row, data);
         row.updatedAt = nextTimestamp();
         return row;
       },
       async delete({ where }) {
         const index = savingsMovements.findIndex((m) => m.id === where.id);
-        if (index === -1) throw new Error('not found');
+        if (index === -1) throw new FakeRecordNotFoundError();
         const [row] = savingsMovements.splice(index, 1);
         return row!;
       },

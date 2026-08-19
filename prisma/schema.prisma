@@ -253,6 +253,11 @@ model SavingsMovement {
 
   fund SavingsFund @relation(fields: [fundId], references: [id], onDelete: Restrict)
 
+  // (userId, fundId), not (userId, date) as docs/PLAN.md's general indexing
+  // note originally suggested — deliberate deviation, not an oversight: the
+  // real query patterns (computeNetMovementCents/listByFundIds in
+  // savingsMovementService) filter by fund, not by a date range, so this
+  // index serves the actual code. See docs/PLAN.md's indexing bullet.
   @@index([userId, fundId])
   @@map("savings_movements")
 }
