@@ -424,7 +424,7 @@ type Mutation {
   updateCategory(id: ID!, input: CategoryInput!): Category! # blocks a direction change if any transaction references this category
   deleteCategory(id: ID!): Boolean! # blocked unless inactive in every month, past and future
 
-  addCategoryToMonth(categoryId: ID!, month: String!, monthlyBudgetCents: Int!): CategoryMonth! # the only activation path in this step; budget always explicit (carry-forward's budget-inheritance path is step 5)
+  addCategoryToMonth(categoryId: ID!, month: String!, monthlyBudgetCents: Int): CategoryMonth! # budget optional as of step 5: inherits the category's most recent budget when omitted, required only the first time a category is ever activated anywhere
   removeCategoryFromMonth(categoryMonthId: ID!): Boolean! # hard delete; blocked if any transactions reference it that month (delete those first); the "also apply to next month" option is step 5
   updateCategoryMonthBudget(categoryMonthId: ID!, monthlyBudgetCents: Int!): CategoryMonth! # this month's budget only, no template to propagate to
 

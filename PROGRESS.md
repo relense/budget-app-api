@@ -218,14 +218,86 @@ against it would be false confidence, the same class of gap that let the
 `25P02` bug through in the first place. That race path stays real-DB-only
 verified, not regression-tested in CI.
 
+PR #6 (`feature/default-categories`) is **merged into `develop`.**
+
+Resumed step 5's "grill me" interview on `feature/month-lifecycle`.
+Confirmed: `budget_months`' first row created lazily (existing pattern);
+auto-lock cascade's "empty month" = zero transactions only (activations
+alone don't block it); planning horizon (current month + 1, never
+further) enforced server-side, not just in the UI; carry-forward
+auto-inherits the just-locked month's budget per category. One nuance
+surfaced mid-interview that reshapes carry-forward: a user can pre-provision
+next month at any time (not gated on locking current first) — adding a
+category to a month it's already active in inherits that budget
+automatically too, same rule as lock-time carry-forward, not a separate
+mechanism. Locking's carry-forward only creates rows for what isn't
+already there (so pre-provisioned categories aren't touched again) — shown
+to the user as a checkbox list, everything pre-checked by default, uncheck
+to opt out (not an opt-in picker).
+
+Implemented the shared piece first (small, self-contained, used by both
+manual activation and recurring-expense auto-activation):
+`categoryMonthService`'s `addCategoryToMonth` and
+`ensureActiveForCategoryOnClient`/`ensureActiveForCategory` all take an
+optional `monthlyBudgetCents` now — inherits the category's most recently
+created `category_month`'s budget when omitted, still requires one
+explicitly the first time a category is ever activated anywhere (nothing
+to inherit from). GraphQL: `addCategoryToMonth`'s `monthlyBudgetCents`
+argument is now nullable (flagged up front — this is the interface change
+CLAUDE.md's rule covers). Verified against real Postgres. 278 Jest tests
+total (was 274).
+
+`pr-reviewer` on PR #7: **needs changes (minor)**, caught a real bug. The
+first version's doc comment justified sorting candidate `category_month`
+rows by `createdAt` instead of real calendar month by claiming the
+one-month planning horizon keeps them in chronological order — the
+reviewer checked and **that horizon isn't actually enforced anywhere
+server-side yet** (still an open item, see below), so a category_month
+can be created for any month in any order today. `createdAt` and real
+month order can diverge, silently inheriting the wrong budget. Fixed by
+sorting by the actual linked `BudgetMonth.month` string instead (a second
+`findMany` + a `Map`, not a Prisma `include` — cheap at this row count,
+and keeps the fake-Prisma test double simple). Also: the reviewer noted
+every inheritance test only ever set up *one* prior activation, so the
+"most recent" selection logic itself was untested (a broken
+first/last-element bug would have passed) — added a test per call site
+that creates three prior activations **out of chronological insertion
+order** and asserts the real-latest-month one wins. Two nitpicks also
+taken: `resolveBudgetForActivation` now scopes its lookup by `userId` too
+(defense-in-depth — both callers already check ownership first) instead
+of trusting categoryId alone; and a comment now explains why
+`assertValidBudget` is deliberately called twice in `addCategoryToMonth`
+(fail-fast outer check, plus the inner one that also has to cover
+`ensureActiveForCategoryOnClient`'s callers, which lack the outer one).
+280 Jest tests total (was 278). Re-verified the corrected sort against
+real Postgres with the same out-of-order scenario the new unit tests use.
+Re-ran `pr-reviewer`: **approved**, one trivial nitpick (a stale
+`SERVICES.md` line still saying "most recently created" after the fix
+changed the rule to "most recent by real month") — fixed.
+
+`test-auditor` on PR #7: **tests trustworthy**, two low-cost suggestions,
+both taken. The multi-candidate test's fixture had the real-latest month
+also be the first-inserted row, so it ruled out the actual bug that
+shipped ("most recently created wins") but not a hypothetical "first
+created wins" — reordered the fixture so the real-latest month is
+inserted neither first nor last, ruling out both. Also added GraphQL
+resolver-level tests for `addCategoryToMonth` (`tests/graphql/schema.categories.test.ts`,
+new file) — this mutation had zero GraphQL-layer coverage before, and
+this PR is exactly where its `monthlyBudgetCents` argument became
+meaningfully different (required → optional), so it's a good time to
+start closing that gap rather than a place to widen it further. 283 Jest
+tests total (was 280).
+
 Next actions, in order:
-1. Wait for human review/approval on `feature/default-categories`.
-2. Once merged: sync `develop`, branch `feature/month-lifecycle`, and
-   resume step 5's "grill me" interview from where it left off (empty-month
-   definition for auto-lock, budget-inheritance on carry-forward,
-   server-side enforcement of the one-month planning horizon, and the
-   GraphQL surface for month/lock state — none of the original four
-   questions got answered yet).
+1. Wait for human review/approval on `feature/month-lifecycle` (this first
+   increment — budget inheritance only).
+2. Still to design/build on this branch or the next: the `lockMonth`
+   mutation itself (checkbox-list carry-forward input, makes the month
+   immutable, provisions next month's `budget_months` row), the auto-lock
+   cascade for empty months, recurring-template edit propagation
+   ("apply to future months too?"), and the GraphQL surface for month/lock
+   state (no `BudgetMonth` type exists yet — nothing today lets a client
+   ask "what's my current month" or "is it locked").
 
 ## Phase 1 — Backend
 

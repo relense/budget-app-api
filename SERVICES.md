@@ -77,8 +77,8 @@ exists here. Owns the month's budget. Deps: `prisma`, `budgetMonthService`.
 |---|---|
 | `listByMonth(userId, month)` | Every active category for that month. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
-| `addCategoryToMonth(userId, categoryId, month, monthlyBudgetCents)` | Explicit activation; errors if already active that month (`category_month_already_active`). |
-| `ensureActiveForCategory(userId, categoryId, month, monthlyBudgetCents?)` | Idempotent — returns the existing row if already active; only requires the budget when it actually creates one. Used by recurring-expense auto-activation. |
+| `addCategoryToMonth(userId, categoryId, month, monthlyBudgetCents?)` | Explicit activation; errors if already active that month (`category_month_already_active`). `monthlyBudgetCents` is optional — inherits the category's most recent (by real calendar month, not insertion order) `category_month`'s budget when omitted, or throws `category_month_budget_required` if this category has never been active anywhere yet. |
+| `ensureActiveForCategory(userId, categoryId, month, monthlyBudgetCents?)` | Idempotent — returns the existing row if already active. Same budget-inheritance rule as `addCategoryToMonth` when it actually creates one. Used by recurring-expense auto-activation. |
 | `removeCategoryFromMonth(userId, categoryMonthId)` | Hard delete, blocked while any transaction references it that month. |
 | `updateCategoryMonthBudget(userId, categoryMonthId, monthlyBudgetCents)` | This month's budget only. |
 
@@ -215,7 +215,7 @@ Introspection and query-depth (max 10) are limited in production.
 | `createCategory` | `input: CategoryInput!` | `Category!` |
 | `updateCategory` | `id: ID!, input: CategoryInput!` | `Category!` |
 | `deleteCategory` | `id: ID!` | `Boolean!` |
-| `addCategoryToMonth` | `categoryId: ID!, month: String!, monthlyBudgetCents: Int!` | `CategoryMonth!` |
+| `addCategoryToMonth` | `categoryId: ID!, month: String!, monthlyBudgetCents: Int` | `CategoryMonth!` |
 | `removeCategoryFromMonth` | `categoryMonthId: ID!` | `Boolean!` |
 | `updateCategoryMonthBudget` | `categoryMonthId: ID!, monthlyBudgetCents: Int!` | `CategoryMonth!` |
 | `createTransaction` | `input: TransactionInput!` | `Transaction!` |

@@ -210,6 +210,61 @@ describe('addCategoryToMonth', () => {
     ).rejects.toMatchObject({ reason: 'invalid_budget' });
     expect(prisma.categoryMonths).toHaveLength(0);
   });
+
+  it('throws category_month_budget_required when omitted and the category has never been active anywhere', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08'),
+    ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
+  it("inherits the category's most recent monthlyBudgetCents when omitted", async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 10000);
+
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+    );
+
+    expect(categoryMonth.monthlyBudgetCents).toBe(10000);
+  });
+
+  it('uses the given budget rather than inheriting when a prior activation exists but a budget is still passed', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 10000);
+
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      5000,
+    );
+
+    expect(categoryMonth.monthlyBudgetCents).toBe(5000);
+  });
+
+  it('inherits by real calendar month, not insertion order, when multiple prior activations exist', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    // Deliberately created out of chronological order, with the real-latest
+    // month (2026-09) inserted neither first nor last — this rules out
+    // "first created wins" and "last created wins" as well as the actual
+    // bug that shipped ("most recently created wins"), not just the one.
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-06', 10000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 30000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 20000);
+
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-10',
+    );
+
+    expect(categoryMonth.monthlyBudgetCents).toBe(30000);
+  });
 });
 
 describe('ensureActiveForCategory', () => {
@@ -248,6 +303,28 @@ describe('ensureActiveForCategory', () => {
     await expect(
       categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08'),
     ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
+  });
+
+  it("inherits the category's most recent monthlyBudgetCents when creating fresh with no budget given", async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 12000);
+
+    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08');
+
+    expect(result.monthlyBudgetCents).toBe(12000);
+  });
+
+  it('inherits by real calendar month, not insertion order, when multiple prior activations exist', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    // Real-latest month (2026-09) inserted neither first nor last — rules
+    // out "first/last created wins" as well as the actual bug that shipped.
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-06', 10000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 30000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 20000);
+
+    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-10');
+
+    expect(result.monthlyBudgetCents).toBe(30000);
   });
 
   it('throws category_not_found for a category belonging to another user', async () => {
