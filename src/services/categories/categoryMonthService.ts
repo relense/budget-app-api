@@ -285,11 +285,17 @@ export function createCategoryMonthService({
     // below, this one can't be "re-checked inside the transaction, right
     // before the insert" without reopening the exact bug it exists to
     // prevent, so this is the only check of it there is. The TOCTOU gap
-    // between this read and the transaction below is still safe to leave
-    // open: nothing else in this function can move "current" backwards, so
-    // a race can only ever make this check more permissive by the time the
-    // transaction runs, never less — no invariant it protects can be
-    // violated by using a slightly stale value.
+    // between this read and the transaction below is left open
+    // deliberately, not just tolerated: "current" usually only advances by
+    // lockMonth (elsewhere), so a race ordinarily just makes this check
+    // slightly more permissive by execution time, not less. That's *not*
+    // an absolute guarantee, though — lockMonth can advance "current" by
+    // more than one month in one jump if the user has a non-contiguous gap
+    // of pre-provisioned unlocked months, and a call racing in the middle
+    // of that jump could in principle still slip a month through that a
+    // fully up-to-date check would have rejected. Narrow and
+    // concurrency-dependent, flagged by pr-reviewer as a follow-up rather
+    // than fixed here — see PROGRESS.md.
     const current = await findCurrentMonthOnClient(prisma, userId, now);
     assertWithinPlanningHorizon(current.month, month);
 

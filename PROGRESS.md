@@ -651,21 +651,41 @@ And finding #3: `resolveBudgetForActivation`'s docstring still said the
 horizon "isn't enforced server-side yet" — corrected. 333 Jest tests total
 (was 330).
 
-`npm run typecheck`, `npm test`, `npm run lint`, `npm run build` all clean
-after the round-1 fixes. Not yet re-reviewed. Per explicit user instruction
-this round, `test-auditor` is deliberately being skipped ("don't use the
-auditor this time at all. If we need the auditor I will use it") to
-conserve tokens; only `pr-reviewer` runs before opening the PR.
+`pr-reviewer` round 2: **approved**. Confirmed the hijack is closed at both
+call sites (a rejected month, past or future, never reaches
+`resolveBudgetMonthId`, so it can never leave a row behind), confirmed both
+non-blocking round-1 findings were fixed, and confirmed the adjusted/new
+tests actually exercise what they claim. One further non-blocking
+observation, addressed by tightening a comment rather than the logic
+itself (out of scope for this PR — it concerns `lockMonth`, which lives on
+the still-unmerged `feature/month-locking`): the TOCTOU-is-always-safe
+claim in `addCategoryToMonth`'s comment was technically too strong.
+`lockMonth` can advance "current" by more than one month in a single jump
+if a user has a non-contiguous gap of pre-provisioned unlocked months
+(e.g. `2026-08` current, `2026-09` never provisioned, `2026-10` already
+pre-provisioned unlocked — locking `2026-08` jumps current straight to
+`2026-10`). A call racing in the middle of that jump, having captured
+`current = 2026-08` just before it committed, could in principle still let
+`2026-09` through even though a fully up-to-date check would have rejected
+it — a milder, race-and-precondition-gated echo of the original hijack.
+Comment corrected to state this precisely instead of claiming an absolute
+guarantee; the underlying question (should `lockMonth`'s current-advancement
+itself be bounded to rule this out?) is left as a follow-up, tracked below,
+since fixing it means touching `feature/month-locking`'s code, not this
+branch's. `npm run typecheck`, `npm test` (333 passing), `npm run lint`,
+`npm run build` all clean.
 
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-locking`.
-2. Re-run `pr-reviewer` on `feature/planning-horizon` to verify the round-1
-   fixes, loop on any further findings, then open a PR with
-   `--base feature/month-locking` (stacked, pending PR #8's merge) — no
-   `test-auditor` pass this round per user instruction.
-3. Still to design/build: recurring-template edit propagation ("apply to
+2. Open a PR for `feature/planning-horizon` with `--base feature/month-locking`
+   (stacked, since it depends on that branch's `findCurrentMonthOnClient`) —
+   no `test-auditor` pass this round per user instruction.
+3. Follow-up, not blocking: decide whether `lockMonth` (on
+   `feature/month-locking`) should bound how far it can advance "current"
+   in one jump, per the narrow TOCTOU observation above.
+4. Still to design/build: recurring-template edit propagation ("apply to
    future months too?" on `updateRecurringExpenseInstance`).
-4. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
+5. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
    should check for a referencing `recurring_expense_instance`, not just
    `transaction`, before deleting a `category_month` row.
 
