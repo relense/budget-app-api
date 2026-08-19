@@ -36,3 +36,4 @@ docker-compose.override.yml
 
 # TypeScript
 *.tsbuildinfo
+/src/generated/prisma

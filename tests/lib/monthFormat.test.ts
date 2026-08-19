@@ -1,0 +1,36 @@
+import { describe, expect, it } from '@jest/globals';
+import { formatMonth, isValidMonthFormat } from '../../src/lib/monthFormat.js';
+
+describe('isValidMonthFormat', () => {
+  it('accepts a well-formed YYYY-MM string', () => {
+    expect(isValidMonthFormat('2026-08')).toBe(true);
+    expect(isValidMonthFormat('2030-01')).toBe(true);
+  });
+
+  it.each([
+    'banana',
+    '2026/08',
+    '2026-8',
+    '26-08',
+    '2026-08-01',
+    '2026-13',
+    '',
+    ' 2026-08',
+    '2026-08 ',
+  ])('rejects %p', (input) => {
+    expect(isValidMonthFormat(input)).toBe(false);
+  });
+});
+
+describe('formatMonth', () => {
+  it('formats a Date as YYYY-MM in UTC, zero-padded', () => {
+    expect(formatMonth(new Date('2026-08-15T12:00:00.000Z'))).toBe('2026-08');
+    expect(formatMonth(new Date('2026-01-01T00:00:00.000Z'))).toBe('2026-01');
+  });
+
+  it('uses UTC rather than the local timezone, even right at a month boundary', () => {
+    // 2026-08-31T23:30 UTC is still August in UTC, whatever the local
+    // timezone the test runner happens to be in would say.
+    expect(formatMonth(new Date('2026-08-31T23:30:00.000Z'))).toBe('2026-08');
+  });
+});
