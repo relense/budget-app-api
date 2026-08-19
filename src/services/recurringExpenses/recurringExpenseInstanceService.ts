@@ -46,6 +46,7 @@ export interface RecurringExpenseInstanceServiceDeps {
   >;
   budgetMonthService: Pick<BudgetMonthService, 'findBudgetMonthId'>;
   transactionService: Pick<TransactionService, 'create'>;
+  now?: () => Date;
 }
 
 function assertValidAmount(amountCents: number): void {
@@ -58,6 +59,7 @@ export function createRecurringExpenseInstanceService({
   prisma,
   budgetMonthService,
   transactionService,
+  now = () => new Date(),
 }: RecurringExpenseInstanceServiceDeps) {
   async function findOwnedInstance(userId: string, instanceId: string) {
     const instance = await prisma.recurringExpenseInstance.findUnique({ where: { id: instanceId } });
@@ -124,6 +126,7 @@ export function createRecurringExpenseInstanceService({
           template.categoryId,
           month,
           categoryMonthlyBudgetCents,
+          now,
         );
         const instance = await tx.recurringExpenseInstance.create({
           data: {
@@ -176,6 +179,7 @@ export function createRecurringExpenseInstanceService({
           template.categoryId,
           month,
           categoryMonthlyBudgetCents,
+          now,
         );
         return tx.recurringExpenseInstance.create({
           data: {

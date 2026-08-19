@@ -1,7 +1,11 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
-import { lockBudgetMonthRow, resolveBudgetMonthId } from '../budgetMonths/budgetMonthService.js';
+import {
+  findCurrentMonthOnClient,
+  lockBudgetMonthRow,
+  resolveBudgetMonthId,
+} from '../budgetMonths/budgetMonthService.js';
 import { assertOwnedCategory, CategoryServiceError } from './categoryService.js';
-import { isValidMonthFormat } from '../../lib/monthFormat.js';
+import { addMonths, isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 
@@ -10,6 +14,7 @@ export type CategoryMonthServiceErrorReason =
   | 'category_month_already_active'
   | 'category_month_has_transactions'
   | 'category_month_budget_required'
+  | 'category_month_beyond_planning_horizon'
   | 'month_locked'
   | 'budget_month_not_found'
   | 'invalid_budget'
@@ -28,6 +33,7 @@ export interface CategoryMonthServiceDeps {
     'category' | 'categoryMonth' | 'transaction' | 'budgetMonth' | '$transaction' | '$queryRaw'
   >;
   budgetMonthService: Pick<BudgetMonthService, 'resolveBudgetMonthId' | 'findBudgetMonthId'>;
+  now?: () => Date;
 }
 
 function assertValidBudget(monthlyBudgetCents: number): void {
@@ -114,6 +120,32 @@ async function assertMonthNotLockedOnClient(
 }
 
 /**
+ * A user can never activate/plan further out than the immediate next
+ * month (plan.md's "Month Lifecycle" section) — a candidate future
+ * paid-tier feature, not phase 1. Exported standalone so
+ * recurringExpenseInstanceService's auto-activation path (which shares
+ * ensureActiveForCategoryOnClient) enforces the identical rule, not a
+ * separately-maintained copy.
+ *
+ * Takes the already-derived `currentMonth` rather than deriving it itself:
+ * callers must capture that *before* calling resolveBudgetMonthId for the
+ * target month. resolveBudgetMonthId upserts (permanently creates) a
+ * BudgetMonth row for `month` if none exists yet — and since a freshly
+ * created row is always unlocked, it would itself become the "earliest
+ * unlocked" candidate findCurrentMonthOnClient picks up whenever no other
+ * unlocked row exists, making this check self-satisfying (current == the
+ * very month being validated, horizon always one past it) for exactly the
+ * case — a brand-new activation with no prior unlocked months — it most
+ * needs to catch.
+ */
+export function assertWithinPlanningHorizon(currentMonth: string, month: string): void {
+  const horizon = addMonths(currentMonth, 1);
+  if (month > horizon) {
+    throw new CategoryMonthServiceError('category_month_beyond_planning_horizon');
+  }
+}
+
+/**
  * Client-parameterized core of ensureActiveForCategory — exported standalone
  * so a caller that already has its own open transaction (e.g.
  * recurringExpenseInstanceService's locked instance-creation flow) can run
@@ -127,15 +159,27 @@ export async function ensureActiveForCategoryOnClient(
   categoryId: string,
   month: string,
   monthlyBudgetCents?: number,
+  now: () => Date = () => new Date(),
 ) {
   assertValidMonth(month);
   await assertOwnedCategory(client, userId, categoryId);
+
+  // Captured before resolveBudgetMonthId's upsert below — see
+  // assertWithinPlanningHorizon's doc comment for why the ordering matters.
+  const current = await findCurrentMonthOnClient(client, userId, now);
 
   const monthId = await resolveBudgetMonthId(client, userId, month);
   await assertMonthNotLockedOnClient(client, monthId);
 
   const existing = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
   if (existing) return existing;
+
+  // Only enforced when this call would actually create a new activation
+  // (the `existing` check above already returned early otherwise) —
+  // pre-provisioning a month a category is already active in is always
+  // allowed regardless of how far ahead it is, same as the rest of this
+  // function's idempotent-if-already-active design.
+  assertWithinPlanningHorizon(current.month, month);
 
   const resolvedBudget = await resolveBudgetForActivation(client, userId, categoryId, monthlyBudgetCents);
 
@@ -165,7 +209,11 @@ export async function ensureActiveForCategoryOnClient(
   }
 }
 
-export function createCategoryMonthService({ prisma, budgetMonthService }: CategoryMonthServiceDeps) {
+export function createCategoryMonthService({
+  prisma,
+  budgetMonthService,
+  now = () => new Date(),
+}: CategoryMonthServiceDeps) {
   async function findOwnedCategoryMonth(userId: string, categoryMonthId: string) {
     const categoryMonth = await prisma.categoryMonth.findUnique({ where: { id: categoryMonthId } });
     if (!categoryMonth || categoryMonth.userId !== userId) {
@@ -208,6 +256,15 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     // leaves a corrupt-but-permanent row behind.
     await assertOwnedCategory(prisma, userId, categoryId);
 
+    // Captured before resolveBudgetMonthId's upsert below — see
+    // assertWithinPlanningHorizon's doc comment for why the ordering
+    // matters. A TOCTOU gap between this read and the transaction below is
+    // safe to leave open: "current" only ever advances (via an explicit
+    // lockMonth call), so a race can only make this check more permissive
+    // by the time the transaction runs, never less — no invariant this
+    // check protects can be violated by using a slightly stale value.
+    const current = await findCurrentMonthOnClient(prisma, userId, now);
+
     const monthId = await budgetMonthService.resolveBudgetMonthId(userId, month);
 
     try {
@@ -224,6 +281,7 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
       return await prisma.$transaction(async (tx) => {
         await assertOwnedCategory(tx, userId, categoryId);
         await assertMonthNotLockedOnClient(tx, monthId);
+        assertWithinPlanningHorizon(current.month, month);
         const resolvedBudget = await resolveBudgetForActivation(tx, userId, categoryId, monthlyBudgetCents);
 
         return tx.categoryMonth.create({
@@ -262,7 +320,7 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     monthlyBudgetCents?: number,
   ) {
     return prisma.$transaction((tx) =>
-      ensureActiveForCategoryOnClient(tx, userId, categoryId, month, monthlyBudgetCents),
+      ensureActiveForCategoryOnClient(tx, userId, categoryId, month, monthlyBudgetCents, now),
     );
   }
 
