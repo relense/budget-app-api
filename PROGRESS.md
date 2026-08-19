@@ -530,14 +530,90 @@ integration-test infrastructure at all yet. Worth deciding deliberately
 (new test category, Postgres-in-CI implications) rather than bolting on
 unprompted — flagging for the user to weigh in on, not doing it silently.
 
+Third increment, on `feature/planning-horizon` (branched off
+`feature/month-locking`, not `develop` — depends on that PR's still-unmerged
+`findCurrentMonthOnClient`): server-side enforcement of the one-month
+planning horizon flagged as outstanding in PR #7 and PR #8's history above.
+Added `addMonths(month, delta)` to `monthFormat.ts`. New
+`assertWithinPlanningHorizon(currentMonth, month)` in `categoryMonthService`
+— a pure sync comparison against an already-derived current month, throwing
+the new `category_month_beyond_planning_horizon` reason. Wired into
+`addCategoryToMonth` (unconditionally) and the shared
+`ensureActiveForCategoryOnClient` (only when actually creating a new
+activation — the existing "already active" idempotent-return path is
+exempt, so a pre-provisioned month is never retroactively rejected), which
+means `recurringExpenseInstanceService`'s auto-activation path inherits the
+identical rule for free. `now` threaded through both services' deps for
+testability, matching the existing `authService`/`budgetMonthService`
+pattern.
+
+Caught a real bug myself before any review: `assertWithinPlanningHorizon`
+originally derived "current month" internally, on the same client, after
+`resolveBudgetMonthId` had already run for the target month.
+`resolveBudgetMonthId` upserts (permanently creates) a `BudgetMonth` row —
+and a freshly created row is always unlocked, so it would itself become the
+"earliest unlocked" row `findCurrentMonthOnClient` picks up whenever no
+other unlocked month exists yet, making current == the very month being
+checked and the horizon check self-satisfying for exactly the case (a
+brand-new activation, no prior unlocked months) it most needed to catch.
+First caught by a new test — `addCategoryToMonth('2026-10', ...)` against a
+fresh user was expected to reject but silently succeeded. Fixed by
+capturing `current` *before* `resolveBudgetMonthId` runs at both call sites
+and turning `assertWithinPlanningHorizon` into a plain sync function taking
+the already-derived value, rather than a client/`now`-taking async one that
+could re-derive it at the wrong moment. The TOCTOU gap this leaves between
+capturing `current` and the later insert is safe to leave open: current can
+only advance (via an explicit `lockMonth`), never retreat, so a race can
+only make the check *more* permissive by execution time than it was at the
+capture point, never less — no invariant this check protects can be
+violated by using a slightly stale value. This reasoning hasn't been
+reviewer-scrutinized yet, unlike the near-identical claim in PR #8's
+history, which is exactly why it's called out explicitly here rather than
+assumed settled.
+
+Also fixed a broader, previously-latent test-suite bug surfaced while
+chasing the above: most of the existing test suite's hardcoded month
+literals (`'2026-08'`, `'2026-09'`) only ever passed because the real
+wall-clock date happened to fall inside that window when tests defaulted to
+the real clock — not because anything pinned it. Left alone, the whole
+suite would have started silently failing once real time passed September
+2026, for reasons unrelated to any code change. Injected a fixed
+`now = () => new Date('2026-08-15T00:00:00.000Z')` into
+`categoryMonthService.test.ts`'s, `transactionService.test.ts`'s, and
+`recurringExpenseInstanceService.test.ts`'s `setup()` functions (matching
+`budgetMonthService.test.ts`'s existing pattern), even though only the
+first was visibly failing — the other two were equally fragile, just not
+caught yet. Two pre-existing "inherits by real calendar month, not
+insertion order" tests (in `addCategoryToMonth` and `ensureActiveForCategory`)
+had to be rewritten: their premise — activating one category across three
+non-contiguous months via chained live service calls with no locking in
+between — is no longer something a real user could produce once the
+horizon is enforced. Rewrote both to push pre-locked historical
+`BudgetMonth`/`CategoryMonth` fixture rows directly (bypassing the
+service/horizon-check for setup, the same way a real month's history could
+only ever be reached by locking each one in turn), keeping the actual
+regression coverage (real-month sort order, not insertion order) intact.
+Added new tests for the horizon rule itself: rejecting a brand-new
+activation beyond current+1, allowing one exactly at current+1, allowing an
+already-active far-future month through unchanged (idempotent-return
+exemption), and one on the recurring-expense path proving the shared check
+applies there too. 330 Jest tests total (was 329 before this increment's
+net test additions; two rewritten, six added).
+
+`npm run typecheck`, `npm test`, `npm run lint`, `npm run build` all clean.
+Not yet reviewed by `pr-reviewer` — per explicit user instruction this
+round, `test-auditor` is deliberately being skipped ("don't use the auditor
+this time at all. If we need the auditor I will use it") to conserve
+tokens; only `pr-reviewer` will run before opening the PR.
+
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-locking`.
-2. Still to design/build: recurring-template edit propagation ("apply to
-   future months too?" on `updateRecurringExpenseInstance`), and
-   server-side enforcement of the one-month planning horizon (still not
-   implemented anywhere — flagged again during this increment's review
-   groundwork, see PR #7's history).
-3. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
+2. Run `pr-reviewer` on `feature/planning-horizon`, loop on any findings,
+   then open a PR with `--base feature/month-locking` (stacked, pending
+   PR #8's merge) — no `test-auditor` pass this round per user instruction.
+3. Still to design/build: recurring-template edit propagation ("apply to
+   future months too?" on `updateRecurringExpenseInstance`).
+4. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
    should check for a referencing `recurring_expense_instance`, not just
    `transaction`, before deleting a `category_month` row.
 
