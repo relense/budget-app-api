@@ -59,6 +59,11 @@ export const schema = createSchema<GraphQLContext>({
       INCOME
     }
 
+    type BudgetMonth {
+      month: String!
+      locked: Boolean!
+    }
+
     type Category {
       id: ID!
       name: String!
@@ -139,6 +144,7 @@ export const schema = createSchema<GraphQLContext>({
 
     type Query {
       ping: String!
+      currentMonth: BudgetMonth!
       categories: [Category!]!
       categoryMonths(month: String!): [CategoryMonth!]!
       transactions(month: String!, categoryId: ID): [Transaction!]!
@@ -147,6 +153,9 @@ export const schema = createSchema<GraphQLContext>({
     }
 
     type Mutation {
+      lockMonth(month: String!): BudgetMonth!
+      deleteBudgetMonth(month: String!): Boolean!
+
       createCategory(input: CategoryInput!): Category!
       updateCategory(id: ID!, input: CategoryInput!): Category!
       deleteCategory(id: ID!): Boolean!
@@ -180,6 +189,10 @@ export const schema = createSchema<GraphQLContext>({
   resolvers: {
     Query: {
       ping: () => 'pong',
+      currentMonth: async (_parent, _args: unknown, context) => {
+        const userId = requireUserId(context.userId);
+        return context.budgetMonthService.findCurrentMonth(userId);
+      },
       categories: async (_parent, _args: unknown, context) => {
         const userId = requireUserId(context.userId);
         return context.categoryService.listCatalog(userId);
@@ -202,6 +215,23 @@ export const schema = createSchema<GraphQLContext>({
       },
     },
     Mutation: {
+      lockMonth: async (_parent, args: { month: string }, context) => {
+        const userId = requireUserId(context.userId);
+        try {
+          return await context.budgetMonthService.lockMonth(userId, args.month);
+        } catch (error) {
+          toGraphQLError(error);
+        }
+      },
+      deleteBudgetMonth: async (_parent, args: { month: string }, context) => {
+        const userId = requireUserId(context.userId);
+        try {
+          await context.budgetMonthService.deleteBudgetMonth(userId, args.month);
+          return true;
+        } catch (error) {
+          toGraphQLError(error);
+        }
+      },
       createCategory: async (_parent, args: { input: CategoryGraphQLInput }, context) => {
         const userId = requireUserId(context.userId);
         try {

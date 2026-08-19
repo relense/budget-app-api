@@ -288,16 +288,258 @@ meaningfully different (required → optional), so it's a good time to
 start closing that gap rather than a place to widen it further. 283 Jest
 tests total (was 280).
 
+PR #7 (`feature/month-lifecycle`, budget-inheritance increment) is
+**merged into `develop`.**
+
+Second increment, on a fresh `feature/month-locking` branch (the old
+`feature/month-lifecycle` name was reused once already and deleted after
+merging, so this one's under its own name). Before writing any of it,
+resumed the interview on the three still-open questions and it reshaped
+the design significantly — **the auto-lock cascade and automatic
+next-month creation are both dropped entirely**, on an explicit user
+call: locking was being overcomplicated for an edge case ("a user plans
+ahead and doesn't touch it") that mostly won't happen. Revised model,
+recorded in full in `plan.md`'s Month Lifecycle section (original design
+kept alongside, not silently overwritten, since the reasoning matters):
+- `lockMonth(month)` does exactly one thing — locks the current
+  (earliest unlocked) month. No `carryForward` argument, no cascade walk,
+  no automatically-created next month.
+- New `deleteBudgetMonth(month)` — hard-deletes an empty, unlocked month
+  a user pre-provisioned but decided not to use. Same "remove what
+  references it first, then the empty shell becomes deletable" pattern
+  `deleteCategory`/`deleteTemplate` already use, backed by the same
+  `onDelete: Restrict` FKs `category_month`/`recurring_expense_instance`
+  already have to `budget_months`.
+- **Carry-forward needed no dedicated mutation at all** — it's just the
+  client calling the already-existing `addCategoryToMonth`/
+  `addRecurringExpenseToMonth` (omitting the budget to auto-inherit,
+  from the increment above) once per item the user checks, using the
+  already-existing `categoryMonths(month)`/`recurringExpenseInstances(month)`
+  queries against the previous month to populate the checkbox list
+  (pre-checked, uncheck to opt out). Same flow whether planning ahead
+  proactively or starting the new current month right after locking —
+  never an automatic side effect of locking itself, so it can't silently
+  clobber a month the user already set up differently.
+- New `Query.currentMonth: BudgetMonth!` and a `BudgetMonth` GraphQL type
+  (`{ month, locked }`, deliberately no `id` — nothing else in the schema
+  references a BudgetMonth by id, and a not-yet-persisted "current month"
+  wouldn't have a real one anyway). "Current month" is derived, never
+  persisted by the query itself: earliest unlocked row, or today's real
+  calendar month if none exists.
+
+Implementation: `budgetMonthService` gained `findCurrentMonth`,
+`lockMonth`, `deleteBudgetMonth`, and a `BudgetMonthServiceError` class
+(reasons: `budget_month_not_found`, `budget_month_already_locked`,
+`budget_month_not_current`, `budget_month_locked`,
+`budget_month_has_activations`, `invalid_month`). `lockMonth` rejects
+locking anything other than the current month, to protect the "current
+is always earliest unlocked" invariant every derivation relies on.
+`findCurrentMonth` sorts unlocked rows by the real `month` string, not
+`createdAt` or insertion order — deliberately, having just fixed the
+identical bug class in PR #7. Test infrastructure: `budgetMonthService`'s
+fake-Prisma delegate (shared across every service's test double via
+`createFakeBudgetMonthDelegate`) gained `update`/`delete` with the same
+FK-restrict simulation pattern as `categoryMonth`/`recurringExpenseTemplate`;
+`budgetMonthService.test.ts` switched from its own minimal fake to the
+fuller `categories/testFakePrisma.ts` one, since `deleteBudgetMonth` now
+genuinely depends on `categoryMonth` — same "one shared fake per
+composition graph" rule already established. New `formatMonth(date)`
+helper in `lib/monthFormat.ts` (UTC, not local timezone). 311 Jest tests
+total (was 283). Verified against real Postgres: derives current month
+without creating a row, locks it, current month naturally falls back to
+today's real date with no cascade needed, `deleteBudgetMonth` blocked
+while referenced and succeeds once empty.
+
+`pr-reviewer` on PR #8: **needs changes** — caught a real, significant
+gap. Before this PR, `budget_months.locked` could never actually become
+`true` (nothing set it), so every existing "is this month locked" check
+across `categoryMonthService`/`transactionService`/
+`recurringExpenseInstanceService` was a plain check-then-write with no
+row lock — dead code paths that never needed to defend against a real
+race. `lockMonth` is what activates it: as shipped, a `createTransaction`/
+`addCategoryToMonth`/`addRecurringExpenseToMonth` call landing in the gap
+between another request's `lockMonth` check-and-write could still insert
+a row into what is (or becomes) a locked month — silently breaking the
+"locked = immutable" guarantee the whole feature exists for. Asked the
+user how to scope the fix (all-in-now vs. lockMonth-only-now-with-a-
+tracked-follow-up, mirroring the categories soft-delete precedent) — went
+with fixing it fully now.
+
+Closed it with the same `SELECT ... FOR UPDATE` row-lock pattern already
+established for `lockTemplateRow`: new `lockBudgetMonthRow` (standalone,
+`budgetMonthService.ts`), taken before checking `locked` in every write
+path that needs to respect it — `lockMonth`/`deleteBudgetMonth`
+themselves, `categoryMonthService`'s `addCategoryToMonth`/
+`ensureActiveForCategoryOnClient`/`removeCategoryFromMonth`/
+`updateCategoryMonthBudget` (the last two didn't even run inside a
+transaction before this — now do), `transactionService`'s `create`/
+`update`/`deleteTransaction` (same — previously no transaction at all,
+now wrapped, plus a new `loadCategoryMonthForWrite`/
+`assertOwnedTransactionMonthNotLocked` client-parameterized rewrite), and
+`recurringExpenseInstanceService`'s `updateInstance`/`removeFromMonth`.
+`findCurrentMonth` also gained a client-parameterized
+`findCurrentMonthOnClient` so `lockMonth` can re-derive "current" from
+inside its own transaction, against the locked row, not the service's
+separately-bound connection. Verified against real Postgres with a
+30-trial-each concurrent race (`lockMonth` vs `addCategoryToMonth`,
+`lockMonth` vs `createTransaction`, throwaway script removed after): 0
+inconsistencies across both, and the second one genuinely exercised both
+orderings (24/30 the write landed first, 6/30 the lock won and correctly
+rejected the write) rather than one side trivially always winning.
+
+Also addressed from the same review round: the `deleteBudgetMonth`
+in-code comment overstated what the `category_month` pre-check alone
+guarantees — traced it and confirmed `recurring_expense_instance` has
+its own direct FK to `budget_months` (not through `category_month`), and
+`removeCategoryFromMonth` doesn't check for a referencing instance before
+deleting a `category_month` row, so a month can end up with an instance
+but zero `category_month` rows. The pre-check can't see that; only the
+`P2003` catch does. Corrected the comment and added the regression test
+this gap was missing (instance-with-no-category_month still blocks
+deletion). Noted but not changed: `removeCategoryFromMonth` not checking
+for a referencing `recurring_expense_instance` is itself a small
+pre-existing gap, functionally harmless (the FK backstop on
+`deleteBudgetMonth` covers it), worth a follow-up note rather than a fix
+right now. `BudgetMonth`'s lack of an `id` field (deliberate, see above)
+means a normalized GraphQL client can't auto-merge cache updates after
+`lockMonth`/`deleteBudgetMonth` — flagged for whoever picks up the
+frontend, not a backend concern. 312 Jest tests total (was 311).
+
+`pr-reviewer` round 2 on PR #8: **needs changes** again — the core race
+(write vs. `lockMonth`) traced as correctly closed by hand, but this pass
+surfaced two more, narrower issues in the same class:
+1. **Deadlock risk, new to this round**: `transactionService.update`
+   can lock two *different* `budget_months` rows in one transaction when
+   `categoryMonthId` moves to a different month — the existing month's
+   row, then the target month's row, always in that "old, new" order.
+   Two concurrent `update` calls swapping a transaction between the same
+   two months in opposite directions would lock them in opposite orders
+   and deadlock (Postgres aborts one with `40P01`). Zero test coverage
+   existed for `update` actually moving a transaction across months at
+   all. Fixed: pre-lock every distinct `budget_months` row a given
+   `update` call touches, in canonical (sorted) order, before running the
+   existing checks (which harmlessly re-lock rows already held by the
+   same transaction). Added the missing cross-month tests. Verified
+   against real Postgres: 20 trials of two transactions swapped in
+   opposite directions concurrently, 0 deadlocks.
+2. **Uncaught raw error, narrower than it looks**: `addCategoryToMonth`/
+   `ensureActiveForCategoryOnClient` are the *only* two paths that create
+   the first-ever `category_month` for a month (every other path
+   operates on a month a `category_month`/`recurring_expense_instance`
+   already references, which — thanks to `onDelete: Restrict` — makes
+   deletion structurally impossible while they exist). For that one case,
+   `assertMonthNotLockedOnClient`'s `budgetMonth?.locked` check silently
+   treated "row was deleted" (null, so `?.locked` is `undefined`, falsy)
+   the same as "not locked," letting the caller fall through into an
+   uncaught FK violation on the insert if a concurrent `deleteBudgetMonth`
+   won the race for that same (previously-empty) month. Fixed: explicit
+   `!budgetMonth` branch throwing a new `budget_month_not_found` reason
+   (added to `CategoryMonthServiceErrorReason`), plus a P2003 catch as a
+   backstop (structurally unreachable once the explicit check holds the
+   lock for the rest of the transaction, but matches this file's
+   established pre-check-plus-FK-catch style elsewhere). Added the
+   regression test. Verified against real Postgres: 20 trials of
+   `addCategoryToMonth` racing `deleteBudgetMonth` for the same
+   never-before-activated month — every rejection came back as a clean
+   typed error, zero raw ones.
+
+315 Jest tests total (was 312).
+
+`pr-reviewer` round 3: **needs changes**, once more — found a real issue
+introduced by round 2's own deadlock fix. `transactionService.update`'s
+new pre-lock step looked up the *target* `categoryMonth` (from the
+client-supplied `input.categoryMonthId`) and added its `monthId` to the
+lock set with no ownership check — unlike every other lookup in this
+file, which checks `userId` before touching a row. Practically: an
+unowned/guessed `categoryMonthId` would still cause the server to take a
+real row lock on another tenant's `budget_months` row, briefly
+contending against their own concurrent writes to that month, before the
+existing (unchanged) ownership check inside `loadCategoryMonthForWrite`
+rejected the request moments later. No data leak, request still
+correctly denied — but a genuine deviation from CLAUDE.md's
+multi-tenancy rule, and the only place in the whole fix where a lock was
+taken before ownership was verified. Fixed: gate adding the target
+month to the lock set on `targetCategoryMonth.userId === userId`, so an
+unowned id contributes nothing to the pre-lock step at all. Added the
+missing cross-user regression test for `update`'s target `categoryMonthId`
+(the `create` path already had the equivalent). Deterministic fix (not
+timing-dependent — a simple "don't call the lock function if ownership
+fails" gate), so verified with the functional test alone; no additional
+real-Postgres concurrency run was needed for this one, unlike the
+timing-dependent races earlier in this PR. 316 Jest tests total (was
+315).
+
+`pr-reviewer` round 4: **approved** — full end-to-end trace of the
+round-3 fix (same-month, cross-month/owned-target, cross-month/unowned-target),
+plus a fresh sweep of every `lockBudgetMonthRow`/`lockTemplateRow` call
+site in the whole `src/` tree, found nothing else in this class. One
+non-blocking nuance, not a bug: the round-3 regression test asserted only
+the rejection reason, which `loadCategoryMonthForWrite`'s ownership check
+would produce identically whether or not the fix existed — it didn't
+actually prove "no lock taken on the other tenant's row," the substance
+of what round 3 found. Strengthened it: spies on `$queryRaw` (what
+`lockBudgetMonthRow` calls) and asserts the other user's `monthId` never
+appears among the ids it was invoked with. Verified this by temporarily
+reverting the round-3 fix locally and confirming the test fails exactly
+as expected, then restoring it — genuine regression coverage now, not
+just "still rejects." 316 Jest tests total, unchanged (one test replaced
+with a stronger version of itself, not a net-new one).
+
+Four review rounds on this PR, three of which found something real —
+each fix narrower than the last (full multi-file locking gap → a
+cross-month deadlock ordering issue → an ownership-check-after-lock gap
+in that same fix → a test that didn't prove what it claimed). Worth
+naming as a pattern for future concurrency-touching changes in this
+codebase: get it reviewed again after *every* fix to a locking fix, not
+just once at the end — each round's patch was exactly narrow enough to
+introduce its own new edge case.
+
+`test-auditor` after the four review rounds: no failures, four real gaps
+found and fixed. (1) `recurringExpenseInstanceService.removeFromMonth`
+had zero test coverage of its `month_locked` rejection — one of the two
+paths this PR moved into a transaction with a real
+`lockBudgetMonthRow`, untested despite the sibling `updateInstance` and
+`markRecurringPaid` both having the equivalent test; added it. (2) The
+new `budget_month_not_found` reason (on both `BudgetMonthServiceError`
+and `CategoryMonthServiceError` — same string, two classes) was never
+asserted through the GraphQL error-mapping boundary; added rows to
+`errors.test.ts`'s `it.each` table and a `schema.budgetMonths.test.ts`
+case for `lockMonth`. (3) `SERVICES.md` still said the month-locked
+check on transactions was "inert until Build Order step 5 wires up the
+mutation that actually locks a month" — this PR *is* that mutation;
+corrected. (4) The most substantive one: round 2's canonical-lock-ordering
+deadlock fix (`transactionService.update`'s `.sort()`) had no test
+proving the ordering itself, only the end-to-end outcome — a regression
+dropping `.sort()` would have passed every existing test. Added a
+`$queryRaw`-spy test with **deterministically hand-picked ids** (not the
+service's random UUIDs, which would only catch this by a coin flip
+depending on how two random UUIDs happened to compare) proving the two
+`budget_months` rows are locked in sorted order regardless of which is
+"old" and which is "new". Verified by temporarily dropping `.sort()`
+locally, confirming the test fails, then restoring it. Also verified the
+same way for finding (1)'s reciprocal check the auditor did
+independently on the round-3/4 ownership fix. 321 Jest tests total (was
+316).
+
+Noted, not implemented — a bigger scope call than a single-PR fix
+warrants without asking first: the auditor pointed out every concurrency
+guarantee in this PR (and, going back further, `lockTemplateRow`'s) is
+verified once by a throwaway real-Postgres script and then deleted, so
+none of it is re-checked by anything that runs in CI. This repo has no
+integration-test infrastructure at all yet. Worth deciding deliberately
+(new test category, Postgres-in-CI implications) rather than bolting on
+unprompted — flagging for the user to weigh in on, not doing it silently.
+
 Next actions, in order:
-1. Wait for human review/approval on `feature/month-lifecycle` (this first
-   increment — budget inheritance only).
-2. Still to design/build on this branch or the next: the `lockMonth`
-   mutation itself (checkbox-list carry-forward input, makes the month
-   immutable, provisions next month's `budget_months` row), the auto-lock
-   cascade for empty months, recurring-template edit propagation
-   ("apply to future months too?"), and the GraphQL surface for month/lock
-   state (no `BudgetMonth` type exists yet — nothing today lets a client
-   ask "what's my current month" or "is it locked").
+1. Wait for human review/approval on `feature/month-locking`.
+2. Still to design/build: recurring-template edit propagation ("apply to
+   future months too?" on `updateRecurringExpenseInstance`), and
+   server-side enforcement of the one-month planning horizon (still not
+   implemented anywhere — flagged again during this increment's review
+   groundwork, see PR #7's history).
+3. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
+   should check for a referencing `recurring_expense_instance`, not just
+   `transaction`, before deleting a `category_month` row.
 
 ## Phase 1 — Backend
 

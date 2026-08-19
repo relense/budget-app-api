@@ -1,4 +1,5 @@
 import { GraphQLError } from 'graphql';
+import { BudgetMonthServiceError } from '../services/budgetMonths/budgetMonthService.js';
 import { CategoryMonthServiceError } from '../services/categories/categoryMonthService.js';
 import { CategoryServiceError } from '../services/categories/categoryService.js';
 import { TransactionServiceError } from '../services/categories/transactionService.js';
@@ -15,6 +16,7 @@ export function toGraphQLError(error: unknown): never {
   if (
     error instanceof CategoryServiceError ||
     error instanceof CategoryMonthServiceError ||
+    error instanceof BudgetMonthServiceError ||
     error instanceof TransactionServiceError ||
     error instanceof RecurringExpenseTemplateServiceError ||
     error instanceof RecurringExpenseInstanceServiceError

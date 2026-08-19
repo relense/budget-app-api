@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { GraphQLError } from 'graphql';
+import { BudgetMonthServiceError } from '../../src/services/budgetMonths/budgetMonthService.js';
 import { CategoryMonthServiceError } from '../../src/services/categories/categoryMonthService.js';
 import { CategoryServiceError } from '../../src/services/categories/categoryService.js';
 import { TransactionServiceError } from '../../src/services/categories/transactionService.js';
@@ -31,7 +32,17 @@ describe('toGraphQLError', () => {
       new CategoryMonthServiceError('category_month_budget_required'),
       'CATEGORY_MONTH_BUDGET_REQUIRED',
     ],
+    [
+      'CategoryMonthServiceError (budget_month_not_found)',
+      new CategoryMonthServiceError('budget_month_not_found'),
+      'BUDGET_MONTH_NOT_FOUND',
+    ],
     ['TransactionServiceError', new TransactionServiceError('invalid_amount'), 'INVALID_AMOUNT'],
+    [
+      'BudgetMonthServiceError',
+      new BudgetMonthServiceError('budget_month_not_found'),
+      'BUDGET_MONTH_NOT_FOUND',
+    ],
     [
       'RecurringExpenseTemplateServiceError',
       new RecurringExpenseTemplateServiceError('template_not_found'),

@@ -222,8 +222,9 @@ describe('addRecurringExpenseToMonth', () => {
 
     // read = outer ownership check (before opening the transaction), then
     // lock, then read = the fresh, post-lock re-read that decides which
-    // category to activate.
-    expect(order).toEqual(['read', 'lock', 'read']);
+    // category to activate, then a second lock = ensureActiveForCategoryOnClient's
+    // own lockBudgetMonthRow before it checks the month isn't locked.
+    expect(order).toEqual(['read', 'lock', 'read', 'lock']);
   });
 
   it('auto-activates the category for the month if not already active', async () => {
@@ -382,6 +383,25 @@ describe('removeFromMonth', () => {
     await expect(instanceService.removeFromMonth('user-1', instance.id)).rejects.toMatchObject({
       reason: 'instance_has_transactions',
     });
+  });
+
+  it('throws month_locked when the month is locked', async () => {
+    const { prisma, templateService, categoryMonthService, instanceService, housing } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
+    const template = await templateService.createTemplate('user-1', {
+      name: 'Gas',
+      amountCents: 4000,
+      categoryId: housing.id,
+      budgetType: 'want',
+      dueDay: 15,
+    });
+    const instance = await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+    prisma.budgetMonths[0]!.locked = true;
+
+    await expect(instanceService.removeFromMonth('user-1', instance.id)).rejects.toMatchObject({
+      reason: 'month_locked',
+    });
+    expect(prisma.recurringExpenseInstances).toHaveLength(1);
   });
 });
 

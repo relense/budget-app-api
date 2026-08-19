@@ -1,4 +1,5 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
+import { lockBudgetMonthRow } from '../budgetMonths/budgetMonthService.js';
 import { ensureActiveForCategoryOnClient } from '../categories/categoryMonthService.js';
 import type { TransactionService } from '../categories/transactionService.js';
 import {
@@ -66,8 +67,18 @@ export function createRecurringExpenseInstanceService({
     return instance;
   }
 
-  async function assertMonthNotLocked(monthId: string): Promise<void> {
-    const budgetMonth = await prisma.budgetMonth.findUnique({ where: { id: monthId } });
+  /**
+   * Takes lockBudgetMonthRow before checking `locked` — must be called
+   * inside a $transaction. Closes the race a plain read would leave open
+   * against a concurrent lockMonth, same pattern as
+   * categoryMonthService/transactionService.
+   */
+  async function assertMonthNotLockedOnClient(
+    client: Pick<PrismaClient, 'budgetMonth' | '$queryRaw'>,
+    monthId: string,
+  ): Promise<void> {
+    await lockBudgetMonthRow(client, monthId);
+    const budgetMonth = await client.budgetMonth.findUnique({ where: { id: monthId } });
     if (budgetMonth?.locked) {
       throw new RecurringExpenseInstanceServiceError('month_locked');
     }
@@ -186,25 +197,33 @@ export function createRecurringExpenseInstanceService({
   async function updateInstance(userId: string, instanceId: string, amountCents: number) {
     assertValidAmount(amountCents);
     const instance = await findOwnedInstance(userId, instanceId);
-    await assertMonthNotLocked(instance.monthId);
 
-    return prisma.recurringExpenseInstance.update({ where: { id: instanceId }, data: { amountCents } });
+    return prisma.$transaction(async (tx) => {
+      await assertMonthNotLockedOnClient(tx, instance.monthId);
+      return tx.recurringExpenseInstance.update({ where: { id: instanceId }, data: { amountCents } });
+    });
   }
 
   async function removeFromMonth(userId: string, instanceId: string): Promise<void> {
     const instance = await findOwnedInstance(userId, instanceId);
-    await assertMonthNotLocked(instance.monthId);
-
-    const referencingTransaction = await prisma.transaction.findFirst({
-      where: { recurringExpenseInstanceId: instanceId },
-    });
-    if (referencingTransaction) {
-      throw new RecurringExpenseInstanceServiceError('instance_has_transactions');
-    }
 
     try {
-      await prisma.recurringExpenseInstance.delete({ where: { id: instanceId } });
+      await prisma.$transaction(async (tx) => {
+        await assertMonthNotLockedOnClient(tx, instance.monthId);
+
+        const referencingTransaction = await tx.transaction.findFirst({
+          where: { recurringExpenseInstanceId: instanceId },
+        });
+        if (referencingTransaction) {
+          throw new RecurringExpenseInstanceServiceError('instance_has_transactions');
+        }
+
+        await tx.recurringExpenseInstance.delete({ where: { id: instanceId } });
+      });
     } catch (error) {
+      if (error instanceof RecurringExpenseInstanceServiceError) {
+        throw error;
+      }
       if (hasPrismaErrorCode(error, 'P2003')) {
         throw new RecurringExpenseInstanceServiceError('instance_has_transactions');
       }

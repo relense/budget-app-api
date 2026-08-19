@@ -220,6 +220,27 @@ describe('addCategoryToMonth', () => {
     expect(prisma.categoryMonths).toHaveLength(0);
   });
 
+  it('throws budget_month_not_found when the target BudgetMonth is deleted between the lock and the insert', async () => {
+    // Simulates deleteBudgetMonth winning the race for a month with zero
+    // category_month rows so far: the BudgetMonth row genuinely no longer
+    // exists by the time assertMonthNotLockedOnClient reads it, even
+    // though resolveBudgetMonthId just confirmed it existed moments
+    // earlier. Without the explicit !budgetMonth check, this would
+    // silently fall through (undefined?.locked is falsy) into a raw,
+    // uncaught FK violation on the insert instead of a clean error.
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    prisma.budgetMonth.findUnique = (async (args: { where: { id: string } }) => {
+      const index = prisma.budgetMonths.findIndex((bm) => bm.id === args.where.id);
+      if (index !== -1) prisma.budgetMonths.splice(index, 1);
+      return null;
+    }) as typeof prisma.budgetMonth.findUnique;
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 10000),
+    ).rejects.toMatchObject({ reason: 'budget_month_not_found' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
   it("inherits the category's most recent monthlyBudgetCents when omitted", async () => {
     const { categoryMonthService, categoryA } = await setup();
     await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 10000);

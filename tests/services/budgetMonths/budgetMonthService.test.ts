@@ -1,11 +1,11 @@
 import { describe, expect, it } from '@jest/globals';
 import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
-import { createFakePrisma } from './testFakePrisma.js';
+import { createFakePrisma } from '../categories/testFakePrisma.js';
 
-function setup() {
+function setup(now: () => Date = () => new Date('2026-08-15T00:00:00.000Z')) {
   const prisma = createFakePrisma();
-  const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
-  return { prisma, budgetMonthService };
+  const budgetMonthService = createBudgetMonthService({ prisma: prisma as never, now });
+  return { prisma, budgetMonthService, now };
 }
 
 describe('resolveBudgetMonthId', () => {
@@ -91,5 +91,239 @@ describe('findBudgetMonthId', () => {
     const found = await budgetMonthService.findBudgetMonthId('user-1', '2026-08');
 
     expect(found).toBe(created);
+  });
+});
+
+describe('findCurrentMonth', () => {
+  it("returns today's real calendar month, without creating a row, when the user has none at all", async () => {
+    const { prisma, budgetMonthService } = setup(() => new Date('2026-08-15T00:00:00.000Z'));
+
+    const result = await budgetMonthService.findCurrentMonth('user-1');
+
+    expect(result).toEqual({ month: '2026-08', locked: false });
+    expect(prisma.budgetMonths).toHaveLength(0);
+  });
+
+  it('returns the earliest unlocked BudgetMonth row, not just the earliest overall', async () => {
+    const { prisma, budgetMonthService } = setup();
+    const juneId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-06');
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-07');
+    const june = prisma.budgetMonths.find((bm) => bm.id === juneId)!;
+    june.locked = true;
+
+    const result = await budgetMonthService.findCurrentMonth('user-1');
+
+    expect(result).toEqual({ month: '2026-07', locked: false });
+  });
+
+  it('picks the earliest unlocked month by real calendar order, not row insertion order', async () => {
+    const { budgetMonthService } = setup();
+    // Deliberately created out of order — the earliest real month is
+    // inserted last, so an insertion-order bug would pick the wrong one.
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-09');
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-07');
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+
+    const result = await budgetMonthService.findCurrentMonth('user-1');
+
+    expect(result.month).toBe('2026-07');
+  });
+
+  it("falls back to today's real month when every existing row is locked", async () => {
+    const { prisma, budgetMonthService } = setup(() => new Date('2026-08-15T00:00:00.000Z'));
+    const juneId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-06');
+    prisma.budgetMonths.find((bm) => bm.id === juneId)!.locked = true;
+
+    const result = await budgetMonthService.findCurrentMonth('user-1');
+
+    expect(result).toEqual({ month: '2026-08', locked: false });
+    expect(prisma.budgetMonths).toHaveLength(1);
+  });
+
+  it("does not let another user's rows affect this user's current month", async () => {
+    const { budgetMonthService } = setup();
+    await budgetMonthService.resolveBudgetMonthId('user-2', '2026-01');
+
+    const result = await budgetMonthService.findCurrentMonth('user-1');
+
+    expect(result).toEqual({ month: '2026-08', locked: false });
+  });
+});
+
+describe('lockMonth', () => {
+  it('locks the current month', async () => {
+    const { prisma, budgetMonthService, now } = setup();
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+
+    const locked = await budgetMonthService.lockMonth('user-1', '2026-08');
+
+    expect(locked.locked).toBe(true);
+    expect(locked.lockedAt).toEqual(now());
+    expect(prisma.budgetMonths[0]!.locked).toBe(true);
+  });
+
+  it('throws budget_month_not_found for a month with no row', async () => {
+    const { budgetMonthService } = setup();
+
+    await expect(budgetMonthService.lockMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_not_found',
+    });
+  });
+
+  it("throws budget_month_not_found for another user's month", async () => {
+    const { budgetMonthService } = setup();
+    await budgetMonthService.resolveBudgetMonthId('user-2', '2026-08');
+
+    await expect(budgetMonthService.lockMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_not_found',
+    });
+  });
+
+  it('throws budget_month_already_locked when the month is already locked', async () => {
+    const { budgetMonthService } = setup();
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    await budgetMonthService.lockMonth('user-1', '2026-08');
+
+    await expect(budgetMonthService.lockMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_already_locked',
+    });
+  });
+
+  it('throws budget_month_not_current when a month other than the earliest unlocked one is targeted', async () => {
+    const { budgetMonthService } = setup();
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-09');
+
+    await expect(budgetMonthService.lockMonth('user-1', '2026-09')).rejects.toMatchObject({
+      reason: 'budget_month_not_current',
+    });
+  });
+
+  it('rejects a malformed month string', async () => {
+    const { budgetMonthService } = setup();
+
+    await expect(budgetMonthService.lockMonth('user-1', '2026/08')).rejects.toMatchObject({
+      reason: 'invalid_month',
+    });
+  });
+});
+
+describe('deleteBudgetMonth', () => {
+  it('hard-deletes an empty, unlocked month', async () => {
+    const { prisma, budgetMonthService } = setup();
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+
+    await budgetMonthService.deleteBudgetMonth('user-1', '2026-08');
+
+    expect(prisma.budgetMonths).toHaveLength(0);
+  });
+
+  it('throws budget_month_not_found for a month with no row', async () => {
+    const { budgetMonthService } = setup();
+
+    await expect(budgetMonthService.deleteBudgetMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_not_found',
+    });
+  });
+
+  it("throws budget_month_not_found for another user's month", async () => {
+    const { budgetMonthService } = setup();
+    await budgetMonthService.resolveBudgetMonthId('user-2', '2026-08');
+
+    await expect(budgetMonthService.deleteBudgetMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_not_found',
+    });
+  });
+
+  it('throws budget_month_locked when the month is already locked', async () => {
+    const { budgetMonthService } = setup();
+    await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    await budgetMonthService.lockMonth('user-1', '2026-08');
+
+    await expect(budgetMonthService.deleteBudgetMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_locked',
+    });
+  });
+
+  it('throws budget_month_has_activations when a category_month row references it', async () => {
+    const { prisma, budgetMonthService } = setup();
+    const monthId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    prisma.categoryMonths.push({
+      id: 'cm-1',
+      userId: 'user-1',
+      categoryId: 'cat-1',
+      monthId,
+      monthlyBudgetCents: 10000,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await expect(budgetMonthService.deleteBudgetMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_has_activations',
+    });
+    expect(prisma.budgetMonths).toHaveLength(1);
+  });
+
+  it('throws budget_month_has_activations when a recurring_expense_instance references it with no category_month present', async () => {
+    // recurring_expense_instances.month_id has its own direct
+    // onDelete: Restrict FK to budget_months — it doesn't go through
+    // category_month. Reachable in practice: activate a category for a
+    // month, add a recurring expense against it (creates both rows),
+    // then removeCategoryFromMonth (which only checks for referencing
+    // transactions, not recurring_expense_instance) — the category_month
+    // is gone but the instance remains. The pre-check above (categoryMonth
+    // .findFirst) can't see this; only the P2003 catch does.
+    const { prisma, budgetMonthService } = setup();
+    const monthId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    prisma.recurringExpenseInstances.push({
+      id: 'inst-1',
+      userId: 'user-1',
+      templateId: 'tpl-1',
+      monthId,
+      amountCents: 8000,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await expect(budgetMonthService.deleteBudgetMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_has_activations',
+    });
+    expect(prisma.budgetMonths).toHaveLength(1);
+  });
+
+  it('throws budget_month_has_activations (not a raw FK error) when a category_month is created between the check and the delete', async () => {
+    const { prisma, budgetMonthService } = setup();
+    const monthId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+
+    // Simulate the race: the "no activations" check reports none (as if
+    // it ran a moment before a concurrent insert), but a category_month
+    // lands right after — the fake's delete() enforces onDelete: Restrict
+    // just like the real DB, so this exercises the same path a concurrent
+    // request would hit.
+    prisma.categoryMonth.findFirst = (async () => {
+      prisma.categoryMonths.push({
+        id: 'cm-race',
+        userId: 'user-1',
+        categoryId: 'cat-1',
+        monthId,
+        monthlyBudgetCents: 10000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return null;
+    }) as typeof prisma.categoryMonth.findFirst;
+
+    await expect(budgetMonthService.deleteBudgetMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_has_activations',
+    });
+    expect(prisma.budgetMonths).toHaveLength(1);
+  });
+
+  it('rejects a malformed month string', async () => {
+    const { budgetMonthService } = setup();
+
+    await expect(budgetMonthService.deleteBudgetMonth('user-1', '2026/08')).rejects.toMatchObject({
+      reason: 'invalid_month',
+    });
   });
 });
