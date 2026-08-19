@@ -69,6 +69,13 @@ enum Direction {
   @@map("direction")
 }
 
+enum MovementType {
+  deposit
+  withdraw
+
+  @@map("movement_type")
+}
+
 // One row per user per real calendar month (YYYY-MM, e.g. "2026-03" and
 // "2027-03" are distinct rows) — not a recurring 1-12 bucket. `locked`/
 // `lockedAt` are inert until Build Order step 5 wires up the locking
@@ -193,4 +200,59 @@ model RecurringExpense {
   @@unique([monthId, name])
   @@index([userId, monthId])
   @@map("recurring_expenses")
+}
+
+// A long-running savings goal, unrelated to any single month (see
+// docs/GLOSSARY.md's "Category vs. Savings Fund"). Hard-deleted, not
+// soft-deleted (see docs/PLAN.md's step 6 note — every entity built so
+// far ended up hard-deleted with no undo, so this follows the same rule
+// rather than keeping the original soft-delete sketch) — blocked while
+// any movement references it. currentAmountCents and achieved are
+// deliberately NOT columns here — both are computed at read time by
+// savingsFundService (initialBalanceCents + SUM(movements), and
+// currentAmountCents >= targetAmountCents respectively), matching
+// recurringCommittedCents/paidThisMonth's same "never let a derived value
+// drift out of sync with reality" reasoning.
+model SavingsFund {
+  id                  String    @id @default(uuid()) @db.Uuid
+  userId              String    @map("user_id") @db.Uuid
+  name                String
+  targetAmountCents   Int?      @map("target_amount_cents")
+  initialBalanceCents Int       @map("initial_balance_cents")
+  startDate           DateTime? @map("start_date") @db.Date
+  endDate             DateTime? @map("end_date") @db.Date
+  monthlyTargetCents  Int?      @map("monthly_target_cents")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  movements SavingsMovement[]
+
+  @@index([userId])
+  @@map("savings_funds")
+}
+
+// One deposit/withdrawal event against a fund — same relationship to
+// SavingsFund as Transaction has to CategoryMonth (docs/GLOSSARY.md).
+// Hard-deleted, no soft-delete, no undo. amountCents is always positive —
+// sign/meaning comes from `type`, same pattern as Transaction.direction.
+// Editable/deletable after creation (unlike a real accounting ledger) —
+// every write path (create/update/delete) re-validates that the fund's
+// resulting balance can never go negative, computed fresh inside the same
+// transaction as the write.
+model SavingsMovement {
+  id          String       @id @default(uuid()) @db.Uuid
+  userId      String       @map("user_id") @db.Uuid
+  fundId      String       @map("fund_id") @db.Uuid
+  amountCents Int          @map("amount_cents")
+  type        MovementType
+  date        DateTime     @db.Date
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  fund SavingsFund @relation(fields: [fundId], references: [id], onDelete: Restrict)
+
+  @@index([userId, fundId])
+  @@map("savings_movements")
 }
