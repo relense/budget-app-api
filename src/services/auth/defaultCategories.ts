@@ -8,7 +8,7 @@ export interface DefaultCategory {
   direction: Direction;
 }
 
-/** Seeded into every new user's catalog on signup — see PROGRESS.md. */
+/** Seeded into every new user's catalog on signup — see docs/PROGRESS.md. */
 export const DEFAULT_CATEGORIES: DefaultCategory[] = [
   { name: 'Supermarket', icon: 'cart', color: '#4CAF50', budgetType: 'need', direction: 'expense' },
   { name: 'Eating Out', icon: 'utensils', color: '#FF9800', budgetType: 'want', direction: 'expense' },

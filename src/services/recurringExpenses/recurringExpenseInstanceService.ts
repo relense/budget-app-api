@@ -90,7 +90,7 @@ export function createRecurringExpenseInstanceService({
    * First-time creation: makes the template, then adds it to `month`
    * (auto-activating the category if needed). Returns both records —
    * createRecurringExpenseTemplate's GraphQL return type is the template
-   * itself, not the instance, per plan.md's schema sketch.
+   * itself, not the instance, per docs/PLAN.md's schema sketch.
    *
    * assertValidTemplateInput (read-only) runs before the transaction opens,
    * catching invalid amountCents/dueDay/budgetType or an unowned category

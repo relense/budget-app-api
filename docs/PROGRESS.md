@@ -1,6 +1,6 @@
 # Progress
 
-Tracks status against `plan.md`'s Build Order. Updated as each step lands.
+Tracks status against `PLAN.md`'s Build Order. Updated as each step lands.
 
 ## Where we left off (2026-08-19)
 
@@ -13,7 +13,7 @@ history was squashed from 6 migrations down to 1 (`20260818183149_init`) —
 safe only because nothing had deployed yet and no real data existed.
 
 Build Order step 4 (Recurring expenses) got its own extensive "grill me"
-pass (see `plan.md`'s Data Model section for `recurring_expense_templates`/
+pass (see `PLAN.md`'s Data Model section for `recurring_expense_templates`/
 `recurring_expense_instances`, and its "Recurring expenses vs. transactions",
 "Recurring expenses are not categories", and "Category activation is
 automatic for recurring expenses" prose sections) and is implemented —
@@ -38,7 +38,7 @@ the reasoning is needed later:
   payment exists."
 - `CategoryMonth.recurringCommittedCents` (computed, GraphQL-only) sums a
   category's active recurring expenses for the month, for a future mobile
-  "match budget to recurring total" action — flagged under plan.md's
+  "match budget to recurring total" action — flagged under PLAN.md's
   "Notes for Claude Code" so it isn't lost before Phase 2.
 - **Soft-delete + undo dropped for `categories` and
   `recurring_expense_templates`**, mid-review-cycle, on an explicit user
@@ -46,7 +46,7 @@ the reasoning is needed later:
   it's permanently blocked by what references it — no third "soft-deleted
   but still around" state, for any entity built so far. Every entity that
   exists in the schema as of step 4 is now hard-deleted, no undo (see
-  plan.md's "Soft delete + undo" paragraph). `recurring_expense_templates`
+  PLAN.md's "Soft delete + undo" paragraph). `recurring_expense_templates`
   dropped `deleted_at` this step (migration
   `20260819064613_recurring_expense_template_hard_delete`); `categories`'
   own `deleted_at` removal is **out of scope for this branch** — flagged as
@@ -90,7 +90,7 @@ a stale schema comment — both fixed).
 
 Also added `SERVICES.md`: a living reference listing every service's
 functions and the full API surface (GraphQL schema + REST routes), kept
-current alongside `plan.md`/`GLOSSARY.md` — not a design-rationale doc, a
+current alongside `PLAN.md`/`GLOSSARY.md` — not a design-rationale doc, a
 quick "what exists right now" lookup.
 
 Ran the new `test-auditor` subagent against the branch: all tests passed,
@@ -137,7 +137,7 @@ decision above). Dropped `Category.deletedAt` (migration
 `20260819084400_category_hard_delete`); `categoryService.deleteCategory`
 now hard-deletes via `prisma.category.delete`, same pattern as
 `recurringExpenseTemplateService.deleteTemplate`: pre-check
-`category_month` references (unchanged precondition, per `plan.md`), then
+`category_month` references (unchanged precondition, per `PLAN.md`), then
 catch the `P2003` FK-restrict backstop. That backstop turned out to matter
 for a second, non-obvious reason beyond the usual check-then-delete race:
 `RecurringExpenseTemplate.category` is *also* `onDelete: Restrict`, and a
@@ -299,7 +299,7 @@ the design significantly — **the auto-lock cascade and automatic
 next-month creation are both dropped entirely**, on an explicit user
 call: locking was being overcomplicated for an edge case ("a user plans
 ahead and doesn't touch it") that mostly won't happen. Revised model,
-recorded in full in `plan.md`'s Month Lifecycle section (original design
+recorded in full in `PLAN.md`'s Month Lifecycle section (original design
 kept alongside, not silently overwritten, since the reasoning matters):
 - `lockMonth(month)` does exactly one thing — locks the current
   (earliest unlocked) month. No `carryForward` argument, no cascade walk,
@@ -740,17 +740,86 @@ flagged as not actually proving anything test 1 didn't already cover) with
 one that traces the same multi-step sequence through `deleteBudgetMonth`
 instead of `lockMonth`. 336 Jest tests total (was 335).
 
+`chore/lockmonth-jump-invariant` (PR #12) merged into `develop`.
+
+**Recurring expenses redesign — decided, not yet built.** User pushback on
+step 4's `recurring_expense_templates`/`recurring_expense_instances` split
+("why do we need a template table at all — a month can just have an array
+of recurring expenses"), worked through directly rather than defended by
+default. The split was modeled on `categories`/`category_month`, but that
+analogy doesn't hold: a category is designed to sit dormant in a catalog
+with no month, which is exactly why it needs a transversal table separate
+from its per-month activation — but `PLAN.md` itself already said a
+recurring expense "has no equivalent dormant state — it only exists because
+you're tracking paying something now." A thing that's never month-independent
+doesn't need a table representing month-independent existence. The one thing
+the shared `template_id` bought — grouping "every Rent payment across all
+time" for future reporting — was weighed and explicitly rejected as not
+worth a schema commitment now: recurring expenses are low-volume (max ~12
+occurrences/year per bill; a 10-year history is ~120 rows, trivially
+queryable by name/category directly if that's ever needed), unlike
+categories, where transaction volume actually justifies a stable id.
+
+Decided replacement, confirmed with the user: a single flat `recurring_expenses`
+table, one row per recurring expense per month — `name`, `category_id`,
+`budget_type`, `due_day`, `amount_cents`, `month_id`, all on that one row, no
+template. `paidThisMonth`/split-payment logic via linked `Transaction`s is
+unchanged. Editing a row only ever touches that one month — the old
+"apply to future months too?" propagation question no longer exists.
+Carrying forward into a new month is **automatic** (unlike category/budget
+carry-forward, which stays the existing opt-in per-item flow): whenever a
+new month comes into existence — pre-provisioned ahead of locking, or
+derived as the new current after locking with nothing already provisioned
+— its recurring expenses are copied straight from the previous real month,
+fresh and unpaid, no checklist. No cross-month identity of any kind between
+one month's row and the next's copy — confirmed explicitly, given the
+volume reasoning above. Exact hook point for the auto-copy (tied to
+`BudgetMonth` row creation itself vs. specifically `lockMonth`'s derivation
+of the new current) is left for this step's build-time grill-me, not
+decided yet. Full reasoning and the new schema/API shape are written up in
+`PLAN.md`'s Data Model and API Schema sections (old template/instance design
+kept alongside, marked superseded rather than deleted) and `GLOSSARY.md`'s
+Recurring Expense entry. Not yet implemented — the currently-shipped code
+(`recurringExpenseTemplateService`/`recurringExpenseInstanceService`, the
+GraphQL `RecurringExpenseTemplate`/`RecurringExpenseInstance` types, all
+their mutations) still reflects the old design; see `SERVICES.md` for what's
+actually live until this gets built.
+
+**Repo root cleanup.** User wanted the project-level `.md` files out of the
+repo root. `GLOSSARY.md`, `PLAN.md`, `PROGRESS.md`, `SCALING.md`,
+`SERVICES.md`, `FUNCTIONALITIES.md` moved into a new `docs/` folder.
+`CLAUDE.md` moved to `.claude/CLAUDE.md` — confirmed via Claude Code's own
+memory documentation that this is an equally-supported auto-discovery
+location (not just root `./CLAUDE.md`), so it's still read automatically
+every session. Every cross-reference across the docs, `.claude/CLAUDE.md`,
+source comments (`src/lib/monthFormat.ts`,
+`src/services/auth/defaultCategories.ts`,
+`src/services/recurringExpenses/recurringExpenseInstanceService.ts`,
+`src/services/categories/categoryMonthService.ts`,
+`src/services/budgetMonths/budgetMonthService.ts`), a test comment, and
+`prisma/schema.prisma` updated to `docs/`-prefixed paths (docs referencing
+each other, as siblings within `docs/`, keep bare filenames).
+
 Next actions, in order:
-1. Wait for human review/approval on `chore/lockmonth-jump-invariant`.
-2. Still to design/build: recurring-template edit propagation ("apply to
-   future months too?" on `updateRecurringExpenseInstance`).
-3. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
-   should check for a referencing `recurring_expense_instance`, not just
-   `transaction`, before deleting a `category_month` row.
+1. Design/build the recurring-expenses flat redesign: drop
+   `recurring_expense_templates`, collapse `recurring_expense_instances`
+   into a self-contained `recurring_expenses` table, rework
+   `recurringExpenseTemplateService`/`recurringExpenseInstanceService` into
+   one service, update the GraphQL schema (`RecurringExpense` type replacing
+   both, `createRecurringExpense`/`updateRecurringExpense` replacing the
+   template+instance mutation pairs), and decide the auto-copy-forward hook
+   point (see above) as part of that step's kickoff interview. This
+   supersedes "recurring-template edit propagation" from the prior version
+   of this list — the propagation question no longer exists under the new
+   design.
+2. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
+   should check for a referencing `recurring_expenses` row, not just
+   `transaction`, before deleting a `category_month` row (carries over
+   unchanged from the old `recurring_expense_instance` wording).
 
 ## Phase 1 — Backend
 
-- [x] **0. Ground truth** — `CLAUDE.md`, `GLOSSARY.md`, `plan.md`, `SCALING.md` committed.
+- [x] **0. Ground truth** — `.claude/CLAUDE.md`, `docs/GLOSSARY.md`, `docs/PLAN.md`, `docs/SCALING.md` committed (originally flat at the repo root — moved into `.claude/`/`docs/` later, see "Where we left off").
 - [x] **1. Project scaffold** — Fastify + TypeScript (ESM, pnpm), GraphQL Yoga
       mounted at `/graphql` with a trivial `Query.ping`, Prisma + Postgres via
       Docker Compose (`@prisma/adapter-pg`, required by Prisma 7's client
@@ -768,7 +837,7 @@ Next actions, in order:
       first rate-limited 3/15min by IP+email; JWT (jose, HS256, 15 min access
       / 30 day refresh) context builder attaches a nullable `userId` to
       GraphQL context. Email delivery via a console-log `EmailService` (real
-      provider deferred, per plan.md). Manually smoke-tested end to end
+      provider deferred, per PLAN.md). Manually smoke-tested end to end
       against real Postgres. → branch `feature/auth-otp`.
 - [x] **3. Categories + Transactions** — `budget_months` (schema only, `locked`
       inert until step 5), `categories` (pure catalog), `category_month` (the
@@ -849,6 +918,14 @@ Next actions, in order:
       from the category, so an income category would otherwise silently
       produce an income transaction from a "recurring expense" payment. →
       PR #4 (`feature/recurring-expenses` → `develop`), merged.
+
+      **Superseded, not yet rebuilt**: the template/instance split
+      described above is being replaced by a flat `recurring_expenses`
+      design (one row per month, no template) — see "Where we left off"
+      above and `PLAN.md`'s Data Model section. Everything in this bullet
+      is still what's actually live in `develop` today (per `SERVICES.md`)
+      until that rework lands; keeping it as accurate history rather than
+      rewriting it away.
 - [ ] **5. Month lifecycle** — in progress, three increments merged so far:
       budget-inheritance on category/recurring-expense activation (PR #7,
       merged), `lockMonth`/`deleteBudgetMonth`/`Query.currentMonth` (PR #8,
@@ -857,10 +934,12 @@ Next actions, in order:
       dedicated mutation (reuses `addCategoryToMonth`/`addRecurringExpenseToMonth`'s
       existing budget-omit-to-inherit behavior) and auto-lock cascade was
       dropped entirely — both revised out of the original scope described
-      here during the step's kickoff interview, see `plan.md`'s Month
-      Lifecycle section for the actual design. Still outstanding:
-      recurring-template edit propagation ("apply to future months too?"),
-      soft-delete + undo for the entities that still have it.
+      here during the step's kickoff interview, see `PLAN.md`'s Month
+      Lifecycle section for the actual design. Still outstanding: the
+      recurring-expenses flat redesign (replaces the old "recurring-template
+      edit propagation" item — that question no longer exists under the new
+      design, see "Where we left off"), soft-delete + undo for the entities
+      that still have it.
 - [ ] **6. Savings funds + movements** — CRUD + `addSavingsMovement` updating
       `currentAmountCents`; DataLoader for `SavingsFund.movements`.
 - [ ] **7. Income sources** — CRUD; `income_sources.month_id` already
@@ -873,19 +952,19 @@ Next actions, in order:
 ## Phase 2 — Mobile app
 
 Not started. Needs design references (mockups + Excel structure) before any
-screen work begins, per `plan.md`.
+screen work begins, per `PLAN.md`.
 
 ## Phase 3 — Website
 
 Not started.
 
-## Notable deviations / decisions from plan.md
+## Notable deviations / decisions from PLAN.md
 
 - Prisma 7's client generator requires a driver adapter — added
-  `@prisma/adapter-pg` (plan.md assumed the classic bare-`DATABASE_URL` setup).
+  `@prisma/adapter-pg` (PLAN.md assumed the classic bare-`DATABASE_URL` setup).
 - `prisma init` auto-vendors AI-agent skill docs into `.claude/`, `.windsurf/`,
   `.agents/` — removed, unrelated to the app.
-- ID strategy for every table (not specified in plan.md): UUID v4, stored as
+- ID strategy for every table (not specified in PLAN.md): UUID v4, stored as
   native Postgres `uuid` columns (`@db.Uuid`), confirmed with the user during
   the auth step since it's a precedent-setting choice.
 - OTP hashing: argon2 (not scrypt/sha256) — confirmed with the user; refresh
@@ -893,7 +972,7 @@ Not started.
   low-entropy codes.
 - JWT library: `jose` (ESM-native) over `jsonwebtoken`/`@fastify/jwt`.
 - Row cleanup for expired/used `otp_codes` and expired/revoked
-  `refresh_tokens` is not implemented yet — plan.md flags this as "not urgent
+  `refresh_tokens` is not implemented yet — PLAN.md flags this as "not urgent
   on day one, but don't let it be never." Still backlog.
 - Tests moved out of `src/` into a top-level `tests/` mirroring `src/`'s
   subfolder structure (was co-located `*.test.ts` next to the code it
@@ -903,7 +982,7 @@ Not started.
   unchanged; a new `tsconfig.test.json` (rootDir `.`, includes both `src`
   and `tests`, `noEmit`) backs `typecheck`, `ts-jest`, and ESLint's
   type-aware linting instead.
-- OTP codes are alphanumeric, not digits-only (GLOSSARY.md/plan.md originally
+- OTP codes are alphanumeric, not digits-only (GLOSSARY.md/PLAN.md originally
   said "6-digit" — updated to "6-character"): uppercase A-Z + digits 2-9,
   excluding ambiguous characters (0/O, 1/I/L), verified case-insensitively.
   Confirmed with the user; charset/case/length were all explicit choices,
