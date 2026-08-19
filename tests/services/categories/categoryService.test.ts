@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { createCategoryService } from './categoryService.js';
+import { createCategoryService } from '../../../src/services/categories/categoryService.js';
 import { createFakePrisma } from './testFakePrisma.js';
 
 function setup() {
@@ -225,6 +225,7 @@ describe('updateCategory', () => {
       id: 'tx-1',
       userId: 'user-1',
       categoryMonthId: 'cm-1',
+      recurringExpenseInstanceId: null,
       amountCents: 500,
       date: new Date('2026-08-01'),
       merchant: null,
@@ -266,6 +267,7 @@ describe('updateCategory', () => {
       id: 'tx-1',
       userId: 'user-1',
       categoryMonthId: 'cm-1',
+      recurringExpenseInstanceId: null,
       amountCents: 500,
       date: new Date('2026-08-01'),
       merchant: null,

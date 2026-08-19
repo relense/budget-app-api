@@ -2,6 +2,8 @@ import type { BudgetMonthService } from '../services/budgetMonths/budgetMonthSer
 import type { CategoryMonthService } from '../services/categories/categoryMonthService.js';
 import type { CategoryService } from '../services/categories/categoryService.js';
 import type { TransactionService } from '../services/categories/transactionService.js';
+import type { RecurringExpenseInstanceService } from '../services/recurringExpenses/recurringExpenseInstanceService.js';
+import type { RecurringExpenseTemplateService } from '../services/recurringExpenses/recurringExpenseTemplateService.js';
 import { createGraphQLLoaders, type GraphQLLoaders } from './loaders.js';
 
 export interface GraphQLContext {
@@ -9,6 +11,8 @@ export interface GraphQLContext {
   categoryService: CategoryService;
   categoryMonthService: CategoryMonthService;
   transactionService: TransactionService;
+  templateService: RecurringExpenseTemplateService;
+  instanceService: RecurringExpenseInstanceService;
   loaders: GraphQLLoaders;
 }
 
@@ -17,6 +21,8 @@ export interface GraphQLContextBuilderDeps {
   categoryMonthService: CategoryMonthService;
   budgetMonthService: BudgetMonthService;
   transactionService: TransactionService;
+  templateService: RecurringExpenseTemplateService;
+  instanceService: RecurringExpenseInstanceService;
 }
 
 /**
@@ -31,6 +37,8 @@ export function createGraphQLContextBuilder(deps: GraphQLContextBuilderDeps) {
       categoryService: deps.categoryService,
       categoryMonthService: deps.categoryMonthService,
       transactionService: deps.transactionService,
+      templateService: deps.templateService,
+      instanceService: deps.instanceService,
       loaders: createGraphQLLoaders(deps),
     };
   };

@@ -5,6 +5,28 @@ export interface BudgetMonthServiceDeps {
 }
 
 /**
+ * Client-parameterized core of resolveBudgetMonthId — exported standalone so
+ * a caller that already has its own open transaction (e.g.
+ * recurringExpenseInstanceService's locked instance-creation flow) can run
+ * this as part of that same transaction, instead of on the service's own
+ * separately-bound connection where it wouldn't actually participate in the
+ * caller's lock. The bound service method below is a thin wrapper around
+ * this for regular (non-nested) callers.
+ */
+export async function resolveBudgetMonthId(
+  client: Pick<PrismaClient, 'budgetMonth'>,
+  userId: string,
+  month: string,
+): Promise<string> {
+  const budgetMonth = await client.budgetMonth.upsert({
+    where: { userId_month: { userId, month } },
+    create: { userId, month },
+    update: {},
+  });
+  return budgetMonth.id;
+}
+
+/**
  * Resolves month strings ("YYYY-MM") to the real per-user BudgetMonth row
  * every other month-scoped table (category_month, and eventually
  * recurring_expense_instances / income_sources) references via month_id.
@@ -13,13 +35,8 @@ export interface BudgetMonthServiceDeps {
  * Zod-validated input from the route/resolver boundary.
  */
 export function createBudgetMonthService({ prisma }: BudgetMonthServiceDeps) {
-  async function resolveBudgetMonthId(userId: string, month: string): Promise<string> {
-    const budgetMonth = await prisma.budgetMonth.upsert({
-      where: { userId_month: { userId, month } },
-      create: { userId, month },
-      update: {},
-    });
-    return budgetMonth.id;
+  async function resolveBudgetMonthIdBound(userId: string, month: string): Promise<string> {
+    return resolveBudgetMonthId(prisma, userId, month);
   }
 
   /**
@@ -38,7 +55,7 @@ export function createBudgetMonthService({ prisma }: BudgetMonthServiceDeps) {
     return prisma.budgetMonth.findMany({ where: { id: { in: ids } } });
   }
 
-  return { resolveBudgetMonthId, findBudgetMonthId, findManyByIds };
+  return { resolveBudgetMonthId: resolveBudgetMonthIdBound, findBudgetMonthId, findManyByIds };
 }
 
 export type BudgetMonthService = ReturnType<typeof createBudgetMonthService>;

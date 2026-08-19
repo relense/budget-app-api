@@ -2,6 +2,8 @@ import { GraphQLError } from 'graphql';
 import { CategoryMonthServiceError } from '../services/categories/categoryMonthService.js';
 import { CategoryServiceError } from '../services/categories/categoryService.js';
 import { TransactionServiceError } from '../services/categories/transactionService.js';
+import { RecurringExpenseInstanceServiceError } from '../services/recurringExpenses/recurringExpenseInstanceService.js';
+import { RecurringExpenseTemplateServiceError } from '../services/recurringExpenses/recurringExpenseTemplateService.js';
 
 /**
  * Maps known service-layer errors to a GraphQLError with a stable
@@ -13,7 +15,9 @@ export function toGraphQLError(error: unknown): never {
   if (
     error instanceof CategoryServiceError ||
     error instanceof CategoryMonthServiceError ||
-    error instanceof TransactionServiceError
+    error instanceof TransactionServiceError ||
+    error instanceof RecurringExpenseTemplateServiceError ||
+    error instanceof RecurringExpenseInstanceServiceError
   ) {
     throw new GraphQLError(error.message, { extensions: { code: error.reason.toUpperCase() } });
   }

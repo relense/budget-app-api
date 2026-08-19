@@ -82,7 +82,13 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
     }
   }
 
-  async function create(userId: string, input: TransactionInput) {
+  /**
+   * recurringExpenseInstanceId is deliberately not part of TransactionInput
+   * (never client-settable, same reasoning as direction) — only
+   * recurringExpenseInstanceService's markRecurringPaid passes it, as a
+   * third argument, after resolving which instance this payment is for.
+   */
+  async function create(userId: string, input: TransactionInput, recurringExpenseInstanceId?: string) {
     assertValidAmount(input.amountCents);
     assertValidDateFormat(input.date);
     const { direction } = await loadCategoryMonthForWrite(userId, input.categoryMonthId, input.date);
@@ -91,6 +97,7 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
       data: {
         userId,
         categoryMonthId: input.categoryMonthId,
+        recurringExpenseInstanceId: recurringExpenseInstanceId ?? null,
         amountCents: input.amountCents,
         date: new Date(input.date),
         merchant: input.merchant ?? null,
@@ -169,7 +176,22 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
     return prisma.transaction.findMany({ where: { categoryMonthId: { in: categoryMonthIds } } });
   }
 
-  return { create, update, deleteTransaction, list, listByCategoryMonthIds };
+  /** Batch lookup for DataLoader use — trusts the caller to have already scoped the ids to one user. */
+  async function listByRecurringExpenseInstanceIds(recurringExpenseInstanceIds: string[]) {
+    if (recurringExpenseInstanceIds.length === 0) return [];
+    return prisma.transaction.findMany({
+      where: { recurringExpenseInstanceId: { in: recurringExpenseInstanceIds } },
+    });
+  }
+
+  return {
+    create,
+    update,
+    deleteTransaction,
+    list,
+    listByCategoryMonthIds,
+    listByRecurringExpenseInstanceIds,
+  };
 }
 
 export type TransactionService = ReturnType<typeof createTransactionService>;

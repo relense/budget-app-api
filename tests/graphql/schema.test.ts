@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { graphql } from 'graphql';
-import { schema } from './schema.js';
+import { schema } from '../../src/graphql/schema.js';
 
 describe('Query.ping', () => {
   it('returns pong', async () => {

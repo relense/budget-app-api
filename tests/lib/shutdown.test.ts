@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import { createShutdownHandler } from './shutdown.js';
+import { createShutdownHandler } from '../../src/lib/shutdown.js';
 
 describe('createShutdownHandler', () => {
   it('closes the app before disconnecting prisma', async () => {

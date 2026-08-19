@@ -16,6 +16,8 @@ import { createBudgetMonthService } from './services/budgetMonths/budgetMonthSer
 import { createCategoryMonthService } from './services/categories/categoryMonthService.js';
 import { createCategoryService } from './services/categories/categoryService.js';
 import { createTransactionService } from './services/categories/transactionService.js';
+import { createRecurringExpenseInstanceService } from './services/recurringExpenses/recurringExpenseInstanceService.js';
+import { createRecurringExpenseTemplateService } from './services/recurringExpenses/recurringExpenseTemplateService.js';
 
 const MAX_QUERY_DEPTH = 10;
 const BEARER_PREFIX = 'Bearer ';
@@ -32,7 +34,14 @@ export interface BuildServerOptions {
   env: Env;
   prisma: Pick<
     PrismaClient,
-    '$queryRaw' | '$transaction' | 'category' | 'categoryMonth' | 'budgetMonth' | 'transaction'
+    | '$queryRaw'
+    | '$transaction'
+    | 'category'
+    | 'categoryMonth'
+    | 'budgetMonth'
+    | 'transaction'
+    | 'recurringExpenseTemplate'
+    | 'recurringExpenseInstance'
   >;
   authService: Pick<
     AuthService,
@@ -60,11 +69,19 @@ export async function buildServer({
   const categoryService = createCategoryService({ prisma });
   const categoryMonthService = createCategoryMonthService({ prisma, budgetMonthService });
   const transactionService = createTransactionService({ prisma, budgetMonthService });
+  const templateService = createRecurringExpenseTemplateService({ prisma });
+  const instanceService = createRecurringExpenseInstanceService({
+    prisma,
+    budgetMonthService,
+    transactionService,
+  });
   const buildGraphQLContext = createGraphQLContextBuilder({
     categoryService,
     categoryMonthService,
     budgetMonthService,
     transactionService,
+    templateService,
+    instanceService,
   });
 
   app.get('/health', async (_request, reply) => {

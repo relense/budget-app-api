@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import { createConsoleEmailService } from './email.js';
+import { createConsoleEmailService } from '../../src/lib/email.js';
 
 describe('createConsoleEmailService', () => {
   it('logs the OTP code for the given email without sending anywhere', async () => {

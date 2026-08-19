@@ -1,9 +1,9 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import fastify from 'fastify';
 import rateLimit from '@fastify/rate-limit';
-import { signAccessToken } from '../lib/jwt.js';
-import { OtpVerificationError, RefreshTokenError } from '../services/auth/authService.js';
-import { registerAuthRoutes } from './auth.js';
+import { signAccessToken } from '../../src/lib/jwt.js';
+import { OtpVerificationError, RefreshTokenError } from '../../src/services/auth/authService.js';
+import { registerAuthRoutes } from '../../src/routes/auth.js';
 
 const JWT_SECRET = 'test-secret-at-least-32-bytes-long-for-hs256';
 

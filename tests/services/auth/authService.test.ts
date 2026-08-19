@@ -1,8 +1,8 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import { verifyAccessToken } from '../../lib/jwt.js';
-import { hashOtpCode, OTP_CODE_REGEX, verifyOtpCode } from '../../lib/otp.js';
-import { hashRefreshToken } from '../../lib/refreshToken.js';
-import { createAuthService } from './authService.js';
+import { verifyAccessToken } from '../../../src/lib/jwt.js';
+import { hashOtpCode, OTP_CODE_REGEX, verifyOtpCode } from '../../../src/lib/otp.js';
+import { hashRefreshToken } from '../../../src/lib/refreshToken.js';
+import { createAuthService } from '../../../src/services/auth/authService.js';
 import { createFakePrisma } from './testFakePrisma.js';
 
 const JWT_SECRET = 'test-secret-at-least-32-bytes-long-for-hs256';

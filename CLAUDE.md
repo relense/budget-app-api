@@ -2,6 +2,7 @@
 
 Full architecture, data model, and build order: `plan.md`.
 Domain terminology: `GLOSSARY.md` — use these terms exactly in code (types, variables, function names).
+Current services + full API surface (GraphQL schema, REST routes) at a glance: `SERVICES.md` — update it in the same commit whenever a service's functions or the API surface change.
 Growth/scaling reference (not relevant yet): `SCALING.md`.
 
 ## Rules (apply every session, not just the first)

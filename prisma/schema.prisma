@@ -38,14 +38,14 @@ model OtpCode {
 }
 
 model RefreshToken {
-  id          String    @id @default(uuid()) @db.Uuid
-  userId      String    @map("user_id") @db.Uuid
-  tokenHash   String    @map("token_hash")
-  deviceLabel String?   @map("device_label")
-  expiresAt   DateTime  @map("expires_at")
-  revoked     Boolean   @default(false)
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  tokenHash   String   @map("token_hash")
+  deviceLabel String?  @map("device_label")
+  expiresAt   DateTime @map("expires_at")
+  revoked     Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -84,7 +84,8 @@ model BudgetMonth {
 
   createdAt DateTime @default(now()) @map("created_at")
 
-  categoryMonths CategoryMonth[]
+  categoryMonths            CategoryMonth[]
+  recurringExpenseInstances RecurringExpenseInstance[]
 
   @@unique([userId, month])
   @@map("budget_months")
@@ -106,7 +107,8 @@ model Category {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  categoryMonths CategoryMonth[]
+  categoryMonths            CategoryMonth[]
+  recurringExpenseTemplates RecurringExpenseTemplate[]
 
   @@index([userId])
   @@map("categories")
@@ -125,8 +127,8 @@ model CategoryMonth {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  category    Category    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  budgetMonth BudgetMonth @relation(fields: [monthId], references: [id], onDelete: Restrict)
+  category     Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  budgetMonth  BudgetMonth   @relation(fields: [monthId], references: [id], onDelete: Restrict)
   transactions Transaction[]
 
   @@unique([categoryId, monthId])
@@ -137,21 +139,71 @@ model CategoryMonth {
 // Hard-deleted, not soft-deleted (see plan.md's "Month Lifecycle" section)
 // — no undo, no batching, single or bulk delete is immediate and permanent.
 model Transaction {
-  id              String   @id @default(uuid()) @db.Uuid
-  userId          String   @map("user_id") @db.Uuid
-  categoryMonthId String   @map("category_month_id") @db.Uuid
-  amountCents     Int      @map("amount_cents")
-  date            DateTime @db.Date
-  merchant        String?
-  note            String?
-  direction       Direction
+  id                         String    @id @default(uuid()) @db.Uuid
+  userId                     String    @map("user_id") @db.Uuid
+  categoryMonthId            String    @map("category_month_id") @db.Uuid
+  recurringExpenseInstanceId String?   @map("recurring_expense_instance_id") @db.Uuid
+  amountCents                Int       @map("amount_cents")
+  date                       DateTime  @db.Date
+  merchant                   String?
+  note                       String?
+  direction                  Direction
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  categoryMonth CategoryMonth @relation(fields: [categoryMonthId], references: [id], onDelete: Restrict)
+  categoryMonth            CategoryMonth             @relation(fields: [categoryMonthId], references: [id], onDelete: Restrict)
+  recurringExpenseInstance RecurringExpenseInstance? @relation(fields: [recurringExpenseInstanceId], references: [id], onDelete: Restrict)
 
   @@index([userId, date])
   @@index([categoryMonthId])
+  @@index([recurringExpenseInstanceId])
   @@map("transactions")
+}
+
+// Pure catalog — transversal across months, no month-awareness. Points at
+// an existing Category (never creates one). Hard-deleted, not soft-deleted
+// (see plan.md's "Month Lifecycle" section) — blocked while any instance
+// references it, for any month, past or future.
+model RecurringExpenseTemplate {
+  id          String     @id @default(uuid()) @db.Uuid
+  userId      String     @map("user_id") @db.Uuid
+  name        String
+  amountCents Int        @map("amount_cents")
+  categoryId  String     @map("category_id") @db.Uuid
+  budgetType  BudgetType @map("budget_type")
+  dueDay      Int        @map("due_day")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  category  Category                   @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  instances RecurringExpenseInstance[]
+
+  @@index([userId])
+  @@map("recurring_expense_templates")
+}
+
+// The real join, one row per template per month it's carried into — same
+// role as CategoryMonth. Hard-deleted, matching CategoryMonth, for the
+// identical reason (see plan.md's step 4 design notes) — deletion is only
+// allowed once no Transaction references it. Not one-to-one with
+// Transaction: split payments are allowed, no uniqueness constraint here.
+model RecurringExpenseInstance {
+  id          String @id @default(uuid()) @db.Uuid
+  userId      String @map("user_id") @db.Uuid
+  templateId  String @map("template_id") @db.Uuid
+  monthId     String @map("month_id") @db.Uuid
+  amountCents Int    @map("amount_cents")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  template     RecurringExpenseTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  budgetMonth  BudgetMonth              @relation(fields: [monthId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+
+  @@unique([templateId, monthId])
+  @@index([userId, monthId])
+  @@map("recurring_expense_instances")
 }

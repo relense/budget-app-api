@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
-import { createBudgetMonthService } from '../budgetMonths/budgetMonthService.js';
-import { createCategoryMonthService } from './categoryMonthService.js';
-import { createCategoryService } from './categoryService.js';
+import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
+import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
+import { createCategoryService } from '../../../src/services/categories/categoryService.js';
 import { createFakePrisma } from './testFakePrisma.js';
 
 async function setup() {
@@ -212,6 +212,77 @@ describe('addCategoryToMonth', () => {
   });
 });
 
+describe('ensureActiveForCategory', () => {
+  it('creates a new category_month when none exists, using the given budget', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+
+    const result = await categoryMonthService.ensureActiveForCategory(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      50000,
+    );
+
+    expect(result.monthlyBudgetCents).toBe(50000);
+    expect(prisma.categoryMonths).toHaveLength(1);
+  });
+
+  it('returns the existing category_month instead of erroring when already active, no budget needed', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    const first = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      50000,
+    );
+
+    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08');
+
+    expect(result.id).toBe(first.id);
+    expect(prisma.categoryMonths).toHaveLength(1);
+  });
+
+  it('throws category_month_budget_required when creating fresh with no budget given', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+
+    await expect(
+      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08'),
+    ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
+  });
+
+  it('throws category_not_found for a category belonging to another user', async () => {
+    const { categoryMonthService, otherUsersCategory } = await setup();
+
+    await expect(
+      categoryMonthService.ensureActiveForCategory('user-1', otherUsersCategory.id, '2026-08', 50000),
+    ).rejects.toMatchObject({ reason: 'category_not_found' });
+  });
+
+  it('throws month_locked when the target month is already locked', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    prisma.budgetMonths.push({
+      id: 'bm-1',
+      userId: 'user-1',
+      month: '2026-07',
+      locked: true,
+      lockedAt: new Date(),
+      createdAt: new Date(),
+    });
+
+    await expect(
+      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-07', 50000),
+    ).rejects.toMatchObject({ reason: 'month_locked' });
+  });
+
+  it('rejects a malformed month string', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+
+    await expect(
+      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, 'banana', 50000),
+    ).rejects.toMatchObject({ reason: 'invalid_month' });
+  });
+});
+
 describe('removeCategoryFromMonth', () => {
   it('hard-deletes the row when no transactions reference it', async () => {
     const { prisma, categoryMonthService, categoryA } = await setup();
@@ -239,6 +310,7 @@ describe('removeCategoryFromMonth', () => {
       id: 'tx-1',
       userId: 'user-1',
       categoryMonthId: categoryMonth.id,
+      recurringExpenseInstanceId: null,
       amountCents: 500,
       date: new Date('2026-08-05'),
       merchant: null,
@@ -273,6 +345,7 @@ describe('removeCategoryFromMonth', () => {
         id: 'tx-race',
         userId: 'user-1',
         categoryMonthId: categoryMonth.id,
+        recurringExpenseInstanceId: null,
         amountCents: 500,
         date: new Date('2026-08-05'),
         merchant: null,

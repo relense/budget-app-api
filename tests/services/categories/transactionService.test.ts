@@ -1,9 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
-import { createBudgetMonthService } from '../budgetMonths/budgetMonthService.js';
-import { createCategoryMonthService } from './categoryMonthService.js';
-import { createCategoryService } from './categoryService.js';
+import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
+import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
+import { createCategoryService } from '../../../src/services/categories/categoryService.js';
 import { createFakePrisma } from './testFakePrisma.js';
-import { createTransactionService } from './transactionService.js';
+import { createTransactionService } from '../../../src/services/categories/transactionService.js';
 
 async function setup() {
   const prisma = createFakePrisma();
@@ -76,6 +76,19 @@ describe('create', () => {
       note: 'weekly shop',
       direction: 'expense',
     });
+    expect(transaction.recurringExpenseInstanceId).toBeNull();
+  });
+
+  it('stamps recurringExpenseInstanceId when given (internal use — markRecurringPaid)', async () => {
+    const { transactionService, expenseCategoryMonth } = await setup();
+
+    const transaction = await transactionService.create(
+      'user-1',
+      { categoryMonthId: expenseCategoryMonth.id, amountCents: 2500, date: '2026-08-15' },
+      'instance-1',
+    );
+
+    expect(transaction.recurringExpenseInstanceId).toBe('instance-1');
   });
 
   it('derives income direction from an income category', async () => {
@@ -263,6 +276,34 @@ describe('listByCategoryMonthIds', () => {
     const { transactionService } = await setup();
 
     const result = await transactionService.listByCategoryMonthIds([]);
+
+    expect(result).toEqual([]);
+  });
+});
+
+describe('listByRecurringExpenseInstanceIds', () => {
+  it('groups transactions by recurringExpenseInstanceId for the given ids, ignoring unlinked transactions', async () => {
+    const { transactionService, expenseCategoryMonth } = await setup();
+    const linked = await transactionService.create(
+      'user-1',
+      { categoryMonthId: expenseCategoryMonth.id, amountCents: 100, date: '2026-08-05' },
+      'instance-1',
+    );
+    await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 200,
+      date: '2026-08-05',
+    });
+
+    const result = await transactionService.listByRecurringExpenseInstanceIds(['instance-1']);
+
+    expect(result.map((t) => t.id)).toEqual([linked.id]);
+  });
+
+  it('returns an empty array for an empty id list', async () => {
+    const { transactionService } = await setup();
+
+    const result = await transactionService.listByRecurringExpenseInstanceIds([]);
 
     expect(result).toEqual([]);
   });

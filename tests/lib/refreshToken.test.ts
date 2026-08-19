@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { generateRefreshToken, hashRefreshToken } from './refreshToken.js';
+import { generateRefreshToken, hashRefreshToken } from '../../src/lib/refreshToken.js';
 
 describe('generateRefreshToken', () => {
   it('returns a 64-character hex string (32 random bytes)', () => {
