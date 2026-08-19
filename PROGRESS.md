@@ -104,6 +104,31 @@ mapping checks), `errors.test.ts`, `loaders.test.ts`, `context.test.ts`, and
 targeted additions to the two recurring-expense service test files. 256 Jest
 tests total (was 203).
 
+Since round 4's approval, the src→tests move landed and both the
+`pr-reviewer` and `test-auditor` subagents were re-run against the two new
+commits (in that order, per the user). `pr-reviewer`: approved, no blocking
+issues (two FYI-only nitpicks — a commit-message precision detail and a
+note that `findManyByIds`'s lack of a `userId` filter is pre-existing,
+already-approved design, not something these commits introduced).
+`test-auditor`: found the resolver-level tests added above stub
+`loaders: {} as never` and only select scalar fields, so the loader-wiring
+field resolvers themselves (`RecurringExpenseTemplate.category`,
+`RecurringExpenseInstance.month`/`template`/`transactions`/`paidThisMonth`,
+`Transaction.recurringExpenseInstance`/`categoryMonth`) stayed at 0%
+coverage — exactly the class of bug ("swap one loader for another") the
+first audit round was meant to catch, just one level deeper. Also flagged
+the `transactionsByRecurringExpenseInstanceId` loader (untested) and two
+mutations (`deleteRecurringExpenseTemplate`, `removeRecurringExpenseFromMonth`)
+missing the error-mapping test every sibling mutation has. Fixed all three:
+`schema.recurringExpenses.nestedFields.test.ts` builds a context with real
+`createGraphQLLoaders` (backed by stubbed services) and selects the nested
+fields, so a loader mix-up would actually fail a test now; added the missing
+loader and error-mapping cases. 264 Jest tests total (was 256). The
+auditor separately flagged that `categories`/`categoryMonths`/`transactions`
+and their CRUD mutations still have zero GraphQL-layer tests
+(`tests/graphql/schema.test.ts` only checks `Query.ping`) — pre-existing,
+predates this PR, left as backlog rather than expanding this PR's scope.
+
 Next actions, in order:
 1. Wait for human review/approval on PR #4 per `CLAUDE.md`'s git
    workflow — don't merge, don't start step 5 until approved.

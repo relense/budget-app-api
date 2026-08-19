@@ -231,6 +231,17 @@ describe('Mutation.deleteRecurringExpenseTemplate', () => {
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
     expect(context.templateService.deleteTemplate).not.toHaveBeenCalled();
   });
+
+  it('maps template_has_active_instances to a GraphQLError', async () => {
+    const context = buildContext('user-1');
+    (context.templateService.deleteTemplate as jest.Mock).mockImplementation(async () => {
+      throw new RecurringExpenseTemplateServiceError('template_has_active_instances');
+    });
+
+    const result = await run(mutation, context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('TEMPLATE_HAS_ACTIVE_INSTANCES');
+  });
 });
 
 describe('Mutation.addRecurringExpenseToMonth', () => {
@@ -330,6 +341,17 @@ describe('Mutation.removeRecurringExpenseFromMonth', () => {
 
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
     expect(context.instanceService.removeFromMonth).not.toHaveBeenCalled();
+  });
+
+  it('maps instance_has_transactions to a GraphQLError', async () => {
+    const context = buildContext('user-1');
+    (context.instanceService.removeFromMonth as jest.Mock).mockImplementation(async () => {
+      throw new RecurringExpenseInstanceServiceError('instance_has_transactions');
+    });
+
+    const result = await run(mutation, context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('INSTANCE_HAS_TRANSACTIONS');
   });
 });
 

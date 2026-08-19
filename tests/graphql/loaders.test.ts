@@ -117,6 +117,50 @@ describe('recurringCommittedCentsByCategoryMonthId', () => {
   });
 });
 
+describe('transactionsByRecurringExpenseInstanceId', () => {
+  it('batches multiple loads into a single call and groups rows by instance id', async () => {
+    const listByRecurringExpenseInstanceIds = jest.fn(async (ids: string[]) => [
+      { id: 'tx-1', recurringExpenseInstanceId: 'inst-1', amountCents: 100 },
+      { id: 'tx-2', recurringExpenseInstanceId: 'inst-1', amountCents: 200 },
+      { id: 'tx-3', recurringExpenseInstanceId: ids.includes('inst-2') ? 'inst-2' : null, amountCents: 300 },
+    ]);
+    const deps = buildDeps({
+      transactionService: {
+        listByCategoryMonthIds: jest.fn(async () => []),
+        listByRecurringExpenseInstanceIds,
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    const [forInstance1, forInstance2] = await Promise.all([
+      loaders.transactionsByRecurringExpenseInstanceId.load('inst-1'),
+      loaders.transactionsByRecurringExpenseInstanceId.load('inst-2'),
+    ]);
+
+    expect(listByRecurringExpenseInstanceIds).toHaveBeenCalledTimes(1);
+    expect(listByRecurringExpenseInstanceIds).toHaveBeenCalledWith(['inst-1', 'inst-2']);
+    expect(forInstance1.map((tx) => tx.id)).toEqual(['tx-1', 'tx-2']);
+    expect(forInstance2.map((tx) => tx.id)).toEqual(['tx-3']);
+  });
+
+  it('excludes rows with a null recurringExpenseInstanceId instead of grouping them under a falsy key', async () => {
+    const listByRecurringExpenseInstanceIds = jest.fn(async () => [
+      { id: 'tx-unlinked', recurringExpenseInstanceId: null, amountCents: 500 },
+    ]);
+    const deps = buildDeps({
+      transactionService: {
+        listByCategoryMonthIds: jest.fn(async () => []),
+        listByRecurringExpenseInstanceIds,
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    const result = await loaders.transactionsByRecurringExpenseInstanceId.load('inst-1');
+
+    expect(result).toEqual([]);
+  });
+});
+
 describe('per-request isolation', () => {
   it('does not share a cache across two createGraphQLLoaders() calls', async () => {
     const findManyByIds = jest.fn(async (ids: string[]) => ids.map((id) => ({ id })));
