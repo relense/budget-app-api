@@ -220,8 +220,8 @@ describe('update', () => {
     ).rejects.toMatchObject({ reason: 'transaction_not_found' });
   });
 
-  it('rejects moving a transaction to another user\'s categoryMonthId', async () => {
-    const { transactionService, categoryMonthService, categoryService, expenseCategoryMonth } =
+  it("rejects moving a transaction to another user's categoryMonthId, without taking a lock on their budget_months row", async () => {
+    const { prisma, transactionService, categoryMonthService, categoryService, expenseCategoryMonth } =
       await setup();
     const otherUsersCategory = await categoryService.createCategory('user-2', {
       name: 'Other',
@@ -242,6 +242,18 @@ describe('update', () => {
       date: '2026-08-15',
     });
 
+    // Spies on $queryRaw (what lockBudgetMonthRow uses) to prove the fix
+    // does more than "still rejects" — a test asserting only the reason
+    // would pass identically whether or not the other user's row was
+    // locked first, since loadCategoryMonthForWrite's ownership check
+    // rejects regardless. This is the thing round 3 actually found.
+    const lockedIds: string[] = [];
+    const originalQueryRaw = prisma.$queryRaw.bind(prisma);
+    prisma.$queryRaw = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      lockedIds.push(...(values as string[]));
+      return originalQueryRaw(strings, ...values);
+    }) as typeof prisma.$queryRaw;
+
     await expect(
       transactionService.update('user-1', transaction.id, {
         categoryMonthId: otherUsersCategoryMonth.id,
@@ -249,6 +261,8 @@ describe('update', () => {
         date: '2026-08-15',
       }),
     ).rejects.toMatchObject({ reason: 'category_month_not_found' });
+
+    expect(lockedIds).not.toContain(otherUsersCategoryMonth.monthId);
   });
 
   it('moves a transaction to a categoryMonth in a different month', async () => {

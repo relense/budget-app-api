@@ -469,6 +469,31 @@ real-Postgres concurrency run was needed for this one, unlike the
 timing-dependent races earlier in this PR. 316 Jest tests total (was
 315).
 
+`pr-reviewer` round 4: **approved** — full end-to-end trace of the
+round-3 fix (same-month, cross-month/owned-target, cross-month/unowned-target),
+plus a fresh sweep of every `lockBudgetMonthRow`/`lockTemplateRow` call
+site in the whole `src/` tree, found nothing else in this class. One
+non-blocking nuance, not a bug: the round-3 regression test asserted only
+the rejection reason, which `loadCategoryMonthForWrite`'s ownership check
+would produce identically whether or not the fix existed — it didn't
+actually prove "no lock taken on the other tenant's row," the substance
+of what round 3 found. Strengthened it: spies on `$queryRaw` (what
+`lockBudgetMonthRow` calls) and asserts the other user's `monthId` never
+appears among the ids it was invoked with. Verified this by temporarily
+reverting the round-3 fix locally and confirming the test fails exactly
+as expected, then restoring it — genuine regression coverage now, not
+just "still rejects." 316 Jest tests total, unchanged (one test replaced
+with a stronger version of itself, not a net-new one).
+
+Four review rounds on this PR, three of which found something real —
+each fix narrower than the last (full multi-file locking gap → a
+cross-month deadlock ordering issue → an ownership-check-after-lock gap
+in that same fix → a test that didn't prove what it claimed). Worth
+naming as a pattern for future concurrency-touching changes in this
+codebase: get it reviewed again after *every* fix to a locking fix, not
+just once at the end — each round's patch was exactly narrow enough to
+introduce its own new edge case.
+
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-locking`.
 2. Still to design/build: recurring-template edit propagation ("apply to
