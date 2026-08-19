@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { formatMonth, isValidMonthFormat } from '../../src/lib/monthFormat.js';
+import { addMonths, formatMonth, isValidMonthFormat } from '../../src/lib/monthFormat.js';
 
 describe('isValidMonthFormat', () => {
   it('accepts a well-formed YYYY-MM string', () => {
@@ -32,5 +32,26 @@ describe('formatMonth', () => {
     // 2026-08-31T23:30 UTC is still August in UTC, whatever the local
     // timezone the test runner happens to be in would say.
     expect(formatMonth(new Date('2026-08-31T23:30:00.000Z'))).toBe('2026-08');
+  });
+});
+
+describe('addMonths', () => {
+  it('shifts forward within the same year', () => {
+    expect(addMonths('2026-08', 1)).toBe('2026-09');
+    expect(addMonths('2026-08', 2)).toBe('2026-10');
+  });
+
+  it('rolls over into the next year', () => {
+    expect(addMonths('2026-12', 1)).toBe('2027-01');
+    expect(addMonths('2026-11', 3)).toBe('2027-02');
+  });
+
+  it('shifts backward, including rolling into the previous year', () => {
+    expect(addMonths('2026-08', -1)).toBe('2026-07');
+    expect(addMonths('2026-01', -1)).toBe('2025-12');
+  });
+
+  it('a delta of 0 returns the same month', () => {
+    expect(addMonths('2026-08', 0)).toBe('2026-08');
   });
 });
