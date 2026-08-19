@@ -73,6 +73,24 @@ describe('Query.savingsFunds', () => {
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
     expect(context.savingsFundService.listCatalog).not.toHaveBeenCalled();
   });
+
+  it('formats startDate/endDate as ISO date strings, and passes through null unformatted', async () => {
+    const context = buildContext('user-1');
+    (context.savingsFundService.listCatalog as jest.Mock).mockImplementation(async () => [
+      { ...fund, startDate: new Date('2026-01-01'), endDate: new Date('2026-12-31') },
+      { ...fund, id: 'fund-2', startDate: null, endDate: null },
+    ]);
+
+    const result = await run('{ savingsFunds { id startDate endDate } }', context);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data).toEqual({
+      savingsFunds: [
+        { id: 'fund-1', startDate: '2026-01-01', endDate: '2026-12-31' },
+        { id: 'fund-2', startDate: null, endDate: null },
+      ],
+    });
+  });
 });
 
 describe('Mutation.createSavingsFund', () => {
