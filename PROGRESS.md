@@ -685,14 +685,49 @@ retargeted the PR's base from the (now-deleted) `feature/month-locking` to
 `develop`), open, both `pr-reviewer` rounds resolved (round 2 approved),
 `test-auditor` deliberately skipped this round, awaiting human review.
 
+PR #10 (`feature/planning-horizon`) and PR #11 (docs catch-up) both merged
+into `develop`, human-reviewed, resolving next action 1 above.
+
+Picked up next action 2 on a fresh `chore/lockmonth-jump-invariant` branch
+(off up-to-date `develop`). Before writing any code, worked through the
+mechanism by hand: for the feared scenario (current=2026-08, 2026-09 never
+provisioned, 2026-10 pre-provisioned and unlocked — locking 2026-08 jumps
+current straight to 2026-10, two months) to ever be *reached*, 2026-10 must
+have been created while current was already 2026-09 or later — which
+requires 2026-08 to already be locked or gone by then, contradicting the
+scenario's premise that 2026-08 is still unlocked and about to be locked.
+Since "current" is never cached (always derived live from whichever rows
+exist) and the horizon's own lower bound (month >= current, added in PR
+#10) means every row that's ever created is within one month of "current"
+at creation time, this generalizes by induction: **any row that currently
+exists is always within one month of current, no matter what
+create/delete/lock sequence produced it** — so locking the current month
+can never advance it by more than one month. Brought this reasoning back
+to the user rather than just implementing a bound; confirmed the jump
+itself (skipping straight to a later pre-provisioned month when the
+in-between one was deliberately deleted) is intended behavior, not a bug
+— the only open question was whether it could ever exceed one month, and
+the answer is no.
+
+Verified rather than just asserted: two new regression tests in
+`categoryMonthService.test.ts` (`describe('lockMonth cannot skip more than
+one month...')`) — one directly attempts pr-reviewer's construction
+(pre-provision September, delete it, try to reach October while August is
+still current — rejected as beyond the horizon, proving the precondition
+itself is unreachable) and one traces a legitimate multi-lock sequence
+confirming each jump lands exactly one month past whatever was just
+locked, never further, even once a later month already exists. Both pass
+against the real implementation, not just the reasoning. Corrected
+`addCategoryToMonth`'s comment (previously left this as an open,
+unproven caveat) to state the invariant and point at the tests. No logic
+change — the existing code was already correct. 335 Jest tests total (was
+333). `npm run typecheck`, `npm run lint` both clean.
+
 Next actions, in order:
-1. Wait for human review/approval on PR #10.
-2. Follow-up, not blocking: decide whether `lockMonth` should bound how far
-   it can advance "current" in one jump, per the narrow TOCTOU observation
-   above.
-3. Still to design/build: recurring-template edit propagation ("apply to
+1. Wait for human review/approval on `chore/lockmonth-jump-invariant`.
+2. Still to design/build: recurring-template edit propagation ("apply to
    future months too?" on `updateRecurringExpenseInstance`).
-4. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
+3. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
    should check for a referencing `recurring_expense_instance`, not just
    `transaction`, before deleting a `category_month` row.
 
@@ -797,11 +832,11 @@ Next actions, in order:
       from the category, so an income category would otherwise silently
       produce an income transaction from a "recurring expense" payment. →
       PR #4 (`feature/recurring-expenses` → `develop`), merged.
-- [ ] **5. Month lifecycle** — in progress, three increments merged/in
-      review so far: budget-inheritance on category/recurring-expense
-      activation (PR #7, merged), `lockMonth`/`deleteBudgetMonth`/
-      `Query.currentMonth` (PR #8, merged), server-side planning-horizon
-      enforcement (PR #10, open). Carry-forward turned out to need no
+- [ ] **5. Month lifecycle** — in progress, three increments merged so far:
+      budget-inheritance on category/recurring-expense activation (PR #7,
+      merged), `lockMonth`/`deleteBudgetMonth`/`Query.currentMonth` (PR #8,
+      merged), server-side planning-horizon enforcement (PR #10, merged).
+      Carry-forward turned out to need no
       dedicated mutation (reuses `addCategoryToMonth`/`addRecurringExpenseToMonth`'s
       existing budget-omit-to-inherit behavior) and auto-lock cascade was
       dropped entirely — both revised out of the original scope described
