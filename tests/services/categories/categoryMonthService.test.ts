@@ -185,17 +185,21 @@ describe('addCategoryToMonth', () => {
 
   it('throws month_locked when the target month is already locked', async () => {
     const { prisma, categoryMonthService, categoryA } = await setup();
+    // Locked at the current month (2026-08, under the fixed clock) rather
+    // than a past one — a past month is now itself rejected by the
+    // planning-horizon check before this ever reaches the lock check, so a
+    // past month can no longer isolate what this test is actually after.
     prisma.budgetMonths.push({
       id: 'bm-1',
       userId: 'user-1',
-      month: '2026-07',
+      month: '2026-08',
       locked: true,
       lockedAt: new Date(),
       createdAt: new Date(),
     });
 
     await expect(
-      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 10000),
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 10000),
     ).rejects.toMatchObject({ reason: 'month_locked' });
     expect(prisma.categoryMonths).toHaveLength(0);
   });
@@ -209,6 +213,41 @@ describe('addCategoryToMonth', () => {
       categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-10', 10000),
     ).rejects.toMatchObject({ reason: 'category_month_beyond_planning_horizon' });
     expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
+  it('throws category_month_beyond_planning_horizon for a month before current', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 10000),
+    ).rejects.toMatchObject({ reason: 'category_month_beyond_planning_horizon' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+    // The rejected month must not have left a stray BudgetMonth row behind
+    // — a past-month row surviving a rejection is exactly what would let
+    // it hijack "current" (the earliest unlocked row) for a later call.
+    expect(prisma.budgetMonths).toHaveLength(0);
+  });
+
+  it('cannot hijack "current" by first activating an arbitrary past month, then activating the real current month', async () => {
+    // Regression for a bug pr-reviewer caught before merge: activating a
+    // category in an untouched past month used to silently create an
+    // unlocked BudgetMonth row there, which then became the "earliest
+    // unlocked" row — dragging "current" itself backwards for every later
+    // call by this user, non-concurrently, on plain sequential use.
+    const { categoryMonthService, categoryA, categoryB } = await setup();
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2020-01', 5000),
+    ).rejects.toMatchObject({ reason: 'category_month_beyond_planning_horizon' });
+
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryB.id,
+      '2026-08',
+      5000,
+    );
+
+    expect(categoryMonth.monthlyBudgetCents).toBe(5000);
   });
 
   it('allows activating exactly at the horizon (current + 1)', async () => {
@@ -274,12 +313,18 @@ describe('addCategoryToMonth', () => {
 
   it("inherits the category's most recent monthlyBudgetCents when omitted", async () => {
     const { categoryMonthService, categoryA } = await setup();
-    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 10000);
+    // Prior activation at the current month (2026-08), inheriting into the
+    // horizon month right after it (2026-09) — a prior activation further
+    // in the past is no longer reachable via a live call now that the
+    // planning horizon also blocks past months (see the fixture-row
+    // approach used by the "inherits by real calendar month" tests below
+    // for cases that genuinely need multi-month-apart history).
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 10000);
 
     const categoryMonth = await categoryMonthService.addCategoryToMonth(
       'user-1',
       categoryA.id,
-      '2026-08',
+      '2026-09',
     );
 
     expect(categoryMonth.monthlyBudgetCents).toBe(10000);
@@ -287,12 +332,12 @@ describe('addCategoryToMonth', () => {
 
   it('uses the given budget rather than inheriting when a prior activation exists but a budget is still passed', async () => {
     const { categoryMonthService, categoryA } = await setup();
-    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 10000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 10000);
 
     const categoryMonth = await categoryMonthService.addCategoryToMonth(
       'user-1',
       categoryA.id,
-      '2026-08',
+      '2026-09',
       5000,
     );
 
@@ -371,9 +416,9 @@ describe('ensureActiveForCategory', () => {
 
   it("inherits the category's most recent monthlyBudgetCents when creating fresh with no budget given", async () => {
     const { categoryMonthService, categoryA } = await setup();
-    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-07', 12000);
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 12000);
 
-    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08');
+    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-09');
 
     expect(result.monthlyBudgetCents).toBe(12000);
   });
@@ -410,17 +455,20 @@ describe('ensureActiveForCategory', () => {
 
   it('throws month_locked when the target month is already locked', async () => {
     const { prisma, categoryMonthService, categoryA } = await setup();
+    // Locked at the current month (2026-08, under the fixed clock) rather
+    // than a past one — see the identical note on addCategoryToMonth's
+    // version of this test above.
     prisma.budgetMonths.push({
       id: 'bm-1',
       userId: 'user-1',
-      month: '2026-07',
+      month: '2026-08',
       locked: true,
       lockedAt: new Date(),
       createdAt: new Date(),
     });
 
     await expect(
-      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-07', 50000),
+      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08', 50000),
     ).rejects.toMatchObject({ reason: 'month_locked' });
   });
 
@@ -432,13 +480,36 @@ describe('ensureActiveForCategory', () => {
     ).rejects.toMatchObject({ reason: 'category_month_beyond_planning_horizon' });
   });
 
+  it('throws category_month_beyond_planning_horizon for a month before current', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+
+    await expect(
+      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-07', 10000),
+    ).rejects.toMatchObject({ reason: 'category_month_beyond_planning_horizon' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+    expect(prisma.budgetMonths).toHaveLength(0);
+  });
+
   it('does not re-enforce the horizon when the category_month is already active (idempotent return)', async () => {
     // Pre-provisioned via a direct fixture push (bypassing the horizon
     // check, same as a locked historical month would) — ensureActiveForCategory
     // must still return it rather than retroactively rejecting an
     // already-active month just because it's now far in the future relative
-    // to the fixed clock.
+    // to the fixed clock. A distinct, earlier *unlocked* BudgetMonth row
+    // (2026-08) is pushed too, so "current" pins there instead of trivially
+    // deriving to 2027-01 itself (the only unlocked row otherwise) — without
+    // it, this test would pass even if the idempotent-return exemption were
+    // deleted, since the horizon check would then compare 2027-01 against
+    // itself and pass regardless.
     const { prisma, categoryMonthService, categoryA } = await setup();
+    prisma.budgetMonths.push({
+      id: 'bm-current',
+      userId: 'user-1',
+      month: '2026-08',
+      locked: false,
+      lockedAt: null,
+      createdAt: new Date(),
+    });
     prisma.budgetMonths.push({
       id: 'bm-far',
       userId: 'user-1',

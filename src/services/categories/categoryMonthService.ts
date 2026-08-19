@@ -50,12 +50,14 @@ function assertValidMonth(month: string): void {
 
 /**
  * When no budget is given explicitly, inherits the category's most
- * recent (by calendar month, not insertion order — the one-month planning
- * horizon isn't enforced server-side yet, so a category_month can in
- * principle be created for any month in any order) category_month's
- * budget — carry-forward / pre-provisioning next month while it's already
- * active — or requires an explicit one if this category has never been
- * active anywhere yet. Scoped by userId too: both call sites already run
+ * recent (by calendar month, not insertion order) category_month's budget
+ * — carry-forward / pre-provisioning next month while it's already active —
+ * or requires an explicit one if this category has never been active
+ * anywhere yet. "Most recent" can still span several months, e.g. a
+ * category last active two months ago before a gap — this just picks the
+ * latest of whatever activations already exist, it doesn't imply anything
+ * about which months are *newly* creatable (see assertWithinPlanningHorizon
+ * for that). Scoped by userId too: both call sites already run
  * assertOwnedCategory first, so this is defense-in-depth, not the only
  * thing standing between users.
  */
@@ -120,9 +122,16 @@ async function assertMonthNotLockedOnClient(
 }
 
 /**
- * A user can never activate/plan further out than the immediate next
- * month (plan.md's "Month Lifecycle" section) — a candidate future
- * paid-tier feature, not phase 1. Exported standalone so
+ * A brand-new activation is only ever allowed in the current month or the
+ * one right after it — never further ahead, and never in the past either
+ * (plan.md's "Month Lifecycle" section; the future-only cap is the phase-1
+ * rule, further-ahead planning is a candidate paid-tier feature). Blocking
+ * the past isn't just a symmetry nicety: "current" is derived elsewhere
+ * (findCurrentMonthOnClient) as the *earliest unlocked* BudgetMonth row, so
+ * if a past month were ever allowed to be newly created here, that
+ * freshly-created (always unlocked) row would itself become the new
+ * "earliest unlocked" — silently dragging "current" itself backwards for
+ * every future call this user makes. Exported standalone so
  * recurringExpenseInstanceService's auto-activation path (which shares
  * ensureActiveForCategoryOnClient) enforces the identical rule, not a
  * separately-maintained copy.
@@ -130,17 +139,15 @@ async function assertMonthNotLockedOnClient(
  * Takes the already-derived `currentMonth` rather than deriving it itself:
  * callers must capture that *before* calling resolveBudgetMonthId for the
  * target month. resolveBudgetMonthId upserts (permanently creates) a
- * BudgetMonth row for `month` if none exists yet — and since a freshly
- * created row is always unlocked, it would itself become the "earliest
- * unlocked" candidate findCurrentMonthOnClient picks up whenever no other
- * unlocked row exists, making this check self-satisfying (current == the
- * very month being validated, horizon always one past it) for exactly the
- * case — a brand-new activation with no prior unlocked months — it most
- * needs to catch.
+ * BudgetMonth row for `month` if none exists yet — calling it before this
+ * check would let a since-created row for a month this check is about to
+ * reject leak into the permanent record anyway (and, for a past month,
+ * hijack "current" as described above) — a rejection must never have
+ * side effects.
  */
 export function assertWithinPlanningHorizon(currentMonth: string, month: string): void {
   const horizon = addMonths(currentMonth, 1);
-  if (month > horizon) {
+  if (month < currentMonth || month > horizon) {
     throw new CategoryMonthServiceError('category_month_beyond_planning_horizon');
   }
 }
@@ -168,18 +175,31 @@ export async function ensureActiveForCategoryOnClient(
   // assertWithinPlanningHorizon's doc comment for why the ordering matters.
   const current = await findCurrentMonthOnClient(client, userId, now);
 
-  const monthId = await resolveBudgetMonthId(client, userId, month);
-  await assertMonthNotLockedOnClient(client, monthId);
+  // Read-only — unlike resolveBudgetMonthId below, never creates a row.
+  // Only used to decide whether this call is idempotent (category already
+  // active this month, the one case the horizon check doesn't apply to);
+  // resolveBudgetMonthId's upsert must not run at all until that's
+  // resolved, so a rejected month can't leave a row behind regardless of
+  // how this call would otherwise have turned out.
+  const existingBudgetMonth = await client.budgetMonth.findUnique({
+    where: { userId_month: { userId, month } },
+  });
+  const alreadyActive = existingBudgetMonth
+    ? await client.categoryMonth.findFirst({ where: { categoryId, monthId: existingBudgetMonth.id } })
+    : null;
 
-  const existing = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
-  if (existing) return existing;
-
-  // Only enforced when this call would actually create a new activation
-  // (the `existing` check above already returned early otherwise) —
+  // Only enforced when this call would actually create a new activation —
   // pre-provisioning a month a category is already active in is always
   // allowed regardless of how far ahead it is, same as the rest of this
   // function's idempotent-if-already-active design.
-  assertWithinPlanningHorizon(current.month, month);
+  if (!alreadyActive) {
+    assertWithinPlanningHorizon(current.month, month);
+  }
+
+  const monthId = await resolveBudgetMonthId(client, userId, month);
+  await assertMonthNotLockedOnClient(client, monthId);
+
+  if (alreadyActive) return alreadyActive;
 
   const resolvedBudget = await resolveBudgetForActivation(client, userId, categoryId, monthlyBudgetCents);
 
@@ -258,12 +278,20 @@ export function createCategoryMonthService({
 
     // Captured before resolveBudgetMonthId's upsert below — see
     // assertWithinPlanningHorizon's doc comment for why the ordering
-    // matters. A TOCTOU gap between this read and the transaction below is
-    // safe to leave open: "current" only ever advances (via an explicit
-    // lockMonth call), so a race can only make this check more permissive
-    // by the time the transaction runs, never less — no invariant this
-    // check protects can be violated by using a slightly stale value.
+    // matters (a rejected month must never leave a row behind, and for a
+    // rejected *past* month specifically, that row would go on to corrupt
+    // "current" itself for every later call). Checked immediately, before
+    // resolveBudgetMonthId runs at all — unlike the month-locked check
+    // below, this one can't be "re-checked inside the transaction, right
+    // before the insert" without reopening the exact bug it exists to
+    // prevent, so this is the only check of it there is. The TOCTOU gap
+    // between this read and the transaction below is still safe to leave
+    // open: nothing else in this function can move "current" backwards, so
+    // a race can only ever make this check more permissive by the time the
+    // transaction runs, never less — no invariant it protects can be
+    // violated by using a slightly stale value.
     const current = await findCurrentMonthOnClient(prisma, userId, now);
+    assertWithinPlanningHorizon(current.month, month);
 
     const monthId = await budgetMonthService.resolveBudgetMonthId(userId, month);
 
@@ -281,7 +309,6 @@ export function createCategoryMonthService({
       return await prisma.$transaction(async (tx) => {
         await assertOwnedCategory(tx, userId, categoryId);
         await assertMonthNotLockedOnClient(tx, monthId);
-        assertWithinPlanningHorizon(current.month, month);
         const resolvedBudget = await resolveBudgetForActivation(tx, userId, categoryId, monthlyBudgetCents);
 
         return tx.categoryMonth.create({
