@@ -350,6 +350,61 @@ without creating a row, locks it, current month naturally falls back to
 today's real date with no cascade needed, `deleteBudgetMonth` blocked
 while referenced and succeeds once empty.
 
+`pr-reviewer` on PR #8: **needs changes** — caught a real, significant
+gap. Before this PR, `budget_months.locked` could never actually become
+`true` (nothing set it), so every existing "is this month locked" check
+across `categoryMonthService`/`transactionService`/
+`recurringExpenseInstanceService` was a plain check-then-write with no
+row lock — dead code paths that never needed to defend against a real
+race. `lockMonth` is what activates it: as shipped, a `createTransaction`/
+`addCategoryToMonth`/`addRecurringExpenseToMonth` call landing in the gap
+between another request's `lockMonth` check-and-write could still insert
+a row into what is (or becomes) a locked month — silently breaking the
+"locked = immutable" guarantee the whole feature exists for. Asked the
+user how to scope the fix (all-in-now vs. lockMonth-only-now-with-a-
+tracked-follow-up, mirroring the categories soft-delete precedent) — went
+with fixing it fully now.
+
+Closed it with the same `SELECT ... FOR UPDATE` row-lock pattern already
+established for `lockTemplateRow`: new `lockBudgetMonthRow` (standalone,
+`budgetMonthService.ts`), taken before checking `locked` in every write
+path that needs to respect it — `lockMonth`/`deleteBudgetMonth`
+themselves, `categoryMonthService`'s `addCategoryToMonth`/
+`ensureActiveForCategoryOnClient`/`removeCategoryFromMonth`/
+`updateCategoryMonthBudget` (the last two didn't even run inside a
+transaction before this — now do), `transactionService`'s `create`/
+`update`/`deleteTransaction` (same — previously no transaction at all,
+now wrapped, plus a new `loadCategoryMonthForWrite`/
+`assertOwnedTransactionMonthNotLocked` client-parameterized rewrite), and
+`recurringExpenseInstanceService`'s `updateInstance`/`removeFromMonth`.
+`findCurrentMonth` also gained a client-parameterized
+`findCurrentMonthOnClient` so `lockMonth` can re-derive "current" from
+inside its own transaction, against the locked row, not the service's
+separately-bound connection. Verified against real Postgres with a
+30-trial-each concurrent race (`lockMonth` vs `addCategoryToMonth`,
+`lockMonth` vs `createTransaction`, throwaway script removed after): 0
+inconsistencies across both, and the second one genuinely exercised both
+orderings (24/30 the write landed first, 6/30 the lock won and correctly
+rejected the write) rather than one side trivially always winning.
+
+Also addressed from the same review round: the `deleteBudgetMonth`
+in-code comment overstated what the `category_month` pre-check alone
+guarantees — traced it and confirmed `recurring_expense_instance` has
+its own direct FK to `budget_months` (not through `category_month`), and
+`removeCategoryFromMonth` doesn't check for a referencing instance before
+deleting a `category_month` row, so a month can end up with an instance
+but zero `category_month` rows. The pre-check can't see that; only the
+`P2003` catch does. Corrected the comment and added the regression test
+this gap was missing (instance-with-no-category_month still blocks
+deletion). Noted but not changed: `removeCategoryFromMonth` not checking
+for a referencing `recurring_expense_instance` is itself a small
+pre-existing gap, functionally harmless (the FK backstop on
+`deleteBudgetMonth` covers it), worth a follow-up note rather than a fix
+right now. `BudgetMonth`'s lack of an `id` field (deliberate, see above)
+means a normalized GraphQL client can't auto-merge cache updates after
+`lockMonth`/`deleteBudgetMonth` — flagged for whoever picks up the
+frontend, not a backend concern. 312 Jest tests total (was 311).
+
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-locking`.
 2. Still to design/build: recurring-template edit propagation ("apply to
@@ -357,6 +412,9 @@ Next actions, in order:
    server-side enforcement of the one-month planning horizon (still not
    implemented anywhere — flagged again during this increment's review
    groundwork, see PR #7's history).
+3. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
+   should check for a referencing `recurring_expense_instance`, not just
+   `transaction`, before deleting a `category_month` row.
 
 ## Phase 1 — Backend
 

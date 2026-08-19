@@ -222,8 +222,9 @@ describe('addRecurringExpenseToMonth', () => {
 
     // read = outer ownership check (before opening the transaction), then
     // lock, then read = the fresh, post-lock re-read that decides which
-    // category to activate.
-    expect(order).toEqual(['read', 'lock', 'read']);
+    // category to activate, then a second lock = ensureActiveForCategoryOnClient's
+    // own lockBudgetMonthRow before it checks the month isn't locked.
+    expect(order).toEqual(['read', 'lock', 'read', 'lock']);
   });
 
   it('auto-activates the category for the month if not already active', async () => {

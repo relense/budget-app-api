@@ -18,7 +18,7 @@ export class BudgetMonthServiceError extends Error {
 }
 
 export interface BudgetMonthServiceDeps {
-  prisma: Pick<PrismaClient, 'budgetMonth' | 'categoryMonth'>;
+  prisma: Pick<PrismaClient, 'budgetMonth' | 'categoryMonth' | '$transaction' | '$queryRaw'>;
   now?: () => Date;
 }
 
@@ -48,6 +48,41 @@ export async function resolveBudgetMonthId(
     update: {},
   });
   return budgetMonth.id;
+}
+
+/**
+ * Takes a row lock (SELECT ... FOR UPDATE) on one BudgetMonth — must be
+ * called inside a $transaction. Exported standalone so every write path
+ * that needs to check `locked` (categoryMonthService, transactionService,
+ * recurringExpenseInstanceService, and lockMonth/deleteBudgetMonth below)
+ * takes the *same* lock before checking it, instead of a plain read: under
+ * Postgres's default READ COMMITTED isolation, a plain check-then-write has
+ * no protection against a concurrent lockMonth committing in the gap
+ * between the check and the write — the lock is what actually closes that,
+ * same pattern as recurringExpenseTemplateService's lockTemplateRow.
+ */
+export async function lockBudgetMonthRow(client: Pick<PrismaClient, '$queryRaw'>, id: string): Promise<void> {
+  await client.$queryRaw`SELECT id FROM budget_months WHERE id = ${id} FOR UPDATE`;
+}
+
+/**
+ * Client-parameterized core of findCurrentMonth — see findCurrentMonth
+ * below for the derivation rule. Standalone so lockMonth can re-derive
+ * "current" from inside its own transaction, against the transactional
+ * client, after taking a row lock — reading it via the service's own
+ * separately-bound connection wouldn't see (or participate in) that lock.
+ */
+export async function findCurrentMonthOnClient(
+  client: Pick<PrismaClient, 'budgetMonth'>,
+  userId: string,
+  now: () => Date,
+): Promise<{ month: string; locked: boolean }> {
+  const unlocked = await client.budgetMonth.findMany({ where: { userId, locked: false } });
+  if (unlocked.length === 0) {
+    return { month: formatMonth(now()), locked: false };
+  }
+  const earliest = unlocked.reduce((min, row) => (row.month < min.month ? row : min));
+  return { month: earliest.month, locked: earliest.locked };
 }
 
 /**
@@ -91,12 +126,7 @@ export function createBudgetMonthService({ prisma, now = () => new Date() }: Bud
    * separate, explicit user actions (see PROGRESS.md).
    */
   async function findCurrentMonth(userId: string): Promise<{ month: string; locked: boolean }> {
-    const unlocked = await prisma.budgetMonth.findMany({ where: { userId, locked: false } });
-    if (unlocked.length === 0) {
-      return { month: formatMonth(now()), locked: false };
-    }
-    const earliest = unlocked.reduce((min, row) => (row.month < min.month ? row : min));
-    return { month: earliest.month, locked: earliest.locked };
+    return findCurrentMonthOnClient(prisma, userId, now);
   }
 
   /**
@@ -106,6 +136,14 @@ export function createBudgetMonthService({ prisma, now = () => new Date() }: Bud
    * always earliest unlocked" invariant every other derivation relies on.
    * No carry-forward, no next-month creation here — those are separate,
    * explicit actions the client drives afterward if the user wants them.
+   *
+   * Runs inside a transaction, taking lockBudgetMonthRow before
+   * re-checking locked/current: closes both a concurrent lockMonth for
+   * this same month (the second caller blocks until the first commits,
+   * then correctly sees budget_month_already_locked) and — since every
+   * other write path takes the identical lock before checking `locked` —
+   * a write racing this call landing in what's about to become a locked
+   * month.
    */
   async function lockMonth(userId: string, month: string) {
     assertValidMonth(month);
@@ -114,18 +152,30 @@ export function createBudgetMonthService({ prisma, now = () => new Date() }: Bud
     if (!budgetMonth) {
       throw new BudgetMonthServiceError('budget_month_not_found');
     }
-    if (budgetMonth.locked) {
-      throw new BudgetMonthServiceError('budget_month_already_locked');
-    }
 
-    const current = await findCurrentMonth(userId);
-    if (current.month !== month) {
-      throw new BudgetMonthServiceError('budget_month_not_current');
-    }
+    return prisma.$transaction(async (tx) => {
+      await lockBudgetMonthRow(tx, budgetMonth.id);
 
-    return prisma.budgetMonth.update({
-      where: { id: budgetMonth.id },
-      data: { locked: true, lockedAt: now() },
+      // Re-read inside the lock — a concurrent lockMonth for this same row
+      // could have committed between the check above and this lock being
+      // granted.
+      const current = await tx.budgetMonth.findUnique({ where: { id: budgetMonth.id } });
+      if (!current) {
+        throw new BudgetMonthServiceError('budget_month_not_found');
+      }
+      if (current.locked) {
+        throw new BudgetMonthServiceError('budget_month_already_locked');
+      }
+
+      const currentMonth = await findCurrentMonthOnClient(tx, userId, now);
+      if (currentMonth.month !== month) {
+        throw new BudgetMonthServiceError('budget_month_not_current');
+      }
+
+      return tx.budgetMonth.update({
+        where: { id: budgetMonth.id },
+        data: { locked: true, lockedAt: now() },
+      });
     });
   }
 
@@ -134,8 +184,14 @@ export function createBudgetMonthService({ prisma, now = () => new Date() }: Bud
    * use. Blocked while any category_month row references it — a
    * recurring-expense instance always has a category_month for the same
    * month/category created atomically alongside it (see
-   * ensureActiveForCategoryOnClient), so this one check covers both.
-   * Locked months are permanent record, never deletable.
+   * ensureActiveForCategoryOnClient), so this pre-check covers the common
+   * case; the P2003 catch below is what actually guarantees the
+   * recurring-expense-instance-only edge case too (category_month removed
+   * after the fact, instance left behind — removeCategoryFromMonth doesn't
+   * check for a referencing instance), not the pre-check alone. Locked
+   * months are permanent record, never deletable. Runs inside a
+   * transaction taking lockBudgetMonthRow, same reasoning as lockMonth —
+   * closes the race against a concurrent lockMonth for this same row.
    */
   async function deleteBudgetMonth(userId: string, month: string): Promise<void> {
     assertValidMonth(month);
@@ -144,18 +200,30 @@ export function createBudgetMonthService({ prisma, now = () => new Date() }: Bud
     if (!budgetMonth) {
       throw new BudgetMonthServiceError('budget_month_not_found');
     }
-    if (budgetMonth.locked) {
-      throw new BudgetMonthServiceError('budget_month_locked');
-    }
-
-    const existingCategoryMonth = await prisma.categoryMonth.findFirst({ where: { monthId: budgetMonth.id } });
-    if (existingCategoryMonth) {
-      throw new BudgetMonthServiceError('budget_month_has_activations');
-    }
 
     try {
-      await prisma.budgetMonth.delete({ where: { id: budgetMonth.id } });
+      await prisma.$transaction(async (tx) => {
+        await lockBudgetMonthRow(tx, budgetMonth.id);
+
+        const current = await tx.budgetMonth.findUnique({ where: { id: budgetMonth.id } });
+        if (!current) {
+          throw new BudgetMonthServiceError('budget_month_not_found');
+        }
+        if (current.locked) {
+          throw new BudgetMonthServiceError('budget_month_locked');
+        }
+
+        const existingCategoryMonth = await tx.categoryMonth.findFirst({ where: { monthId: budgetMonth.id } });
+        if (existingCategoryMonth) {
+          throw new BudgetMonthServiceError('budget_month_has_activations');
+        }
+
+        await tx.budgetMonth.delete({ where: { id: budgetMonth.id } });
+      });
     } catch (error) {
+      if (error instanceof BudgetMonthServiceError) {
+        throw error;
+      }
       if (hasPrismaErrorCode(error, 'P2003')) {
         throw new BudgetMonthServiceError('budget_month_has_activations');
       }

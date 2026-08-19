@@ -1,4 +1,5 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
+import { lockBudgetMonthRow } from '../budgetMonths/budgetMonthService.js';
 import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 
@@ -29,7 +30,10 @@ export class TransactionServiceError extends Error {
 }
 
 export interface TransactionServiceDeps {
-  prisma: Pick<PrismaClient, 'transaction' | 'categoryMonth' | 'category' | 'budgetMonth'>;
+  prisma: Pick<
+    PrismaClient,
+    'transaction' | 'categoryMonth' | 'category' | 'budgetMonth' | '$transaction' | '$queryRaw'
+  >;
   budgetMonthService: Pick<BudgetMonthService, 'findBudgetMonthId'>;
 }
 
@@ -52,34 +56,55 @@ function assertValidMonth(month: string): void {
 }
 
 export function createTransactionService({ prisma, budgetMonthService }: TransactionServiceDeps) {
-  async function loadCategoryMonthForWrite(userId: string, categoryMonthId: string, date: string) {
-    const categoryMonth = await prisma.categoryMonth.findUnique({ where: { id: categoryMonthId } });
+  /**
+   * Takes lockBudgetMonthRow before checking `locked` — must be called
+   * inside a $transaction, against the transactional client. Every write
+   * path below goes through this (directly or via loadCategoryMonthForWrite),
+   * so a lockMonth call landing concurrently is actually serialized
+   * against, not just raced with a plain read.
+   */
+  async function assertBudgetMonthNotLockedById(
+    client: Pick<PrismaClient, 'budgetMonth' | '$queryRaw'>,
+    monthId: string,
+  ): Promise<void> {
+    await lockBudgetMonthRow(client, monthId);
+    const budgetMonth = await client.budgetMonth.findUnique({ where: { id: monthId } });
+    if (budgetMonth?.locked) {
+      throw new TransactionServiceError('month_locked');
+    }
+  }
+
+  async function loadCategoryMonthForWrite(
+    client: Pick<PrismaClient, 'categoryMonth' | 'budgetMonth' | 'category' | '$queryRaw'>,
+    userId: string,
+    categoryMonthId: string,
+    date: string,
+  ) {
+    const categoryMonth = await client.categoryMonth.findUnique({ where: { id: categoryMonthId } });
     if (!categoryMonth || categoryMonth.userId !== userId) {
       throw new TransactionServiceError('category_month_not_found');
     }
 
-    const budgetMonth = await prisma.budgetMonth.findUnique({ where: { id: categoryMonth.monthId } });
-    if (budgetMonth?.locked) {
-      throw new TransactionServiceError('month_locked');
-    }
+    await assertBudgetMonthNotLockedById(client, categoryMonth.monthId);
+    const budgetMonth = await client.budgetMonth.findUnique({ where: { id: categoryMonth.monthId } });
     if (budgetMonth && date.slice(0, 7) !== budgetMonth.month) {
       throw new TransactionServiceError('date_month_mismatch');
     }
 
-    const category = await prisma.category.findUnique({ where: { id: categoryMonth.categoryId } });
+    const category = await client.category.findUnique({ where: { id: categoryMonth.categoryId } });
     if (!category) {
       throw new Error(`Data integrity error: Category ${categoryMonth.categoryId} not found`);
     }
     return { categoryMonth, direction: category.direction };
   }
 
-  async function assertOwnedTransactionMonthNotLocked(categoryMonthId: string): Promise<void> {
-    const categoryMonth = await prisma.categoryMonth.findUnique({ where: { id: categoryMonthId } });
+  async function assertOwnedTransactionMonthNotLocked(
+    client: Pick<PrismaClient, 'categoryMonth' | 'budgetMonth' | '$queryRaw'>,
+    categoryMonthId: string,
+  ): Promise<void> {
+    const categoryMonth = await client.categoryMonth.findUnique({ where: { id: categoryMonthId } });
     if (!categoryMonth) return;
-    const budgetMonth = await prisma.budgetMonth.findUnique({ where: { id: categoryMonth.monthId } });
-    if (budgetMonth?.locked) {
-      throw new TransactionServiceError('month_locked');
-    }
+    await assertBudgetMonthNotLockedById(client, categoryMonth.monthId);
   }
 
   /**
@@ -91,19 +116,22 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
   async function create(userId: string, input: TransactionInput, recurringExpenseInstanceId?: string) {
     assertValidAmount(input.amountCents);
     assertValidDateFormat(input.date);
-    const { direction } = await loadCategoryMonthForWrite(userId, input.categoryMonthId, input.date);
 
-    return prisma.transaction.create({
-      data: {
-        userId,
-        categoryMonthId: input.categoryMonthId,
-        recurringExpenseInstanceId: recurringExpenseInstanceId ?? null,
-        amountCents: input.amountCents,
-        date: new Date(input.date),
-        merchant: input.merchant ?? null,
-        note: input.note ?? null,
-        direction,
-      },
+    return prisma.$transaction(async (tx) => {
+      const { direction } = await loadCategoryMonthForWrite(tx, userId, input.categoryMonthId, input.date);
+
+      return tx.transaction.create({
+        data: {
+          userId,
+          categoryMonthId: input.categoryMonthId,
+          recurringExpenseInstanceId: recurringExpenseInstanceId ?? null,
+          amountCents: input.amountCents,
+          date: new Date(input.date),
+          merchant: input.merchant ?? null,
+          note: input.note ?? null,
+          direction,
+        },
+      });
     });
   }
 
@@ -111,40 +139,44 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
     assertValidAmount(input.amountCents);
     assertValidDateFormat(input.date);
 
-    const existing = await prisma.transaction.findUnique({ where: { id } });
-    if (!existing || existing.userId !== userId) {
-      throw new TransactionServiceError('transaction_not_found');
-    }
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.transaction.findUnique({ where: { id } });
+      if (!existing || existing.userId !== userId) {
+        throw new TransactionServiceError('transaction_not_found');
+      }
 
-    // The transaction's current month must not be locked, regardless of
-    // whether categoryMonthId is changing — a locked month's rows are
-    // immutable, editing-out-of-it included.
-    await assertOwnedTransactionMonthNotLocked(existing.categoryMonthId);
+      // The transaction's current month must not be locked, regardless of
+      // whether categoryMonthId is changing — a locked month's rows are
+      // immutable, editing-out-of-it included.
+      await assertOwnedTransactionMonthNotLocked(tx, existing.categoryMonthId);
 
-    const { direction } = await loadCategoryMonthForWrite(userId, input.categoryMonthId, input.date);
+      const { direction } = await loadCategoryMonthForWrite(tx, userId, input.categoryMonthId, input.date);
 
-    return prisma.transaction.update({
-      where: { id },
-      data: {
-        categoryMonthId: input.categoryMonthId,
-        amountCents: input.amountCents,
-        date: new Date(input.date),
-        merchant: input.merchant ?? null,
-        note: input.note ?? null,
-        direction,
-      },
+      return tx.transaction.update({
+        where: { id },
+        data: {
+          categoryMonthId: input.categoryMonthId,
+          amountCents: input.amountCents,
+          date: new Date(input.date),
+          merchant: input.merchant ?? null,
+          note: input.note ?? null,
+          direction,
+        },
+      });
     });
   }
 
   async function deleteTransaction(userId: string, id: string): Promise<void> {
-    const existing = await prisma.transaction.findUnique({ where: { id } });
-    if (!existing || existing.userId !== userId) {
-      throw new TransactionServiceError('transaction_not_found');
-    }
+    await prisma.$transaction(async (tx) => {
+      const existing = await tx.transaction.findUnique({ where: { id } });
+      if (!existing || existing.userId !== userId) {
+        throw new TransactionServiceError('transaction_not_found');
+      }
 
-    await assertOwnedTransactionMonthNotLocked(existing.categoryMonthId);
+      await assertOwnedTransactionMonthNotLocked(tx, existing.categoryMonthId);
 
-    await prisma.transaction.delete({ where: { id } });
+      await tx.transaction.delete({ where: { id } });
+    });
   }
 
   async function list(userId: string, month: string, categoryId?: string) {

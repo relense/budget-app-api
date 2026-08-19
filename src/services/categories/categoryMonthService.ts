@@ -1,5 +1,5 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
-import { resolveBudgetMonthId } from '../budgetMonths/budgetMonthService.js';
+import { lockBudgetMonthRow, resolveBudgetMonthId } from '../budgetMonths/budgetMonthService.js';
 import { assertOwnedCategory, CategoryServiceError } from './categoryService.js';
 import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
@@ -22,7 +22,10 @@ export class CategoryMonthServiceError extends Error {
 }
 
 export interface CategoryMonthServiceDeps {
-  prisma: Pick<PrismaClient, 'category' | 'categoryMonth' | 'transaction' | 'budgetMonth' | '$transaction'>;
+  prisma: Pick<
+    PrismaClient,
+    'category' | 'categoryMonth' | 'transaction' | 'budgetMonth' | '$transaction' | '$queryRaw'
+  >;
   budgetMonthService: Pick<BudgetMonthService, 'resolveBudgetMonthId' | 'findBudgetMonthId'>;
 }
 
@@ -82,6 +85,23 @@ async function resolveBudgetForActivation(
 }
 
 /**
+ * Takes lockBudgetMonthRow before checking `locked` — must be called inside
+ * a $transaction. Every write path in this file that needs "is this month
+ * locked" goes through this, not a plain read, so it actually serializes
+ * against a concurrent lockMonth instead of racing it.
+ */
+async function assertMonthNotLockedOnClient(
+  client: Pick<PrismaClient, 'budgetMonth' | '$queryRaw'>,
+  monthId: string,
+): Promise<void> {
+  await lockBudgetMonthRow(client, monthId);
+  const budgetMonth = await client.budgetMonth.findUnique({ where: { id: monthId } });
+  if (budgetMonth?.locked) {
+    throw new CategoryMonthServiceError('month_locked');
+  }
+}
+
+/**
  * Client-parameterized core of ensureActiveForCategory — exported standalone
  * so a caller that already has its own open transaction (e.g.
  * recurringExpenseInstanceService's locked instance-creation flow) can run
@@ -90,7 +110,7 @@ async function resolveBudgetForActivation(
  * below supplies one for regular (non-nested) callers.
  */
 export async function ensureActiveForCategoryOnClient(
-  client: Pick<PrismaClient, 'category' | 'categoryMonth' | 'budgetMonth'>,
+  client: Pick<PrismaClient, 'category' | 'categoryMonth' | 'budgetMonth' | '$queryRaw'>,
   userId: string,
   categoryId: string,
   month: string,
@@ -100,10 +120,7 @@ export async function ensureActiveForCategoryOnClient(
   await assertOwnedCategory(client, userId, categoryId);
 
   const monthId = await resolveBudgetMonthId(client, userId, month);
-  const budgetMonth = await client.budgetMonth.findUnique({ where: { id: monthId } });
-  if (budgetMonth?.locked) {
-    throw new CategoryMonthServiceError('month_locked');
-  }
+  await assertMonthNotLockedOnClient(client, monthId);
 
   const existing = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
   if (existing) return existing;
@@ -133,13 +150,6 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
       throw new CategoryMonthServiceError('category_month_not_found');
     }
     return categoryMonth;
-  }
-
-  async function assertMonthNotLocked(monthId: string): Promise<void> {
-    const budgetMonth = await prisma.budgetMonth.findUnique({ where: { id: monthId } });
-    if (budgetMonth?.locked) {
-      throw new CategoryMonthServiceError('month_locked');
-    }
   }
 
   async function listByMonth(userId: string, month: string) {
@@ -177,7 +187,6 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     await assertOwnedCategory(prisma, userId, categoryId);
 
     const monthId = await budgetMonthService.resolveBudgetMonthId(userId, month);
-    await assertMonthNotLocked(monthId);
 
     try {
       // Re-checked inside the transaction, against the transactional
@@ -186,9 +195,13 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
       // default READ COMMITTED isolation) the window where a concurrent
       // delete of this same category could otherwise land between the
       // check above and the write, leaving a category_month row that
-      // references an already-soft-deleted category.
+      // references an already-soft-deleted category. The month-locked
+      // check, by contrast, *is* fully closed — assertMonthNotLockedOnClient
+      // takes lockBudgetMonthRow first, so this serializes against a
+      // concurrent lockMonth rather than racing it.
       return await prisma.$transaction(async (tx) => {
         await assertOwnedCategory(tx, userId, categoryId);
+        await assertMonthNotLockedOnClient(tx, monthId);
         const resolvedBudget = await resolveBudgetForActivation(tx, userId, categoryId, monthlyBudgetCents);
 
         return tx.categoryMonth.create({
@@ -196,7 +209,7 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
         });
       });
     } catch (error) {
-      if (error instanceof CategoryServiceError) {
+      if (error instanceof CategoryServiceError || error instanceof CategoryMonthServiceError) {
         throw error;
       }
       if (hasPrismaErrorCode(error, 'P2002')) {
@@ -226,18 +239,24 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
 
   async function removeCategoryFromMonth(userId: string, categoryMonthId: string): Promise<void> {
     const categoryMonth = await findOwnedCategoryMonth(userId, categoryMonthId);
-    await assertMonthNotLocked(categoryMonth.monthId);
-
-    const referencingTransaction = await prisma.transaction.findFirst({
-      where: { categoryMonthId },
-    });
-    if (referencingTransaction) {
-      throw new CategoryMonthServiceError('category_month_has_transactions');
-    }
 
     try {
-      await prisma.categoryMonth.delete({ where: { id: categoryMonthId } });
+      await prisma.$transaction(async (tx) => {
+        await assertMonthNotLockedOnClient(tx, categoryMonth.monthId);
+
+        const referencingTransaction = await tx.transaction.findFirst({
+          where: { categoryMonthId },
+        });
+        if (referencingTransaction) {
+          throw new CategoryMonthServiceError('category_month_has_transactions');
+        }
+
+        await tx.categoryMonth.delete({ where: { id: categoryMonthId } });
+      });
     } catch (error) {
+      if (error instanceof CategoryMonthServiceError) {
+        throw error;
+      }
       // A transaction can be created concurrently, after the check above
       // but before this delete lands — the onDelete: Restrict FK catches
       // it at the DB level. Map that to the same typed error the check
@@ -259,11 +278,14 @@ export function createCategoryMonthService({ prisma, budgetMonthService }: Categ
     assertValidBudget(monthlyBudgetCents);
 
     const categoryMonth = await findOwnedCategoryMonth(userId, categoryMonthId);
-    await assertMonthNotLocked(categoryMonth.monthId);
 
-    return prisma.categoryMonth.update({
-      where: { id: categoryMonthId },
-      data: { monthlyBudgetCents },
+    return prisma.$transaction(async (tx) => {
+      await assertMonthNotLockedOnClient(tx, categoryMonth.monthId);
+
+      return tx.categoryMonth.update({
+        where: { id: categoryMonthId },
+        data: { monthlyBudgetCents },
+      });
     });
   }
 

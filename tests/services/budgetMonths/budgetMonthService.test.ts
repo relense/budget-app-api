@@ -264,6 +264,33 @@ describe('deleteBudgetMonth', () => {
     expect(prisma.budgetMonths).toHaveLength(1);
   });
 
+  it('throws budget_month_has_activations when a recurring_expense_instance references it with no category_month present', async () => {
+    // recurring_expense_instances.month_id has its own direct
+    // onDelete: Restrict FK to budget_months — it doesn't go through
+    // category_month. Reachable in practice: activate a category for a
+    // month, add a recurring expense against it (creates both rows),
+    // then removeCategoryFromMonth (which only checks for referencing
+    // transactions, not recurring_expense_instance) — the category_month
+    // is gone but the instance remains. The pre-check above (categoryMonth
+    // .findFirst) can't see this; only the P2003 catch does.
+    const { prisma, budgetMonthService } = setup();
+    const monthId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
+    prisma.recurringExpenseInstances.push({
+      id: 'inst-1',
+      userId: 'user-1',
+      templateId: 'tpl-1',
+      monthId,
+      amountCents: 8000,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await expect(budgetMonthService.deleteBudgetMonth('user-1', '2026-08')).rejects.toMatchObject({
+      reason: 'budget_month_has_activations',
+    });
+    expect(prisma.budgetMonths).toHaveLength(1);
+  });
+
   it('throws budget_month_has_activations (not a raw FK error) when a category_month is created between the check and the delete', async () => {
     const { prisma, budgetMonthService } = setup();
     const monthId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
