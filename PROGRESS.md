@@ -740,13 +740,67 @@ flagged as not actually proving anything test 1 didn't already cover) with
 one that traces the same multi-step sequence through `deleteBudgetMonth`
 instead of `lockMonth`. 336 Jest tests total (was 335).
 
+`chore/lockmonth-jump-invariant` (PR #12) merged into `develop`.
+
+**Recurring expenses redesign — decided, not yet built.** User pushback on
+step 4's `recurring_expense_templates`/`recurring_expense_instances` split
+("why do we need a template table at all — a month can just have an array
+of recurring expenses"), worked through directly rather than defended by
+default. The split was modeled on `categories`/`category_month`, but that
+analogy doesn't hold: a category is designed to sit dormant in a catalog
+with no month, which is exactly why it needs a transversal table separate
+from its per-month activation — but `plan.md` itself already said a
+recurring expense "has no equivalent dormant state — it only exists because
+you're tracking paying something now." A thing that's never month-independent
+doesn't need a table representing month-independent existence. The one thing
+the shared `template_id` bought — grouping "every Rent payment across all
+time" for future reporting — was weighed and explicitly rejected as not
+worth a schema commitment now: recurring expenses are low-volume (max ~12
+occurrences/year per bill; a 10-year history is ~120 rows, trivially
+queryable by name/category directly if that's ever needed), unlike
+categories, where transaction volume actually justifies a stable id.
+
+Decided replacement, confirmed with the user: a single flat `recurring_expenses`
+table, one row per recurring expense per month — `name`, `category_id`,
+`budget_type`, `due_day`, `amount_cents`, `month_id`, all on that one row, no
+template. `paidThisMonth`/split-payment logic via linked `Transaction`s is
+unchanged. Editing a row only ever touches that one month — the old
+"apply to future months too?" propagation question no longer exists.
+Carrying forward into a new month is **automatic** (unlike category/budget
+carry-forward, which stays the existing opt-in per-item flow): whenever a
+new month comes into existence — pre-provisioned ahead of locking, or
+derived as the new current after locking with nothing already provisioned
+— its recurring expenses are copied straight from the previous real month,
+fresh and unpaid, no checklist. No cross-month identity of any kind between
+one month's row and the next's copy — confirmed explicitly, given the
+volume reasoning above. Exact hook point for the auto-copy (tied to
+`BudgetMonth` row creation itself vs. specifically `lockMonth`'s derivation
+of the new current) is left for this step's build-time grill-me, not
+decided yet. Full reasoning and the new schema/API shape are written up in
+`plan.md`'s Data Model and API Schema sections (old template/instance design
+kept alongside, marked superseded rather than deleted) and `GLOSSARY.md`'s
+Recurring Expense entry. Not yet implemented — the currently-shipped code
+(`recurringExpenseTemplateService`/`recurringExpenseInstanceService`, the
+GraphQL `RecurringExpenseTemplate`/`RecurringExpenseInstance` types, all
+their mutations) still reflects the old design; see `SERVICES.md` for what's
+actually live until this gets built.
+
 Next actions, in order:
-1. Wait for human review/approval on `chore/lockmonth-jump-invariant`.
-2. Still to design/build: recurring-template edit propagation ("apply to
-   future months too?" on `updateRecurringExpenseInstance`).
-3. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
-   should check for a referencing `recurring_expense_instance`, not just
-   `transaction`, before deleting a `category_month` row.
+1. Design/build the recurring-expenses flat redesign: drop
+   `recurring_expense_templates`, collapse `recurring_expense_instances`
+   into a self-contained `recurring_expenses` table, rework
+   `recurringExpenseTemplateService`/`recurringExpenseInstanceService` into
+   one service, update the GraphQL schema (`RecurringExpense` type replacing
+   both, `createRecurringExpense`/`updateRecurringExpense` replacing the
+   template+instance mutation pairs), and decide the auto-copy-forward hook
+   point (see above) as part of that step's kickoff interview. This
+   supersedes "recurring-template edit propagation" from the prior version
+   of this list — the propagation question no longer exists under the new
+   design.
+2. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
+   should check for a referencing `recurring_expenses` row, not just
+   `transaction`, before deleting a `category_month` row (carries over
+   unchanged from the old `recurring_expense_instance` wording).
 
 ## Phase 1 — Backend
 
@@ -849,6 +903,14 @@ Next actions, in order:
       from the category, so an income category would otherwise silently
       produce an income transaction from a "recurring expense" payment. →
       PR #4 (`feature/recurring-expenses` → `develop`), merged.
+
+      **Superseded, not yet rebuilt**: the template/instance split
+      described above is being replaced by a flat `recurring_expenses`
+      design (one row per month, no template) — see "Where we left off"
+      above and `plan.md`'s Data Model section. Everything in this bullet
+      is still what's actually live in `develop` today (per `SERVICES.md`)
+      until that rework lands; keeping it as accurate history rather than
+      rewriting it away.
 - [ ] **5. Month lifecycle** — in progress, three increments merged so far:
       budget-inheritance on category/recurring-expense activation (PR #7,
       merged), `lockMonth`/`deleteBudgetMonth`/`Query.currentMonth` (PR #8,
@@ -858,9 +920,11 @@ Next actions, in order:
       existing budget-omit-to-inherit behavior) and auto-lock cascade was
       dropped entirely — both revised out of the original scope described
       here during the step's kickoff interview, see `plan.md`'s Month
-      Lifecycle section for the actual design. Still outstanding:
-      recurring-template edit propagation ("apply to future months too?"),
-      soft-delete + undo for the entities that still have it.
+      Lifecycle section for the actual design. Still outstanding: the
+      recurring-expenses flat redesign (replaces the old "recurring-template
+      edit propagation" item — that question no longer exists under the new
+      design, see "Where we left off"), soft-delete + undo for the entities
+      that still have it.
 - [ ] **6. Savings funds + movements** — CRUD + `addSavingsMovement` updating
       `currentAmountCents`; DataLoader for `SavingsFund.movements`.
 - [ ] **7. Income sources** — CRUD; `income_sources.month_id` already
