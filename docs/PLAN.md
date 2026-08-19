@@ -61,8 +61,8 @@ Going with GraphQL from the start, since the API is being built once and used by
 - **CORS**: the website (phase 3) will hit the API from a browser, so explicit CORS config (allowed origins) is needed — the mobile app isn't subject to CORS, but the browser client is. Configure this even in phase 1 so it's not a surprise later.
 - **Health check**: a plain `GET /health` route returning 200 once the DB connection is confirmed — most hosting platforms (Railway, Render, Fly) use this to know your API is alive before routing traffic to it.
 - **Connection pooling (later, not phase 1 priority)**: given you're deploying a traditional long-running Node process (Railway/Render-style, not serverless), this isn't urgent — a small, stable pool is fine. See `SCALING.md` for when and how this becomes relevant.
-- **Atomicity (DB transactions)**: any mutation that writes more than one row must wrap those writes in a Prisma transaction (`prisma.$transaction`), so a crash halfway can't leave inconsistent data. The two obvious ones: `addSavingsMovement` (inserts a movement _and_ updates the fund's `currentAmountCents`) and `markRecurringPaid` (inserts a transaction linked to the recurring item). `currentAmountCents` in particular should be recomputed/updated inside the same transaction as the movement insert, never as a separate call.
-- **Overdraw rule on `addSavingsMovement`**: a `WITHDRAW` larger than the fund's current `currentAmountCents` is rejected with a clear error in the service layer — negative fund balances aren't allowed. (Confirm this during the "grill me" pass if you'd rather allow it, e.g. to track a fund going into debt, but reject-by-default is the safer starting rule for a money app.)
+- **Atomicity (DB transactions)**: any mutation that writes more than one row, or that needs to check a computed value before writing, must wrap that in a Prisma transaction (`prisma.$transaction`), so a crash halfway can't leave inconsistent data. `markRecurringPaid` (inserts a transaction linked to the recurring item) is one. `createSavingsMovement`/`updateSavingsMovement`/`deleteSavingsMovement` are another — `currentAmountCents` isn't a stored column (see the Data Model revision note), so there's no second row to keep in sync, but the overdraft check (recomputing the fund's resulting balance) and the movement write still need to happen under one row lock on the fund (`SELECT ... FOR UPDATE`), or two concurrent movements could both read the same balance and both think an overdraft is safe.
+- **Overdraw rule on savings movements — confirmed, built as designed**: a withdrawal (or an edit/delete that would have the same effect) larger than the fund's current balance is rejected with `insufficient_funds` in the service layer — negative fund balances aren't allowed. Verified against real Postgres with a genuine concurrent race (two withdrawals each individually safe but together overdrawing) — exactly one succeeds.
 - **Graceful shutdown**: handle `SIGTERM` to stop accepting new requests, let in-flight ones finish, and close the Prisma connection pool cleanly before exiting — without this, every redeploy on Railway/Render can drop requests mid-flight.
 - **Crash handling**: register `process.on('uncaughtException')` and `process.on('unhandledRejection')` handlers that log the error (to Sentry) before exiting — better than the process silently limping in a broken state or dying with no trace.
 - **Request tracing**: Fastify/pino support a request ID on every log line by default — keep this on, it's what makes debugging a specific failed request in production possible instead of grepping through unrelated interleaved logs.
@@ -200,19 +200,25 @@ There is no `activate`/bundle-into-`createCategory` behavior: `createCategory` i
 
 **Recurring expenses are not categories, and don't create them.** A category ("Housing") is a general spend-classification label; a recurring expense ("Rent") is a specific identified obligation that happens to be tagged with one. Grilled explicitly to avoid conflating the two: `recurring_expense_templates.category_id` always points at a category the user already has (or separately creates via the normal category flow) — never auto-created, never named after the recurring expense. (Still true under the new flat design — the FK just lives on `recurring_expenses.category_id` directly now.)
 
+> **Revised and built — grilled during Build Order step 6.** The two entries below describe the original sketch; kept side by side rather than rewritten, since the reasoning for what changed is worth having on record.
+>
+> - **Hard-deleted, not soft-deleted** — like every other entity in this app by the time step 6 was interviewed. The original soft-delete sketch below was never actually built; it was superseded before any code existed for it, on the same "either something can be deleted, or it's permanently blocked, no third state" call already made for categories/recurring expenses.
+> - **`current_amount_cents` and `achieved` are not columns** — both computed at read time (`initial_balance_cents` + the net of every movement; `current_amount_cents >= target_amount_cents`, always `false` if no target is set), same "never let a derived value drift out of sync" reasoning as `recurringCommittedCents`/`paidThisMonth`. Confirmed explicitly with the user after weighing the alternative (a stored, incrementally-maintained column): migrating to stored later is cheap (add the column, backfill, update the three movement write paths) and the actual scale doesn't warrant it now — a personal fund realistically accumulates a few thousand movements over a decade at most, negligible for Postgres to sum.
+> - **Movements are editable and deletable**, unlike a real accounting ledger — the original sketch only had `addSavingsMovement`, no update/delete, which looked like an oversight given every other money-entry type in this app supports both. Every write (create/update/delete) re-validates the fund's resulting balance can never go negative — "you can't withdraw money you don't have" as a standing invariant, not just checked at creation. Enforced under a real row lock (`SELECT ... FOR UPDATE` on the fund) so two concurrent movements against the same fund can't both read the same balance and both think an overdraft is safe — verified against real Postgres with a genuine concurrent race.
+> - **A movement can't be reassigned to a different fund on update** — only `amountCents`/`type`/`date` are editable. Moving money between funds would mean atomically rebalancing two funds' overdraft checks at once; deliberately out of scope.
+> - **Deleting a fund is blocked while movements reference it** — same "remove what's in it first" pattern as every other entity, not a cascade.
+
 **savings_funds**
 
 - id (pk)
 - user_id (fk)
 - name
 - target_amount_cents (nullable, integer — cents)
-- initial_balance_cents (integer — cents)
-- current_amount_cents (integer — cents)
+- initial_balance_cents (integer — cents) — set once at creation, never editable after (see revision note above)
 - start_date (nullable)
 - end_date (nullable)
 - monthly_target_cents (nullable, integer — cents)
-- achieved (boolean)
-- deleted_at (nullable) — soft delete; cascades to a soft-delete of its movements (below), since a movement has no meaning without its fund
+- ~~current_amount_cents~~ / ~~achieved~~ / ~~deleted_at~~ — see revision note above: both computed, not stored; hard-deleted, no soft-delete
 
 **savings_movements**
 
@@ -222,7 +228,7 @@ There is no `activate`/bundle-into-`createCategory` behavior: `createCategory` i
 - amount_cents (integer — cents)
 - type ('deposit' | 'withdraw')
 - date
-- deleted_at (nullable) — soft delete
+- ~~deleted_at~~ — see revision note above: hard-deleted, no soft-delete
 
 **income_sources**
 
@@ -254,7 +260,7 @@ A significant piece of design beyond the original flat data model above — reso
 
 **Bulk delete of a category's transactions** is always scoped to the single month currently being viewed — there's no "delete everything across months" action, ever. For `transactions` specifically (see the revised delete rule in the Data Model above), a bulk delete is immediate and permanent, same as a single-row delete — there's no batching or undo to coordinate.
 
-**Soft delete + undo — revised, now scoped down to only the entities that haven't been built yet.** The original design here was: nothing hard-deleted, every table gets `deleted_at`, undo clears it within a short window (10min-1h, TBD), bulk actions share a `delete_batch_id` so undo restores the whole batch. `category_month` and `transactions` broke from this first (step 3), for referential-integrity reasons (a soft-deleted transaction could otherwise dangle on a hard-deleted `category_month`). During step 4's review, `categories` and `recurring_expense_templates` — until then still soft-deleted — dropped it too, on an explicit user call: either something can be deleted (nothing references it, ever, past or future) or it's permanently blocked, no third "soft-deleted but still around" state, anywhere. As of step 4, every entity that exists in the schema so far is hard-deleted, no undo. `savings_funds`/`savings_movements`/`income_sources` (steps 6-7, not yet built) still carry the original soft-delete-and-undo design below on paper, but given the direction taken here, re-grill that design when those steps actually get interviewed rather than assuming it stands as originally written.
+**Soft delete + undo — revised, now scoped down to only the entities that haven't been built yet.** The original design here was: nothing hard-deleted, every table gets `deleted_at`, undo clears it within a short window (10min-1h, TBD), bulk actions share a `delete_batch_id` so undo restores the whole batch. `category_month` and `transactions` broke from this first (step 3), for referential-integrity reasons (a soft-deleted transaction could otherwise dangle on a hard-deleted `category_month`). During step 4's review, `categories` and `recurring_expense_templates` — until then still soft-deleted — dropped it too, on an explicit user call: either something can be deleted (nothing references it, ever, past or future) or it's permanently blocked, no third "soft-deleted but still around" state, anywhere. Step 6's kickoff interview confirmed the same for `savings_funds`/`savings_movements` before any soft-delete code was ever written for them — every entity in the schema as of step 6 is hard-deleted, no undo. Only `income_sources` (step 7, not yet built) still carries the original soft-delete-and-undo design below on paper — re-grill when that step actually gets interviewed rather than assuming it stands as originally written.
 
 > **Revised during Build Order step 5's kickoff interview: no auto-lock cascade, no automatic next-month creation, carry-forward isn't its own mechanism.** The three paragraphs below describe the original design; this callout is the actual decision the backend was built against — kept side by side rather than silently rewritten, since the reasoning matters. Explicit user call: locking a month was overcomplicating an edge case that "will only happen if a user creates more months for planning and doesn't do anything with them" — most of the time it won't happen at all. Simplified to: **`lockMonth` does exactly one thing** — locks the target month (which must be the current one — the earliest unlocked), nothing else. No cascade walk, no carry-forward parameter, no automatically-created next month. If a user goes away for a while, "current month" (derived, see below) just naturally falls back to today's real calendar month once nothing unlocked stands in the way — no cascade logic needed to make that happen. If they *did* pre-provision ahead and it's sitting there empty once its predecessor locks, that's on them to resolve explicitly — lock it too (even empty), or **`deleteBudgetMonth`** it (new capability this revision introduces: hard-delete an empty, unlocked month — same "remove everything referencing it first, then the empty shell becomes deletable" pattern `deleteCategory`/`deleteTemplate` already use, blocked by the same `onDelete: Restrict` FK `category_month`/`recurring_expenses` already have to `budget_months`). **Category carry-forward needs no dedicated mutation**: it's the existing `addCategoryToMonth` mutation (already supports omitting the budget to auto-inherit, see the Data Model's `category_month` entry) called once per item the user checks, against whichever month they're planning — reusing the existing `categoryMonths(month)` query against the previous month to know what to offer as checkboxes, all pre-checked, uncheck to opt out. This is deliberately the *same* flow whether the user is proactively planning ahead or just locked the month before and is starting the new current one — one mechanism, triggered at two different moments, never an automatic side effect of locking (so it can never silently clobber a month the user already set up differently). **Recurring expenses diverge from this, under the flat-row redesign** (see Data Model's `recurring_expenses` entry above): they carry forward automatically, no per-item checklist, whenever a new month comes into existence. Planning horizon (current month or one month ahead, never further, and never a new activation in the past either — a user can only *newly* create a category/recurring-expense activation in `[current, current + 1]`) enforced server-side, not just a UI affordance — implemented (`assertWithinPlanningHorizon` in `categoryMonthService`, shared by the recurring-expense auto-activation path); the past-month restriction was added after `pr-reviewer` found that allowing it let a stray backfilled month hijack the derived "current" month itself — see PROGRESS.md.
 
@@ -348,12 +354,12 @@ type SavingsFund {
   name: String!
   targetAmountCents: Int
   initialBalanceCents: Int!
-  currentAmountCents: Int!
+  currentAmountCents: Int! # computed, not stored — initialBalanceCents + the net of every movement (see Data Model revision note)
   startDate: String
   endDate: String
   monthlyTargetCents: Int
-  achieved: Boolean!
-  movements: [SavingsMovement!]! # ordered date DESC, createdAt DESC
+  achieved: Boolean! # computed — currentAmountCents >= targetAmountCents, always false if no target is set
+  movements: [SavingsMovement!]!
 }
 
 type SavingsMovement {
@@ -361,6 +367,7 @@ type SavingsMovement {
   amountCents: Int!
   type: MovementType!
   date: String!
+  fund: SavingsFund! # back-reference, mirroring Transaction.categoryMonth
 }
 
 type IncomeSource {
@@ -412,7 +419,7 @@ input CreateSavingsFundInput {
 }
 
 input UpdateSavingsFundInput {
-  name: String
+  name: String!
   targetAmountCents: Int
   startDate: String
   endDate: String
@@ -421,6 +428,22 @@ input UpdateSavingsFundInput {
 # initialBalanceCents is intentionally absent from the update input: it's set once at
 # creation and never changed, because currentAmountCents is derived from it plus the sum
 # of movements — letting it change after movements exist would silently corrupt the balance.
+
+input CreateSavingsMovementInput {
+  fundId: ID!
+  amountCents: Int!
+  type: MovementType!
+  date: String!
+}
+
+input UpdateSavingsMovementInput {
+  amountCents: Int!
+  type: MovementType!
+  date: String!
+}
+# fundId is intentionally absent from the update input: a movement can't be reassigned to
+# a different fund (that's really two funds' balances changing atomically at once, out of
+# scope — see Data Model revision note).
 
 input IncomeSourceInput {
   name: String!
@@ -464,12 +487,10 @@ type Mutation {
 
   createSavingsFund(input: CreateSavingsFundInput!): SavingsFund!
   updateSavingsFund(id: ID!, input: UpdateSavingsFundInput!): SavingsFund!
-  deleteSavingsFund(id: ID!): Boolean!
-  addSavingsMovement(
-    fundId: ID!
-    amountCents: Int!
-    type: MovementType!
-  ): SavingsFund!
+  deleteSavingsFund(id: ID!): Boolean! # hard delete; blocked while any movement references it
+  createSavingsMovement(input: CreateSavingsMovementInput!): SavingsMovement! # rejects a withdrawal (or edit) that would leave the fund's balance negative
+  updateSavingsMovement(id: ID!, input: UpdateSavingsMovementInput!): SavingsMovement! # amountCents/type/date only, re-checks the resulting balance
+  deleteSavingsMovement(id: ID!): Boolean! # re-checks the resulting balance with this movement's effect removed
 
   createIncomeSource(input: IncomeSourceInput!): IncomeSource!
   updateIncomeSource(id: ID!, input: IncomeSourceInput!): IncomeSource!
@@ -477,9 +498,9 @@ type Mutation {
 }
 ```
 
-> The schema above is illustrative, not final — treat it as the starting shape to interview around (per the "grill me" rule), not a spec to implement verbatim. `initialBalanceCents` is settable only at creation (`CreateSavingsFundInput`) and deliberately absent from `UpdateSavingsFundInput`, since `currentAmountCents` is derived from it plus the sum of movements — allowing it to change after movements exist would silently corrupt the balance.
+> The `IncomeSource` type/inputs/query/mutations below are still illustrative, not final — steps 6-9's remaining phase 1 build order includes income sources (step 7), not yet interviewed. Treat that part as a starting shape to interview around, not a spec to implement verbatim.
 >
-> `Category`, `CategoryMonth`, `Transaction`, and `RecurringExpense` all reflect finalized, grilled, and now-implemented designs — trust all of them now. `RecurringExpense` supersedes step 4's original `RecurringExpenseTemplate`/`RecurringExpenseInstance` split (see PROGRESS.md for the rebuild).
+> `Category`, `CategoryMonth`, `Transaction`, `RecurringExpense`, `SavingsFund`, and `SavingsMovement` all reflect finalized, grilled, and now-implemented designs — trust all of them now. `RecurringExpense` supersedes step 4's original `RecurringExpenseTemplate`/`RecurringExpenseInstance` split; `SavingsFund`/`SavingsMovement` supersede this section's original soft-delete/stored-balance sketch (see PROGRESS.md for both rebuilds). `initialBalanceCents` is settable only at creation (`CreateSavingsFundInput`) and deliberately absent from `UpdateSavingsFundInput`; `fundId` is likewise absent from `UpdateSavingsMovementInput` — see the Data Model revision note above for both.
 
 Note about enum casing: GraphQL convention is UPPER_CASE enum values (`NEED`, `EXPENSE`), but the DB uses lowercase (`need`, `expense`). Map between the two in the resolver/service layer — don't let the DB casing leak into the GraphQL schema or vice versa. The `GLOSSARY.md` lowercase values are the DB representation. (`budgetType`'s three values were originally Portuguese — `preciso`/`quero`/`poupança`, matching the Excel tracker — translated to English `need`/`want`/`savings` in the codebase; the 50/30/20 meaning is unchanged.)
 
@@ -493,7 +514,7 @@ Note: any relation field on a list — `CategoryMonth.transactions`, `RecurringE
 3. **Categories + Transactions**: `budget_months` table lands here (schema-only — `locked` stays inert until step 5), plus `categories` (pure catalog, no month-awareness, **hard-deleted** — revised during step 4's review, see "Month Lifecycle" above), `category_month` (the join — row existence = active, budget lives here not on `categories`, **hard-deleted**, `@@unique([categoryId, monthId])`, blocked from deletion while any transaction references it that month), and `transactions` (FK to `category_month`, not `category` directly — structurally enforces "category must be active that month"; **hard-deleted**, no undo). `createCategory` is a pure catalog insert; `addCategoryToMonth`/`removeCategoryFromMonth`/`updateCategoryMonthBudget` are the only activation path in this step (budget always explicit — carry-forward's inheritance path is step 5). DataLoader for `CategoryMonth.transactions`. See "Month Lifecycle" above for the full reasoning, including the soft-delete-and-undo history.
 4. **Recurring expenses** — originally shipped as `recurring_expense_templates` + `recurring_expense_instances` (**hard-deleted**, transversal template mirroring `categories`, matching `category_month`'s per-month instance pattern), **since rebuilt as the flat `recurring_expenses` design** (see the Data Model section above and `PROGRESS.md` for the rebuild). The invariants carry over unchanged: creating a recurring expense auto-activates its category for that month if needed (diverges from `categories`' always-manual activation rule — grilled explicitly, see Data Model note), requiring an explicit `categoryMonthlyBudgetCents` only when that activation actually creates a new `category_month`; `markRecurringPaid` always creates a *new* Transaction (never updates one), can be called more than once per row; `paidThisMonth` is computed as `SUM(linked transactions) >= amountCents`, not "any transaction exists"; `CategoryMonth.recurringCommittedCents` (computed) sums a category's active recurring expenses for the month — feeds the phase-2 "match budget to recurring total" UX flagged under Notes for Claude Code. The flat redesign removes the template-edit-propagation question entirely (see Month Lifecycle) — never a step 5 dependency to begin with.
 5. **Month lifecycle**: carry-forward flow (with budget-inheritance for `category_month`; automatic, no per-item opt-in, for `recurring_expenses`), month locking + the auto-lock cascade for empty months. Soft-delete + undo (with `delete_batch_id` batching) no longer applies to any entity built so far (`categories`, `category_month`, `transactions`, and whichever recurring-expense shape is live are all hard-deleted) — only `savings_funds`/`savings_movements`/`income_sources` (steps 6-7) still carry that design on paper, unre-grilled. Depends on steps 3 and 4 both being done.
-6. **Savings funds + movements**: CRUD + `addSavingsMovement` updating `currentAmountCents`; DataLoader for `SavingsFund.movements`; `deleted_at` soft-delete from the start, cascading to movements.
+6. **Savings funds + movements** — grilled, design finalized and built (see the Data Model section's revision note above): hard-deleted, no soft-delete (revised out during this step's kickoff interview, before any soft-delete code existed for it, matching every other entity). `currentAmountCents`/`achieved` computed at read time, not stored columns. `createSavingsMovement`/`updateSavingsMovement`/`deleteSavingsMovement` (not a single `addSavingsMovement` — movements are editable/deletable, unlike the original sketch) all re-validate the fund's resulting balance can't go negative, under a real row lock on the fund so concurrent movements can't race past the overdraft check together — verified against real Postgres. `deleteSavingsFund` blocked while any movement references it. DataLoaders for `SavingsFund.movements`/`currentAmountCents` and `SavingsMovement.fund`.
 7. **Income sources**: CRUD; `deleted_at` soft-delete from the start.
 8. **Seed script**: your real categories/funds from the Excel, for realistic test data
 9. **Basic tests**: at minimum, auth boundary tests (user A can't read user B's data) and one DataLoader batching check — this is the one thing worth testing before going live
@@ -508,7 +529,7 @@ Once the API is solid: **Phase 2** picks up the mobile app plan (screens, design
 - **Query depth/complexity limits**: without this, a malicious (or just badly written) deeply nested query can force the server to do disproportionate work — a GraphQL-specific denial-of-service angle that REST doesn't have. `graphql-depth-limit` or a complexity-scoring plugin covers this cheaply.
 - **Rate limiting**: critical on `/auth/request-otp` especially — without it, someone can spam a user's inbox or brute-force codes. `@fastify/rate-limit` covers this cheaply
 - **Pagination**: `transactions(month, categoryId)` is deliberately unpaginated as of Build Order step 3 — a single month's transactions is a bounded, small list (~100 tops, per the user), not the unbounded case this warning is about. Still applies to any future list that isn't month-scoped (e.g. an eventual "all history" view) — add pagination there from the start when it's built, don't retrofit.
-- **Idempotency**: deferred as of Build Order step 3 — `createTransaction` has no retry-dedup mechanism yet. Revisit if/when the mobile or web app surfaces a real duplicate-on-retry issue (flaky connection double-submits, etc.) rather than guarding against a hypothetical now. `addSavingsMovement` isn't built yet (step 6); reconsider idempotency for it when that step starts.
+- **Idempotency**: deferred as of Build Order step 3 — `createTransaction` has no retry-dedup mechanism yet. Revisit if/when the mobile or web app surfaces a real duplicate-on-retry issue (flaky connection double-submits, etc.) rather than guarding against a hypothetical now. `createSavingsMovement` (step 6, built) carries the same deferral — no retry-dedup, same reasoning.
 - **Backups**: confirm your chosen hosting provider does automated Postgres backups before real users' data lives there — and do one test restore before you actually need it for real, a backup nobody has ever restored from is an assumption, not a guarantee.
 - **Secrets management**: env vars via the hosting platform's secret store, never committed `.env` files with real values
 - **GDPR**: this is financial data — once it's public you'll need a privacy policy and a way for a user to export/delete their data (right to erasure). Not needed for solo dev/testing, needed before real signups.
@@ -521,7 +542,7 @@ Once the API is solid: **Phase 2** picks up the mobile app plan (screens, design
 - Offline support / sync conflict resolution
 - Open Banking / bank account integration — separate concern entirely (PSD2, an aggregator like GoCardless Bank Account Data or Tink, its own OAuth flow with the bank). Worth revisiting only with real user demand, given the regulatory and cost overhead.
 - GraphQL subscriptions / real-time updates (revisit only if a concrete need shows up)
-- Full audit trail / field-level edit history on financial records (soft-delete + short-window undo, as of step 4, only still applies on paper to the not-yet-built `savings_funds`/`savings_movements`/`income_sources` — see "Month Lifecycle" above; every entity built so far is hard-deleted with no undo at all, and a full history of every edit ever made to a transaction is a separate, bigger feature regardless, still backlog)
+- Full audit trail / field-level edit history on financial records (soft-delete + short-window undo, as of step 6, only still applies on paper to the not-yet-built `income_sources` — see "Month Lifecycle" above; every entity built so far, `savings_funds`/`savings_movements` included, is hard-deleted with no undo at all, and a full history of every edit ever made to a transaction is a separate, bigger feature regardless, still backlog)
 - Planning horizon beyond one month ahead (capped at next-month-only for phase 1 — see "Month Lifecycle" above; candidate future paid-tier feature)
 
 ## Data Monetization Policy (future — no phase 1 work)

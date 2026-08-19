@@ -929,21 +929,72 @@ swallowed path still not done — no logger dependency exists anywhere in
 the service layer yet, so this stays a real "consider it later" rather
 than a quick add. 307 Jest tests total (was 288 before this pass, +19).
 
+`feature/recurring-expenses-flat-redesign` merged into `develop`. Picked up
+Build Order step 6 (Savings funds + movements) on a fresh
+`feature/savings-funds` branch. Kickoff interview resolved every open
+point from `PLAN.md`'s original sketch, confirmed with the user before any
+code was written:
+- **Hard-deleted, not soft-deleted** — revised out during this step's own
+  kickoff interview, before any soft-delete code ever existed for it,
+  matching every other entity in the app (see `PLAN.md`'s Data Model
+  revision note).
+- **Deleting a fund is blocked while movements reference it** — same
+  "remove what's in it first" pattern as everywhere else, not a cascade.
+- **Overdraft is rejected** ("can't withdraw money you don't have"), and —
+  confirmed explicitly — that rule holds on every write, not just create:
+  editing or deleting a movement is re-checked against the resulting
+  balance too (e.g. can't delete a deposit a later withdrawal already
+  depends on).
+- **Movements are editable and deletable** — the original sketch only had
+  `addSavingsMovement`, no update/delete, which the user flagged as
+  looking like an oversight given every other money-entry type in this app
+  supports both. `fundId` deliberately stays non-reassignable on update
+  (moving money between funds would mean atomically rebalancing two
+  overdraft checks at once — out of scope).
+- **`currentAmountCents`/`achieved` computed at read time, not stored
+  columns** — despite `PLAN.md`'s original schema listing
+  `current_amount_cents` as a plain column. Weighed explicitly: the user
+  raised the "many movements" scaling concern directly, the answer covered
+  both that migrating to a stored+maintained column later is cheap (one
+  migration, backfill, update three write paths) and that the actual scale
+  doesn't warrant it now (a personal fund realistically accumulates a few
+  thousand movements over a decade at most — negligible for Postgres to
+  sum) — same reasoning already used for `recurringCommittedCents`/
+  `paidThisMonth`.
+- **`achieved` is always `false` when no `targetAmountCents` is set** — "no
+  target means there's nothing to have achieved."
+- Movement mutations return `SavingsMovement` (with a `fund` field to
+  traverse back), not `SavingsFund` directly as the original sketch had —
+  needed anyway once update/delete exist, and consistent with every other
+  "log an event" mutation in this schema (`createTransaction`,
+  `markRecurringPaid`).
+
+Built: `savingsFundService` (CRUD, hard-delete blocked by referencing
+movements) and `savingsMovementService` (create/update/delete, each
+re-validating the resulting balance under a real row lock —
+`lockSavingsFundRow`, `SELECT ... FOR UPDATE`, same pattern as
+`lockBudgetMonthRow` — so two concurrent movements against the same fund
+can never both read the same balance and both think an overdraft is safe).
+GraphQL layer: `SavingsFund`/`SavingsMovement` types, `MovementType` enum,
+`savingsFunds` query, six mutations, three new DataLoaders
+(`savingsFundById`, `movementsBySavingsFundId`,
+`currentAmountCentsBySavingsFundId`). 361 Jest tests total (was 307),
+including a dedicated concurrent-race test against real Postgres (two
+withdrawals each individually safe but together overdrawing) — exactly one
+succeeds, the balance never goes negative.
+
 Next actions, in order:
-1. Wait for human review/merge on `feature/recurring-expenses-flat-redesign`
-   (`pr-reviewer`-approved as of round 2, `test-auditor`-reviewed and gaps
-   closed).
+1. Wait for human review on `feature/savings-funds`.
 2. Small tracked follow-up, not blocking: add logging on the
-   `onNewBudgetMonth`/`seedNewMonth` swallow path once this service layer
-   has a logger dependency to hang it on (none exists yet —
-   `src/lib/shutdown.ts` is the only existing precedent, at the app-startup
-   level, not per-service).
-3. Recurring-template edit propagation no longer exists as a concept under
-   the flat design — nothing outstanding there.
-4. Still open from step 5's original scope: soft-delete + undo for
-   `savings_funds`/`savings_movements`/`income_sources` (steps 6-7, not yet
-   built) — re-grill when those steps are actually interviewed, per the
-   callout under "Soft delete + undo" above.
+   `onNewBudgetMonth`/`seedNewMonth` swallow path (recurring-expenses
+   step) once this service layer has a logger dependency to hang it on
+   (none exists yet — `src/lib/shutdown.ts` is the only existing
+   precedent, at the app-startup level, not per-service).
+3. Step 7 (Income sources) is next after this merges — still carries the
+   original soft-delete-and-undo design on paper (`PLAN.md`'s "Soft
+   delete + undo" section); re-grill when that step is actually
+   interviewed, same as savings funds was, rather than assuming it stands
+   as originally written.
 
 ## Phase 1 — Backend
 
@@ -1052,22 +1103,29 @@ Next actions, in order:
       per month, no template) — see "Where we left off" above and
       `PLAN.md`'s Data Model section for the rebuild. Kept as accurate
       history of what step 4 originally shipped, not rewritten away.
-- [ ] **5. Month lifecycle** — in progress, four increments merged so far:
-      budget-inheritance on category/recurring-expense activation (PR #7,
-      merged), `lockMonth`/`deleteBudgetMonth`/`Query.currentMonth` (PR #8,
-      merged), server-side planning-horizon enforcement (PR #10, merged),
-      the recurring-expenses flat redesign (see "Where we left off" above,
-      awaiting review). Carry-forward turned out to need no dedicated
-      mutation for categories (reuses `addCategoryToMonth`'s existing
+- [x] **5. Month lifecycle** — four increments merged: budget-inheritance on
+      category/recurring-expense activation (PR #7, merged),
+      `lockMonth`/`deleteBudgetMonth`/`Query.currentMonth` (PR #8, merged),
+      server-side planning-horizon enforcement (PR #10, merged), the
+      recurring-expenses flat redesign (PR #14, merged, see "Where we left
+      off" above for the full rebuild + `pr-reviewer`/`test-auditor`
+      rounds). Carry-forward turned out to need no dedicated mutation for
+      categories (reuses `addCategoryToMonth`'s existing
       budget-omit-to-inherit behavior) but *is* automatic for recurring
       expenses (see the flat redesign) — and auto-lock cascade was dropped
       entirely — all revised out of the original scope described here
       during the step's kickoff interview, see `PLAN.md`'s Month Lifecycle
-      section for the actual design. Still outstanding: soft-delete + undo
-      for the entities that still have it (savings funds/movements, income
-      sources — steps 6-7, not yet built).
-- [ ] **6. Savings funds + movements** — CRUD + `addSavingsMovement` updating
-      `currentAmountCents`; DataLoader for `SavingsFund.movements`.
+      section for the actual design.
+- [ ] **6. Savings funds + movements** — grilled, design finalized and
+      built (see "Where we left off" above and `PLAN.md`'s Data Model
+      revision note): hard-deleted like everything else in this app, not
+      soft-deleted per the original sketch; `currentAmountCents`/`achieved`
+      computed at read time, not stored columns;
+      `createSavingsMovement`/`updateSavingsMovement`/`deleteSavingsMovement`
+      (not a single `addSavingsMovement` — movements are editable/deletable)
+      all re-validate the fund's resulting balance under a real row lock,
+      verified against real Postgres with a genuine concurrent-overdraft
+      race. Awaiting review on `feature/savings-funds`.
 - [ ] **7. Income sources** — CRUD; `income_sources.month_id` already
       designed to reference `budget_months`, per step 3's month-modeling
       decision.
