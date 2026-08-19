@@ -175,15 +175,38 @@ nested that recovery `findUnique` inside the same `$transaction` as the
 failed `create` — Postgres poisons an entire transaction after any failed
 statement (`25P02`) until it's rolled back, so the recovery read failed
 too. Fixed by running the create-or-find as standalone statements *before*
-opening the transaction that seeds categories + creates the refresh token;
-accepted tradeoff noted in a code comment (a crash in the narrow window
-between the user-row commit and the transaction commit could leave a user
-without a catalog — matches this codebase's existing risk tolerance
-elsewhere, e.g. `requestOtp`'s insert + email send aren't atomic either).
+opening the transaction that seeds categories + creates the refresh token.
 Verified against real Postgres: first signup seeds exactly 5 categories, a
 second login doesn't reseed, and two concurrent `verifyOtp` calls for the
 same brand-new email still result in one user row and exactly one seeding
 pass. 268 Jest tests total (was 266).
+
+`pr-reviewer` on PR #6: **approved**, two suggestions (not blocking).
+(1) The first version's code comment framed the standalone-create tradeoff
+as a narrow "process crash" window, but the reviewer pointed out it's
+broader than that — *any* `$transaction` failure after the user row
+commits (DB blip, deadlock, a future bug in the `createMany` call) would
+permanently and silently skip seeding for that email on every retry, with
+no signal. Fixed properly rather than just correcting the comment: added a
+self-healing check — a genuinely returning user always has at least one
+`refreshToken` row (even if since revoked, from a real prior login), so
+"user exists but has zero refresh tokens ever" reliably means a previous
+signup attempt died before its transaction committed (categories and the
+refresh token are seeded in that same atomic transaction, so neither one
+alone can partially exist). Re-seeds in that case instead of skipping
+silently forever. Verified against real Postgres with a second throwaway
+smoke script (removed after): a manually-inserted user row with no refresh
+tokens gets seeded on next login; a genuine returning user (has a refresh
+token + already deleted the extras down to one custom category) does not.
+(2) Seeding bypassed `categoryService`'s validation entirely (calls
+`tx.category.createMany` directly), so a future rule change there
+wouldn't be caught. Exported `assertValidBudgetType` standalone from
+`categoryService.ts` (same pattern as `assertOwnedCategory`) and added a
+pinning test asserting every `DEFAULT_CATEGORIES` entry passes it — a
+rule change now fails the test suite instead of shipping silently-invalid
+seed data. Also took the reviewer's nitpick: `hasPrismaErrorCode` was
+duplicated in five services; extracted to `src/lib/prismaErrors.ts`.
+274 Jest tests total (was 268).
 
 Next actions, in order:
 1. Wait for human review/approval on `feature/default-categories`.

@@ -1,4 +1,5 @@
 import type { PrismaClient } from '../../lib/prisma.js';
+import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 
 export type BudgetType = 'need' | 'want' | 'savings';
 export type Direction = 'expense' | 'income';
@@ -47,22 +48,19 @@ export async function assertOwnedCategory(
   return category;
 }
 
-function hasPrismaErrorCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === code
-  );
+/**
+ * Standalone so callers that build a CategoryInput outside the normal
+ * createCategory/updateCategory flow (e.g. authService seeding the default
+ * catalog on signup) can validate against the same rule instead of
+ * silently drifting from it if this rule ever changes.
+ */
+export function assertValidBudgetType(direction: Direction, budgetType?: BudgetType): void {
+  if (direction === 'expense' && !budgetType) {
+    throw new CategoryServiceError('budget_type_required_for_expense');
+  }
 }
 
 export function createCategoryService({ prisma }: CategoryServiceDeps) {
-  function assertValidBudgetType(direction: Direction, budgetType?: BudgetType): void {
-    if (direction === 'expense' && !budgetType) {
-      throw new CategoryServiceError('budget_type_required_for_expense');
-    }
-  }
-
   /** budgetType isn't meaningful for income categories — normalize it away rather than trust the caller. */
   function normalizeBudgetType(direction: Direction, budgetType?: BudgetType): BudgetType | null {
     return direction === 'income' ? null : (budgetType ?? null);

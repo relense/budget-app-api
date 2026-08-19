@@ -71,7 +71,9 @@ interface FakeDelegates {
     create(args: {
       data: { userId: string; tokenHash: string; deviceLabel: string | null; expiresAt: Date };
     }): Promise<FakeRefreshToken>;
-    findFirst(args: { where: { tokenHash: string } }): Promise<FakeRefreshToken | null>;
+    findFirst(args: {
+      where: { tokenHash: string } | { userId: string };
+    }): Promise<FakeRefreshToken | null>;
     update(args: {
       where: { id: string };
       data: Partial<Pick<FakeRefreshToken, 'revoked'>>;
@@ -173,7 +175,10 @@ export function createFakePrisma(): FakePrismaClient {
         return row;
       },
       async findFirst({ where }) {
-        return refreshTokens.find((row) => row.tokenHash === where.tokenHash) ?? null;
+        if ('tokenHash' in where) {
+          return refreshTokens.find((row) => row.tokenHash === where.tokenHash) ?? null;
+        }
+        return refreshTokens.find((row) => row.userId === where.userId) ?? null;
       },
       async update({ where, data }) {
         const row = refreshTokens.find((r) => r.id === where.id);

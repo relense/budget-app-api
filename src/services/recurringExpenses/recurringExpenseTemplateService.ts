@@ -1,6 +1,7 @@
 import { assertOwnedCategory } from '../categories/categoryService.js';
 import type { BudgetType } from '../categories/categoryService.js';
 import type { PrismaClient } from '../../lib/prisma.js';
+import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 
 /** Narrower than Category's BudgetType — 'savings' doesn't apply to a recurring obligation. */
 export type RecurringBudgetType = 'need' | 'want';
@@ -35,15 +36,6 @@ export interface RecurringExpenseTemplateServiceDeps {
     PrismaClient,
     'category' | 'recurringExpenseTemplate' | 'recurringExpenseInstance' | '$transaction' | '$queryRaw'
   >;
-}
-
-function hasPrismaErrorCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === code
-  );
 }
 
 function assertValidAmount(amountCents: number): void {

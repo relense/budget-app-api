@@ -257,6 +257,14 @@ describe('verifyOtp', () => {
   it('reuses the existing user on a second login (no duplicate user row)', async () => {
     const { prisma, authService } = setup();
     prisma.users.push({ id: 'existing-user', email: 'user@example.com' });
+    prisma.refreshTokens.push({
+      id: 'rt-1',
+      userId: 'existing-user',
+      tokenHash: 'prior-login-hash',
+      deviceLabel: null,
+      expiresAt: new Date('2026-06-01T00:00:00.000Z'),
+      revoked: false,
+    });
     prisma.otpCodes.push({
       id: 'otp-1',
       email: 'user@example.com',
@@ -297,6 +305,14 @@ describe('verifyOtp', () => {
   it('does not reseed default categories on a second login', async () => {
     const { prisma, authService } = setup();
     prisma.users.push({ id: 'existing-user', email: 'user@example.com' });
+    prisma.refreshTokens.push({
+      id: 'rt-1',
+      userId: 'existing-user',
+      tokenHash: 'prior-login-hash',
+      deviceLabel: null,
+      expiresAt: new Date('2026-06-01T00:00:00.000Z'),
+      revoked: false,
+    });
     prisma.categories.push({
       id: 'cat-1',
       userId: 'existing-user',
@@ -319,6 +335,28 @@ describe('verifyOtp', () => {
     await authService.verifyOtp({ email: 'user@example.com', code: '123456' });
 
     expect(prisma.categories).toHaveLength(1);
+  });
+
+  it("seeds default categories for an existing user who has never had a refresh token — self-heals a signup whose earlier transaction never committed", async () => {
+    const { prisma, authService } = setup();
+    // Simulates the crash-recovery case: a previous verifyOtp call created
+    // this user row, then failed before its $transaction (which would have
+    // seeded categories and created a refresh token) ever committed.
+    prisma.users.push({ id: 'half-signed-up-user', email: 'user@example.com' });
+    prisma.otpCodes.push({
+      id: 'otp-1',
+      email: 'user@example.com',
+      codeHash: await hashOtpCode('123456'),
+      expiresAt: new Date('2026-01-01T00:10:00.000Z'),
+      used: false,
+      failedAttempts: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    await authService.verifyOtp({ email: 'user@example.com', code: '123456' });
+
+    expect(prisma.categories.length).toBe(DEFAULT_CATEGORIES.length);
+    expect(prisma.categories.every((c) => c.userId === 'half-signed-up-user')).toBe(true);
   });
 });
 

@@ -64,7 +64,9 @@ Pure catalog CRUD for categories — no month-awareness at all. Deps: `prisma`.
 Also exports **`assertOwnedCategory(client, userId, id)`** standalone — the
 shared ownership-check, reused by `categoryMonthService` and
 `recurringExpenseTemplateService` against either the outer `prisma` or a
-transactional client.
+transactional client — and **`assertValidBudgetType(direction, budgetType)`**
+standalone, reused by `authService`'s default-category seeding on signup so
+a future change to this rule can't silently drift from what gets seeded.
 
 ### `categoryMonthService` — `src/services/categories/categoryMonthService.ts`
 

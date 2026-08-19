@@ -2,6 +2,7 @@ import type { EmailService } from '../../lib/email.js';
 import { signAccessToken } from '../../lib/jwt.js';
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from '../../lib/otp.js';
 import type { PrismaClient } from '../../lib/prisma.js';
+import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 import { generateRefreshToken, hashRefreshToken } from '../../lib/refreshToken.js';
 import { DEFAULT_CATEGORIES } from './defaultCategories.js';
 
@@ -59,15 +60,6 @@ export interface AuthServiceDeps {
   emailService: EmailService;
   jwtSecret: string;
   now?: () => Date;
-}
-
-function hasPrismaErrorCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === code
-  );
 }
 
 export function createAuthService({
@@ -139,11 +131,7 @@ export function createAuthService({
     // Postgres transaction (25P02, "current transaction is aborted") until
     // it's rolled back, so a caught unique-constraint error here couldn't
     // be recovered from with a findUnique on the same tx — confirmed
-    // against real Postgres, not just the fake. The accepted tradeoff: if
-    // the process crashes between this create and the transaction below
-    // committing, a user could in principle end up without a category
-    // catalog — narrow, matches this codebase's existing risk tolerance
-    // (e.g. requestOtp's insert + email send aren't atomic either).
+    // against real Postgres, not just the fake.
     let user;
     let isNewUser = false;
     try {
@@ -156,10 +144,23 @@ export function createAuthService({
       user = existing;
     }
 
+    // Self-heals the case where a *previous* verifyOtp for this email
+    // created the user row above but then failed before the $transaction
+    // below committed (crash, DB blip, a future bug in the createMany
+    // call) — that would otherwise permanently and silently skip seeding
+    // on every retry, since isNewUser alone can't see it. Every successful
+    // login always creates a refreshToken in that same transaction, so
+    // "zero refresh tokens ever" reliably means the categories were never
+    // committed either (both writes share one atomic transaction) — a
+    // genuinely returning user always has at least one, even if revoked.
+    const needsSeeding =
+      isNewUser ||
+      (await prisma.refreshToken.findFirst({ where: { userId: user.id } })) === null;
+
     await prisma.$transaction(async (tx) => {
       await tx.otpCode.update({ where: { id: otp.id }, data: { used: true } });
 
-      if (isNewUser) {
+      if (needsSeeding) {
         await tx.category.createMany({
           data: DEFAULT_CATEGORIES.map((category) => ({ ...category, userId: user.id })),
         });
