@@ -800,22 +800,150 @@ source comments (`src/lib/monthFormat.ts`,
 `prisma/schema.prisma` updated to `docs/`-prefixed paths (docs referencing
 each other, as siblings within `docs/`, keep bare filenames).
 
+**Recurring expenses flat redesign — built.** Picked up the decided design
+from "Where we left off" above on a fresh `feature/recurring-expenses-flat-redesign`
+branch (off up-to-date `develop`, after the docs PR merged). Grilled the
+remaining open points before writing code: copy-forward-on-first-touch
+budget inheritance (auto-activation is silent, inherits the category's most
+recent budget — same rule `addCategoryToMonth` already uses when budget is
+omitted, since there's no user interaction at that moment to prompt for
+one); duplicate-name uniqueness scope (`@@unique([monthId, name])` — per
+month, not global, confirmed explicitly: "Rent" can exist once in October
+and once in November, just never twice in the same month); folded the small
+tracked `removeCategoryFromMonth` follow-up into this same branch, as
+planned.
+
+Schema: dropped `recurring_expense_templates`/`recurring_expense_instances`,
+added the flat `recurring_expenses` table exactly as designed, renamed
+`transactions.recurring_expense_instance_id` → `recurring_expense_id`. One
+migration (`20260819173541_recurring_expenses_flat_redesign`), no
+data-migration concerns (nothing deployed). Replaced
+`recurringExpenseTemplateService`/`recurringExpenseInstanceService` with a
+single `recurringExpenseService` (`createRecurringExpense`,
+`updateRecurringExpense`, `removeFromMonth`, `markRecurringPaid`,
+`listByMonth`, `findManyByIds`, `sumCommittedCentsForCategoryMonth`,
+`seedNewMonth`). Auto-copy-forward hook point resolved: hooked into
+`resolveBudgetMonthIdWithCreatedFlag` (new — same resolution as
+`resolveBudgetMonthId` but also reports whether *this* call created the
+row), used by both `categoryMonthService.addCategoryToMonth` (via a new
+optional `onNewBudgetMonth` deps hook, wired to
+`recurringExpenseService.seedNewMonth` in `server.ts` — kept as plain
+function injection rather than a direct import specifically so
+`categoryMonthService` never has to depend on `recurringExpenseService`,
+preserving the one-directional service-layer dependency graph) and
+`ensureActiveForCategoryOnClient` (now returns `{ categoryMonth,
+monthWasCreated }`, consumed directly by `recurringExpenseService.createRecurringExpense`).
+Whichever action is the first to touch a brand-new month — a category add
+or an unrelated new recurring expense — triggers the carry-forward, not
+just locking. GraphQL layer rebuilt to match (`RecurringExpense` type,
+`createRecurringExpense`/`updateRecurringExpense` mutations replacing the
+template+instance pairs, single `recurringExpenses(month)` query, DataLoaders
+consolidated). 24 new tests for `recurringExpenseService` (was 0 after
+deleting the old template/instance suites), 286 Jest tests total.
+
+**Real-Postgres discovery: a caught conflict inside `$transaction` poisons
+the rest of it.** Manually smoke-testing the new carry-forward against real
+Postgres (not just the fake) crashed with `25P02 current transaction is
+aborted` — traced to a minimal repro: `create` inside `$transaction`,
+`catch` the P2002, then run *any* further query on that same `tx` — Postgres
+rejects everything after a failed statement until a `ROLLBACK`/`SAVEPOINT`,
+and this project's Prisma 7 + `@prisma/adapter-pg` setup doesn't paper over
+that the way the older query engine used to. This wasn't limited to the new
+code — `ensureActiveForCategoryOnClient`'s existing "lost the race, return
+the winner" `categoryMonth.create` catch (shipped in step 3/4) had the
+identical shape and was never actually exercised against real Postgres in
+that branch before now, only against the fake (which can't reproduce
+Postgres transaction-abort semantics at all). `authService.ts`'s
+`verifyOtp` had already independently discovered and worked around the same
+issue (see its own doc comment) by keeping its create-then-catch outside
+any transaction entirely.
+
+Fixed with a new shared `withSavepoint(tx, name, attempt)` helper
+(`src/lib/prismaSavepoint.ts`) — wraps an attempt in a real Postgres
+`SAVEPOINT`/`ROLLBACK TO SAVEPOINT` so a caught conflict can be recovered
+from mid-transaction. Applied to the three affected spots:
+`resolveBudgetMonthIdWithCreatedFlag`, `ensureActiveForCategoryOnClient`
+(the pre-existing one), and `seedNewMonth`'s per-item carry-forward loop.
+`addCategoryToMonth`'s call to `resolveBudgetMonthIdWithCreatedFlag` also
+had to move inside its own `prisma.$transaction(...)` — `SAVEPOINT`
+requires an active transaction, and that call previously ran on the raw,
+non-transactional client. Fake Prisma gained a no-op `$executeRawUnsafe`
+stub, matching the existing "real concurrency safety verified against a
+live database, not the fake" pattern already established for row locking.
+Re-verified end to end against real Postgres afterward, including a genuine
+concurrent race (two simultaneous first-touches of the same brand-new
+month, one via `createRecurringExpense` and one via `addCategoryToMonth`,
+run with `Promise.all`) — no crash, carry-forward happened exactly once,
+no duplicate rows.
+
+`pr-reviewer` on `feature/recurring-expenses-flat-redesign`, round 1: found
+one blocking issue — `addCategoryToMonth` ran
+`resolveBudgetMonthIdWithCreatedFlag` and the `categoryMonth` insert in two
+separate transactions, so a failure in the second (e.g.
+`category_month_budget_required`) left the first transaction's
+`BudgetMonth` row committed anyway, permanently and silently losing the
+carry-forward trigger for that month on retry (`wasCreated: false` even
+though the retry was genuinely the first successful activity there). Fixed
+by merging both into one transaction, matching `createRecurringExpense`'s
+already-correct pattern; re-verified against real Postgres with the exact
+failing-then-retrying sequence. Also addressed two suggestions from the
+same round: `onNewBudgetMonth`/`seedNewMonth` calls now wrapped in
+try/catch and swallowed, matching their own doc comments' already-stated
+"never allowed to fail the action that already succeeded" intent (the code
+didn't actually enforce that before); and a new test proving
+`seedNewMonth`'s per-item collision skip continues to the next item rather
+than just not throwing overall. Plus a nitpick: `withSavepoint` now
+releases its savepoint on the success path. 288 Jest tests total (was 286).
+
+Round 2 (verifying those fixes): **approved**. Traced the merged
+transaction's control flow and confirmed the bug is genuinely closed, both
+try/catch swallows are correctly scoped, and the new collision-continuation
+test proves what it claims. Two minor non-blocking notes for a future
+pass, not blockers for this PR: no test yet exercises the swallow itself
+(a test that makes `seedNewMonth` throw and asserts the outer call still
+succeeds), and the swallowed path has no logging — a genuine bug there
+would currently be invisible in production. Tracked here rather than
+addressed now, since round 2 explicitly called them out as follow-up
+material.
+
+`test-auditor` on `feature/recurring-expenses-flat-redesign`: suite
+trustworthy (307 tests at the time, all passing, no `.skip`/`.only`, no
+cross-test ordering dependency), but flagged real gaps — most notably that
+`withSavepoint` (the fix motivating this whole PR's prep commit) had *zero*
+dedicated Jest coverage, since the fake Prisma's `$executeRawUnsafe` is a
+no-op and nothing asserted the actual SQL sequence it issues. Also flagged:
+no test distinguishing `monthWasCreated: true` from `false` with
+`onNewBudgetMonth` actually wired (a `&&` → always-true regression would've
+passed every existing test); zero coverage on several `recurringExpenseService`
+negative paths (`removeFromMonth`'s `month_locked`/not-found/P2003-race,
+`markRecurringPaid`'s not-found paths and its own CategoryMonth-not-found
+data-integrity check, `findManyByIds`); and `updateRecurringExpense`'s
+category-reassignment/auto-activation branch, untested because every
+existing test happened to reuse the same category on create and update.
+Also closed round 2's two follow-up notes (above) while at it: a test
+proving `withSavepoint` issues `SAVEPOINT`/`RELEASE SAVEPOINT` correctly
+via a spy, and two tests that actually exercise the `onNewBudgetMonth`/
+`seedNewMonth` swallow (make it throw, assert the outer mutation still
+succeeds) rather than just asserting the try/catch exists. Logging on the
+swallowed path still not done — no logger dependency exists anywhere in
+the service layer yet, so this stays a real "consider it later" rather
+than a quick add. 307 Jest tests total (was 288 before this pass, +19).
+
 Next actions, in order:
-1. Design/build the recurring-expenses flat redesign: drop
-   `recurring_expense_templates`, collapse `recurring_expense_instances`
-   into a self-contained `recurring_expenses` table, rework
-   `recurringExpenseTemplateService`/`recurringExpenseInstanceService` into
-   one service, update the GraphQL schema (`RecurringExpense` type replacing
-   both, `createRecurringExpense`/`updateRecurringExpense` replacing the
-   template+instance mutation pairs), and decide the auto-copy-forward hook
-   point (see above) as part of that step's kickoff interview. This
-   supersedes "recurring-template edit propagation" from the prior version
-   of this list — the propagation question no longer exists under the new
-   design.
-2. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
-   should check for a referencing `recurring_expenses` row, not just
-   `transaction`, before deleting a `category_month` row (carries over
-   unchanged from the old `recurring_expense_instance` wording).
+1. Wait for human review/merge on `feature/recurring-expenses-flat-redesign`
+   (`pr-reviewer`-approved as of round 2, `test-auditor`-reviewed and gaps
+   closed).
+2. Small tracked follow-up, not blocking: add logging on the
+   `onNewBudgetMonth`/`seedNewMonth` swallow path once this service layer
+   has a logger dependency to hang it on (none exists yet —
+   `src/lib/shutdown.ts` is the only existing precedent, at the app-startup
+   level, not per-service).
+3. Recurring-template edit propagation no longer exists as a concept under
+   the flat design — nothing outstanding there.
+4. Still open from step 5's original scope: soft-delete + undo for
+   `savings_funds`/`savings_movements`/`income_sources` (steps 6-7, not yet
+   built) — re-grill when those steps are actually interviewed, per the
+   callout under "Soft delete + undo" above.
 
 ## Phase 1 — Backend
 
@@ -919,27 +1047,25 @@ Next actions, in order:
       produce an income transaction from a "recurring expense" payment. →
       PR #4 (`feature/recurring-expenses` → `develop`), merged.
 
-      **Superseded, not yet rebuilt**: the template/instance split
-      described above is being replaced by a flat `recurring_expenses`
-      design (one row per month, no template) — see "Where we left off"
-      above and `PLAN.md`'s Data Model section. Everything in this bullet
-      is still what's actually live in `develop` today (per `SERVICES.md`)
-      until that rework lands; keeping it as accurate history rather than
-      rewriting it away.
-- [ ] **5. Month lifecycle** — in progress, three increments merged so far:
+      **Superseded, then rebuilt**: the template/instance split described
+      above was replaced by the flat `recurring_expenses` design (one row
+      per month, no template) — see "Where we left off" above and
+      `PLAN.md`'s Data Model section for the rebuild. Kept as accurate
+      history of what step 4 originally shipped, not rewritten away.
+- [ ] **5. Month lifecycle** — in progress, four increments merged so far:
       budget-inheritance on category/recurring-expense activation (PR #7,
       merged), `lockMonth`/`deleteBudgetMonth`/`Query.currentMonth` (PR #8,
-      merged), server-side planning-horizon enforcement (PR #10, merged).
-      Carry-forward turned out to need no
-      dedicated mutation (reuses `addCategoryToMonth`/`addRecurringExpenseToMonth`'s
-      existing budget-omit-to-inherit behavior) and auto-lock cascade was
-      dropped entirely — both revised out of the original scope described
-      here during the step's kickoff interview, see `PLAN.md`'s Month
-      Lifecycle section for the actual design. Still outstanding: the
-      recurring-expenses flat redesign (replaces the old "recurring-template
-      edit propagation" item — that question no longer exists under the new
-      design, see "Where we left off"), soft-delete + undo for the entities
-      that still have it.
+      merged), server-side planning-horizon enforcement (PR #10, merged),
+      the recurring-expenses flat redesign (see "Where we left off" above,
+      awaiting review). Carry-forward turned out to need no dedicated
+      mutation for categories (reuses `addCategoryToMonth`'s existing
+      budget-omit-to-inherit behavior) but *is* automatic for recurring
+      expenses (see the flat redesign) — and auto-lock cascade was dropped
+      entirely — all revised out of the original scope described here
+      during the step's kickoff interview, see `PLAN.md`'s Month Lifecycle
+      section for the actual design. Still outstanding: soft-delete + undo
+      for the entities that still have it (savings funds/movements, income
+      sources — steps 6-7, not yet built).
 - [ ] **6. Savings funds + movements** — CRUD + `addSavingsMovement` updating
       `currentAmountCents`; DataLoader for `SavingsFund.movements`.
 - [ ] **7. Income sources** — CRUD; `income_sources.month_id` already

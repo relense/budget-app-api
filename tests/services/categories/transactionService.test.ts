@@ -83,10 +83,10 @@ describe('create', () => {
       note: 'weekly shop',
       direction: 'expense',
     });
-    expect(transaction.recurringExpenseInstanceId).toBeNull();
+    expect(transaction.recurringExpenseId).toBeNull();
   });
 
-  it('stamps recurringExpenseInstanceId when given (internal use — markRecurringPaid)', async () => {
+  it('stamps recurringExpenseId when given (internal use — markRecurringPaid)', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();
 
     const transaction = await transactionService.create(
@@ -95,7 +95,7 @@ describe('create', () => {
       'instance-1',
     );
 
-    expect(transaction.recurringExpenseInstanceId).toBe('instance-1');
+    expect(transaction.recurringExpenseId).toBe('instance-1');
   });
 
   it('derives income direction from an income category', async () => {
@@ -456,8 +456,8 @@ describe('listByCategoryMonthIds', () => {
   });
 });
 
-describe('listByRecurringExpenseInstanceIds', () => {
-  it('groups transactions by recurringExpenseInstanceId for the given ids, ignoring unlinked transactions', async () => {
+describe('listByRecurringExpenseIds', () => {
+  it('groups transactions by recurringExpenseId for the given ids, ignoring unlinked transactions', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();
     const linked = await transactionService.create(
       'user-1',
@@ -470,7 +470,7 @@ describe('listByRecurringExpenseInstanceIds', () => {
       date: '2026-08-05',
     });
 
-    const result = await transactionService.listByRecurringExpenseInstanceIds(['instance-1']);
+    const result = await transactionService.listByRecurringExpenseIds(['instance-1']);
 
     expect(result.map((t) => t.id)).toEqual([linked.id]);
   });
@@ -478,7 +478,7 @@ describe('listByRecurringExpenseInstanceIds', () => {
   it('returns an empty array for an empty id list', async () => {
     const { transactionService } = await setup();
 
-    const result = await transactionService.listByRecurringExpenseInstanceIds([]);
+    const result = await transactionService.listByRecurringExpenseIds([]);
 
     expect(result).toEqual([]);
   });

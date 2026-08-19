@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
 import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
 import { createCategoryService } from '../../../src/services/categories/categoryService.js';
@@ -288,6 +288,113 @@ describe('addCategoryToMonth', () => {
       categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08'),
     ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
     expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
+  it('leaves no orphaned BudgetMonth row behind when the insert fails, so a retry still triggers onNewBudgetMonth', async () => {
+    // Regression test (pr-reviewer, PR #14 round 1): resolveBudgetMonthIdWithCreatedFlag
+    // and the categoryMonth insert used to run in two separate transactions
+    // — a failure in the second (like category_month_budget_required below)
+    // left the first transaction's BudgetMonth row committed anyway, and a
+    // subsequent successful retry would then see wasCreated: false, silently
+    // and permanently losing the carry-forward trigger for that month.
+    const prisma = createFakePrisma();
+    const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
+    const categoryService = createCategoryService({ prisma: prisma as never });
+    const onNewBudgetMonth = jest.fn(async (_userId: string, _month: string, _monthId: string) => undefined);
+    const categoryMonthService = createCategoryMonthService({
+      prisma: prisma as never,
+      budgetMonthService,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+      onNewBudgetMonth,
+    });
+    const category = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', category.id, '2026-08'),
+    ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
+    expect(prisma.budgetMonths).toHaveLength(0);
+    expect(onNewBudgetMonth).not.toHaveBeenCalled();
+
+    await categoryMonthService.addCategoryToMonth('user-1', category.id, '2026-08', 90000);
+
+    expect(prisma.budgetMonths).toHaveLength(1);
+    expect(onNewBudgetMonth).toHaveBeenCalledWith('user-1', '2026-08', prisma.budgetMonths[0]!.id);
+  });
+
+  it('does not re-fire onNewBudgetMonth when adding a second category to an already-existing month (test-auditor gap)', async () => {
+    // A regression that changed `if (monthWasCreated && onNewBudgetMonth)`
+    // to `if (onNewBudgetMonth)` would pass every other test in this file
+    // (none of them wire onNewBudgetMonth for a month that already exists)
+    // — this is the one that would actually catch it.
+    const prisma = createFakePrisma();
+    const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
+    const categoryService = createCategoryService({ prisma: prisma as never });
+    const onNewBudgetMonth = jest.fn(async (_userId: string, _month: string, _monthId: string) => undefined);
+    const categoryMonthService = createCategoryMonthService({
+      prisma: prisma as never,
+      budgetMonthService,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+      onNewBudgetMonth,
+    });
+    const first = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    const second = await categoryService.createCategory('user-1', {
+      name: 'Housing',
+      icon: 'home',
+      color: '#FF0000',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
+    await categoryMonthService.addCategoryToMonth('user-1', first.id, '2026-08', 90000);
+    expect(onNewBudgetMonth).toHaveBeenCalledTimes(1);
+
+    await categoryMonthService.addCategoryToMonth('user-1', second.id, '2026-08', 50000);
+    expect(onNewBudgetMonth).toHaveBeenCalledTimes(1);
+  });
+
+  it('still returns the created categoryMonth even if onNewBudgetMonth throws (pr-reviewer round 2 gap)', async () => {
+    // The doc comment on CategoryMonthServiceDeps says the seed hook is
+    // "never allowed to fail the category-add the user actually asked
+    // for" and the code wraps the call in try/catch to enforce that — this
+    // is the test that actually proves the swallow works, not just that
+    // the try/catch exists.
+    const prisma = createFakePrisma();
+    const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
+    const categoryService = createCategoryService({ prisma: prisma as never });
+    const onNewBudgetMonth = jest.fn(async (_userId: string, _month: string, _monthId: string) => {
+      throw new Error('transient seeding failure');
+    });
+    const categoryMonthService = createCategoryMonthService({
+      prisma: prisma as never,
+      budgetMonthService,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+      onNewBudgetMonth,
+    });
+    const category = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
+    const categoryMonth = await categoryMonthService.addCategoryToMonth('user-1', category.id, '2026-08', 90000);
+
+    expect(categoryMonth.categoryId).toBe(category.id);
+    expect(onNewBudgetMonth).toHaveBeenCalledTimes(1);
+    expect(prisma.categoryMonths).toHaveLength(1);
   });
 
   it('throws budget_month_not_found when the target BudgetMonth is deleted between the lock and the insert', async () => {
@@ -661,7 +768,7 @@ describe('removeCategoryFromMonth', () => {
       id: 'tx-1',
       userId: 'user-1',
       categoryMonthId: categoryMonth.id,
-      recurringExpenseInstanceId: null,
+      recurringExpenseId: null,
       amountCents: 500,
       date: new Date('2026-08-05'),
       merchant: null,
@@ -696,7 +803,7 @@ describe('removeCategoryFromMonth', () => {
         id: 'tx-race',
         userId: 'user-1',
         categoryMonthId: categoryMonth.id,
-        recurringExpenseInstanceId: null,
+        recurringExpenseId: null,
         amountCents: 500,
         date: new Date('2026-08-05'),
         merchant: null,

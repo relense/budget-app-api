@@ -46,12 +46,21 @@ Deps: `prisma`, `now?` (defaults to `() => new Date()`, injectable for tests).
 | `findBudgetMonthId(userId, month)` | Read-only lookup, returns `null` if it doesn't exist yet — never creates a row as a side effect of a query. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
 | `findCurrentMonth(userId)` | Derived, never persisted: the earliest unlocked `BudgetMonth` row for this user, or today's real calendar month if none exists (brand new, or every row is locked with nothing planned past it). No auto-lock cascade, no automatic next-month creation — both deliberately dropped in favor of simpler, always-explicit user actions (see `PROGRESS.md`). |
-| `lockMonth(userId, month)` | Locks the target month permanently — must be the current (earliest unlocked) month, or throws `budget_month_not_current`. No carry-forward or next-month creation here; the client drives those separately afterward if the user wants them, using the same `addCategoryToMonth`/`addRecurringExpenseToMonth` mutations (budget auto-inherits when omitted). |
-| `deleteBudgetMonth(userId, month)` | Hard delete for an unlocked month the user pre-provisioned but decided not to use. Blocked while any `category_month` references it — same "remove what's in it first" pattern as `deleteCategory`/`deleteTemplate`. |
+| `lockMonth(userId, month)` | Locks the target month permanently — must be the current (earliest unlocked) month, or throws `budget_month_not_current`. No carry-forward or next-month creation here; category/budget carry-forward is a separate, explicit `addCategoryToMonth` call per item, while `recurring_expenses` carry forward automatically the moment a new month is first touched (see `recurringExpenseService` below). |
+| `deleteBudgetMonth(userId, month)` | Hard delete for an unlocked month the user pre-provisioned but decided not to use. Blocked while any `category_month` references it — same "remove what's in it first" pattern as `deleteCategory`. |
 
 Also exports **`resolveBudgetMonthId(client, userId, month)`** standalone
 (client-parameterized) — lets a caller with its own open transaction run
-this as part of that transaction instead of on the service's own connection.
+this as part of that transaction instead of on the service's own connection
+— and **`resolveBudgetMonthIdWithCreatedFlag(client, userId, month)`**,
+same resolution but also reporting whether *this* call is the one that
+created the row (used by `recurringExpenseService`'s carry-forward-on-first-touch
+seeding to know when a month is genuinely new). Must be called with an
+active transactional client — its create attempt runs under `withSavepoint`
+(`src/lib/prismaSavepoint.ts`) so a caught conflict doesn't poison the rest
+of the caller's transaction; see that file for why this is required, not
+optional, under this project's Prisma 7 + `@prisma/adapter-pg` setup
+(confirmed by a real-Postgres repro, not just theoretical).
 
 ### `categoryService` — `src/services/categories/categoryService.ts`
 
@@ -67,7 +76,7 @@ Pure catalog CRUD for categories — no month-awareness at all. Deps: `prisma`.
 
 Also exports **`assertOwnedCategory(client, userId, id)`** standalone — the
 shared ownership-check, reused by `categoryMonthService` and
-`recurringExpenseTemplateService` against either the outer `prisma` or a
+`recurringExpenseService` against either the outer `prisma` or a
 transactional client — and **`assertValidBudgetType(direction, budgetType)`**
 standalone, reused by `authService`'s default-category seeding on signup so
 a future change to this rule can't silently drift from what gets seeded.
@@ -82,16 +91,18 @@ exists here. Owns the month's budget. Deps: `prisma`, `budgetMonthService`,
 |---|---|
 | `listByMonth(userId, month)` | Every active category for that month. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
-| `addCategoryToMonth(userId, categoryId, month, monthlyBudgetCents?)` | Explicit activation; errors if already active that month (`category_month_already_active`). `monthlyBudgetCents` is optional — inherits the category's most recent (by real calendar month, not insertion order) `category_month`'s budget when omitted, or throws `category_month_budget_required` if this category has never been active anywhere yet. Rejects a genuinely new activation more than one month past the derived current month (`category_month_beyond_planning_horizon`) — see below. |
-| `ensureActiveForCategory(userId, categoryId, month, monthlyBudgetCents?)` | Idempotent — returns the existing row if already active (no planning-horizon check in that case — pre-provisioned activations are never retroactively rejected). Same budget-inheritance rule as `addCategoryToMonth` when it actually creates one. Used by recurring-expense auto-activation. |
-| `removeCategoryFromMonth(userId, categoryMonthId)` | Hard delete, blocked while any transaction references it that month. |
+| `addCategoryToMonth(userId, categoryId, month, monthlyBudgetCents?)` | Explicit activation; errors if already active that month (`category_month_already_active`). `monthlyBudgetCents` is optional — inherits the category's most recent (by real calendar month, not insertion order) `category_month`'s budget when omitted, or throws `category_month_budget_required` if this category has never been active anywhere yet. Rejects a genuinely new activation more than one month past the derived current month (`category_month_beyond_planning_horizon`) — see below. When this call is the one that creates the target month's `BudgetMonth` row for the first time, also fires `onNewBudgetMonth` (an injected dep, wired to `recurringExpenseService.seedNewMonth` in `server.ts`) after the transaction commits. |
+| `ensureActiveForCategory(userId, categoryId, month, monthlyBudgetCents?)` | Idempotent — returns the existing row if already active (no planning-horizon check in that case — pre-provisioned activations are never retroactively rejected). Same budget-inheritance rule as `addCategoryToMonth` when it actually creates one. |
+| `removeCategoryFromMonth(userId, categoryMonthId)` | Hard delete, blocked while any transaction references it that month (`category_month_has_transactions`) or any `recurring_expenses` row references it (`category_month_has_recurring_expenses` — recurring expenses have no `categoryMonthId` FK, so this checks by matching `categoryId`+`monthId`). |
 | `updateCategoryMonthBudget(userId, categoryMonthId, monthlyBudgetCents)` | This month's budget only. |
 
 Also exports **`ensureActiveForCategoryOnClient(client, userId, categoryId, month, monthlyBudgetCents?, now?)`**
 standalone — lets a caller with its own open transaction (e.g.
-`recurringExpenseInstanceService`) run activation as part of that
-transaction, so a row lock taken earlier in the same transaction actually
-protects this step too.
+`recurringExpenseService`) run activation as part of that transaction, so a
+row lock taken earlier in the same transaction actually protects this step
+too. Returns `{ categoryMonth, monthWasCreated }` — `monthWasCreated` is
+true only when *this call* created the `BudgetMonth` row, letting
+`recurringExpenseService` decide whether to seed the new month.
 
 **Planning horizon.** A category can never be newly activated outside
 `[current, current + 1]` — the derived "current" month itself, or the one
@@ -114,8 +125,8 @@ determines the idempotent-return case (category already active this month)
 via a read-only `budgetMonth.findUnique` lookup, specifically so that path
 also never triggers `resolveBudgetMonthId`'s upsert before the horizon
 check has had a chance to reject. Exported standalone so
-`recurringExpenseInstanceService`'s auto-activation path enforces the
-identical rule, not a separately-maintained copy.
+`recurringExpenseService`'s auto-activation path enforces the identical
+rule, not a separately-maintained copy.
 
 ### `transactionService` — `src/services/categories/transactionService.ts`
 
@@ -124,12 +135,12 @@ the category, never client-settable. Deps: `prisma`, `budgetMonthService`.
 
 | Function | Does |
 |---|---|
-| `create(userId, input, recurringExpenseInstanceId?)` | The third param is internal-only (never client-settable) — only `markRecurringPaid` passes it, to link the transaction to a recurring-expense instance. |
+| `create(userId, input, recurringExpenseId?)` | The third param is internal-only (never client-settable) — only `markRecurringPaid` passes it, to link the transaction to a recurring expense. |
 | `update(userId, id, input)` | Re-derives `direction` if `categoryMonthId` changes to a different-direction category. |
 | `deleteTransaction(userId, id)` | Hard delete, immediate and permanent, no undo. |
 | `list(userId, month, categoryId?)` | Ordered date DESC, then createdAt DESC. |
 | `listByCategoryMonthIds(ids)` | Batch lookup for DataLoader use. |
-| `listByRecurringExpenseInstanceIds(ids)` | Batch lookup for DataLoader use — backs `RecurringExpenseInstance.transactions` and `paidThisMonth`. |
+| `listByRecurringExpenseIds(ids)` | Batch lookup for DataLoader use — backs `RecurringExpense.transactions` and `paidThisMonth`. |
 
 All writes are blocked once the target month is locked (`month_locked`) —
 live and race-safe as of `budgetMonthService.lockMonth` (Build Order step
@@ -138,51 +149,29 @@ that takes `lockBudgetMonthRow` (`SELECT ... FOR UPDATE`) before checking
 `locked`, so the check is genuinely serialized against a concurrent
 `lockMonth` call rather than racing a plain read.
 
-### `recurringExpenseTemplateService` — `src/services/recurringExpenses/recurringExpenseTemplateService.ts`
+### `recurringExpenseService` — `src/services/recurringExpenses/recurringExpenseService.ts`
 
-Catalog CRUD for recurring-expense definitions (e.g. "Rent, 800€, day 1") —
-transversal, no month-awareness, always points at an existing category.
-Deps: `prisma`.
-
-| Function | Does |
-|---|---|
-| `listCatalog(userId)` | Every template for this user. |
-| `findManyByIds(ids)` | Batch lookup for DataLoader use. |
-| `createTemplate(userId, input)` | Validates amount/dueDay/budgetType (`need`\|`want` only — `savings` rejected) and that the category is `expense`-direction. |
-| `updateTemplate(userId, id, input)` | Blocks a `categoryId` change once any instance exists (would retroactively shift `recurringCommittedCents` for already-happened months) — race-safe via `lockTemplateRow`. |
-| `deleteTemplate(userId, id)` | **Hard delete**, blocked while any instance references it anywhere, past or future — backed by a real `onDelete: Restrict` FK. |
-
-Also exports three standalone, client-parameterized functions used by
-`recurringExpenseInstanceService`:
-- **`assertValidTemplateInput(client, userId, input)`** — the four checks
-  above, read-only, usable before an unrelated write that must not happen
-  if the input is invalid.
-- **`assertOwnedTemplate(client, userId, id)`** — ownership check.
-- **`lockTemplateRow(tx, id)`** — `SELECT ... FOR UPDATE` on the template
-  row; must run inside a `$transaction`. Serializes a `categoryId` change
-  against a concurrent instance creation for the same template.
-
-### `recurringExpenseInstanceService` — `src/services/recurringExpenses/recurringExpenseInstanceService.ts`
-
-Per-month instances of a recurring-expense template — hard-deleted, FK to
-`budget_months`. This is what a `Transaction` actually links to via
-`markRecurringPaid`. Deps: `prisma`, `budgetMonthService`, `transactionService`
-(does **not** depend on `categoryMonthService`/`templateService` — it calls
-their standalone client-parameterized functions directly instead, so the
-whole lock → activate → insert sequence runs in one transaction).
+One flat row per recurring expense per month it exists in — no separate
+template, unlike the superseded template/instance design (see `PLAN.md`'s
+Data Model section). Hard-deleted, FKs to both `budget_months` and
+`categories` directly. This is what a `Transaction` actually links to via
+`markRecurringPaid`. Deps: `prisma`, `budgetMonthService`,
+`transactionService` (does **not** depend on `categoryMonthService` as an
+injected service — it calls `ensureActiveForCategoryOnClient` directly
+instead, so the whole activate → insert sequence runs in one transaction).
 
 | Function | Does |
 |---|---|
-| `createTemplateForMonth(userId, input, month, categoryMonthlyBudgetCents?)` | First-time creation: template + category-activation + instance, all in one transaction. Returns `{ template, instance }`. |
-| `addRecurringExpenseToMonth(userId, templateId, month, categoryMonthlyBudgetCents?)` | Reuses an existing template into a new month; locks the template row and re-reads its category *inside* that lock before activating. |
-| `updateInstance(userId, instanceId, amountCents)` | This month's amount override only. |
-| `removeFromMonth(userId, instanceId)` | Hard delete, blocked while any transaction references it. |
-| `markRecurringPaid(userId, instanceId, input)` | Always creates a **new** `Transaction` (never updates one) — callable more than once per instance for split payments. |
-| `listByMonth(userId, month)` | Every active instance for that month. |
+| `createRecurringExpense(userId, input, month, categoryMonthlyBudgetCents?)` | Validates amount/dueDay/budgetType (`need`\|`want` only — `savings` rejected) and that the category is `expense`-direction; auto-activates the category for `month` (budget required only if not already active anywhere). Rejects a duplicate name in the same month (`duplicate_name`, backed by `@@unique([monthId, name])`). If this call is also the one that creates `month`'s `BudgetMonth` row for the first time, carries every recurring expense from the previous month forward into it too (see `seedNewMonth` below) — run after this call's own transaction commits, not nested inside it. |
+| `updateRecurringExpense(userId, id, input)` | A flat edit — name/category/budgetType/dueDay/amountCents together, on exactly this one row/month. No propagation question (unlike the superseded design): it never touches any other month's row. Changing `categoryId` auto-activates the new category for this same month (inherits budget, no budget param on this mutation). |
+| `removeFromMonth(userId, id)` | Hard delete, blocked while any transaction references it. |
+| `markRecurringPaid(userId, id, input)` | Always creates a **new** `Transaction` (never updates one) — callable more than once per row for split payments. |
+| `listByMonth(userId, month)` | Every recurring expense for that month. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
-| `sumCommittedCentsForCategoryMonth(categoryId, monthId)` | Sums `amountCents` across every active instance under that category/month — backs `CategoryMonth.recurringCommittedCents`. |
+| `sumCommittedCentsForCategoryMonth(categoryId, monthId)` | Sums `amountCents` across every recurring expense under that category/month — backs `CategoryMonth.recurringCommittedCents`. |
+| `seedNewMonth(userId, month, monthId)` | The automatic carry-forward (see `PLAN.md`'s Data Model note: unlike category/budget carry-forward, no per-item opt-in). Copies every recurring expense from the calendar-previous month into `month` — fresh, unpaid, auto-activating each one's category (inherits budget). No-ops if the previous month doesn't exist, has nothing to copy, or — an extremely narrow race — `month` got locked in the gap between its own creation and this call running. Called by `createRecurringExpense` above and by `categoryMonthService.addCategoryToMonth`'s `onNewBudgetMonth` hook — whichever action first touches a brand-new month triggers it, not just recurring-expense-specific ones. |
 
-Both instance-creation paths auto-activate the category via
+Both `createRecurringExpense` and `seedNewMonth` auto-activate categories via
 `ensureActiveForCategoryOnClient` — the one deliberate exception to
 categories' otherwise-always-manual activation rule (see `PLAN.md`).
 
@@ -200,7 +189,9 @@ Not services (no `userId`-scoped business logic), but worth knowing exist:
 | `refreshToken.ts` | `generateRefreshToken`/`hashRefreshToken` — sha256 (already high-entropy, unlike OTP codes). |
 | `email.ts` | `EmailService` interface + `createConsoleEmailService` (logs instead of sending — real provider deferred per `PLAN.md`). |
 | `env.ts` | `loadEnv` — Zod-validated env vars, fails fast at startup. |
-| `monthFormat.ts` | `isValidMonthFormat` — the one place `"YYYY-MM"` validation lives. |
+| `monthFormat.ts` | `isValidMonthFormat`/`formatMonth`/`addMonths` — the one place `"YYYY-MM"` parsing/formatting/arithmetic lives. |
+| `prismaErrors.ts` | `hasPrismaErrorCode(error, code)` — matches Prisma's error shape without importing the class. |
+| `prismaSavepoint.ts` | `withSavepoint(tx, name, attempt)` — runs `attempt` under a Postgres `SAVEPOINT` so a caught conflict (unique/FK violation) doesn't poison the rest of an enclosing `$transaction`. Required, not optional, for any "create, catch a conflict, keep querying the same transaction" pattern under this project's Prisma 7 + `@prisma/adapter-pg` setup — confirmed by a real-Postgres repro (a plain try/catch-then-query reliably throws `25P02`), not just theoretical. Used by `budgetMonthService.resolveBudgetMonthIdWithCreatedFlag`, `categoryMonthService.ensureActiveForCategoryOnClient`, and `recurringExpenseService.seedNewMonth`. |
 | `shutdown.ts` | `createShutdownHandler` — `SIGTERM`/`SIGINT` + crash handlers. |
 
 ---
@@ -238,8 +229,7 @@ Introspection and query-depth (max 10) are limited in production.
 | `categories` | — | `[Category!]!` |
 | `categoryMonths` | `month: String!` | `[CategoryMonth!]!` |
 | `transactions` | `month: String!, categoryId: ID` | `[Transaction!]!` |
-| `recurringExpenseTemplates` | — | `[RecurringExpenseTemplate!]!` |
-| `recurringExpenseInstances` | `month: String!` | `[RecurringExpenseInstance!]!` |
+| `recurringExpenses` | `month: String!` | `[RecurringExpense!]!` |
 
 **Mutation**
 
@@ -256,23 +246,18 @@ Introspection and query-depth (max 10) are limited in production.
 | `createTransaction` | `input: TransactionInput!` | `Transaction!` |
 | `updateTransaction` | `id: ID!, input: TransactionInput!` | `Transaction!` |
 | `deleteTransaction` | `id: ID!` | `Boolean!` |
-| `createRecurringExpenseTemplate` | `input: RecurringExpenseTemplateInput!, month: String!, categoryMonthlyBudgetCents: Int` | `RecurringExpenseTemplate!` |
-| `updateRecurringExpenseTemplate` | `id: ID!, input: RecurringExpenseTemplateInput!` | `RecurringExpenseTemplate!` |
-| `deleteRecurringExpenseTemplate` | `id: ID!` | `Boolean!` |
-| `addRecurringExpenseToMonth` | `templateId: ID!, month: String!, categoryMonthlyBudgetCents: Int` | `RecurringExpenseInstance!` |
-| `updateRecurringExpenseInstance` | `id: ID!, amountCents: Int!` | `RecurringExpenseInstance!` |
+| `createRecurringExpense` | `input: RecurringExpenseInput!, month: String!, categoryMonthlyBudgetCents: Int` | `RecurringExpense!` |
+| `updateRecurringExpense` | `id: ID!, input: RecurringExpenseInput!` | `RecurringExpense!` |
 | `removeRecurringExpenseFromMonth` | `id: ID!` | `Boolean!` |
 | `markRecurringPaid` | `id: ID!, input: MarkRecurringPaidInput!` | `Transaction!` |
 
 **Types**: `Category`, `CategoryMonth` (+ computed `recurringCommittedCents`),
-`Transaction` (+ nullable `recurringExpenseInstance`), `RecurringExpenseTemplate`,
-`RecurringExpenseInstance` (+ computed `paidThisMonth`). Enums: `BudgetType`
-(`NEED`\|`WANT`\|`SAVINGS`), `Direction` (`EXPENSE`\|`INCOME`) — DB stores
-lowercase, GraphQL exposes upper-case, mapped in `enumMapping.ts`.
+`Transaction` (+ nullable `recurringExpense`), `RecurringExpense` (+ computed
+`paidThisMonth`). Enums: `BudgetType` (`NEED`\|`WANT`\|`SAVINGS`), `Direction`
+(`EXPENSE`\|`INCOME`) — DB stores lowercase, GraphQL exposes upper-case,
+mapped in `enumMapping.ts`.
 
 **DataLoaders** (`src/graphql/loaders.ts`, rebuilt fresh per request — never
 cached across requests/users): `categoryById`, `categoryMonthById`,
-`budgetMonthById`, `transactionsByCategoryMonthId`,
-`recurringExpenseTemplateById`, `recurringExpenseInstanceById`,
-`transactionsByRecurringExpenseInstanceId`,
-`recurringCommittedCentsByCategoryMonthId`.
+`budgetMonthById`, `transactionsByCategoryMonthId`, `recurringExpenseById`,
+`transactionsByRecurringExpenseId`, `recurringCommittedCentsByCategoryMonthId`.

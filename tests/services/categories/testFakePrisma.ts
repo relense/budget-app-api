@@ -42,24 +42,15 @@ export interface FakeCategoryMonth {
   updatedAt: Date;
 }
 
-export interface FakeRecurringExpenseTemplate {
+export interface FakeRecurringExpense {
   id: string;
   userId: string;
+  monthId: string;
+  categoryId: string;
   name: string;
   amountCents: number;
-  categoryId: string;
   budgetType: FakeRecurringBudgetType;
   dueDay: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface FakeRecurringExpenseInstance {
-  id: string;
-  userId: string;
-  templateId: string;
-  monthId: string;
-  amountCents: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -68,7 +59,7 @@ export interface FakeTransaction {
   id: string;
   userId: string;
   categoryMonthId: string;
-  recurringExpenseInstanceId: string | null;
+  recurringExpenseId: string | null;
   amountCents: number;
   date: Date;
   merchant: string | null;
@@ -94,6 +85,13 @@ interface FakeDelegates {
    * against a live database.
    */
   $queryRaw(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
+  /**
+   * No-op — the fake can't reproduce Postgres's transaction-abort semantics
+   * (see withSavepoint's doc comment), so there's nothing for a SAVEPOINT to
+   * protect here. Real safety for withSavepoint's callers is verified
+   * against a live database.
+   */
+  $executeRawUnsafe(query: string, ...values: unknown[]): Promise<number>;
   budgetMonth: FakeBudgetMonthDelegate;
   category: {
     create(args: {
@@ -137,47 +135,34 @@ interface FakeDelegates {
     }): Promise<FakeCategoryMonth>;
     delete(args: { where: { id: string } }): Promise<FakeCategoryMonth>;
   };
-  recurringExpenseTemplate: {
+  recurringExpense: {
     create(args: {
       data: {
         userId: string;
+        monthId: string;
+        categoryId: string;
         name: string;
         amountCents: number;
-        categoryId: string;
         budgetType: FakeRecurringBudgetType;
         dueDay: number;
       };
-    }): Promise<FakeRecurringExpenseTemplate>;
-    findUnique(args: { where: { id: string } }): Promise<FakeRecurringExpenseTemplate | null>;
+    }): Promise<FakeRecurringExpense>;
+    findUnique(args: { where: { id: string } }): Promise<FakeRecurringExpense | null>;
+    findFirst(args: {
+      where: Partial<Pick<FakeRecurringExpense, 'categoryId' | 'monthId'>>;
+    }): Promise<FakeRecurringExpense | null>;
     findMany(args: {
-      where: { userId: string } | { categoryId: string } | { id: { in: string[] } };
-    }): Promise<FakeRecurringExpenseTemplate[]>;
+      where:
+        | Partial<Pick<FakeRecurringExpense, 'userId' | 'categoryId' | 'monthId'>>
+        | { id: { in: string[] } };
+    }): Promise<FakeRecurringExpense[]>;
     update(args: {
       where: { id: string };
       data: Partial<
-        Pick<FakeRecurringExpenseTemplate, 'name' | 'amountCents' | 'categoryId' | 'budgetType' | 'dueDay'>
+        Pick<FakeRecurringExpense, 'name' | 'amountCents' | 'categoryId' | 'budgetType' | 'dueDay'>
       >;
-    }): Promise<FakeRecurringExpenseTemplate>;
-    delete(args: { where: { id: string } }): Promise<FakeRecurringExpenseTemplate>;
-  };
-  recurringExpenseInstance: {
-    create(args: {
-      data: { userId: string; templateId: string; monthId: string; amountCents: number };
-    }): Promise<FakeRecurringExpenseInstance>;
-    findUnique(args: { where: { id: string } }): Promise<FakeRecurringExpenseInstance | null>;
-    findFirst(args: {
-      where: Partial<Pick<FakeRecurringExpenseInstance, 'templateId' | 'monthId'>>;
-    }): Promise<FakeRecurringExpenseInstance | null>;
-    findMany(args: {
-      where:
-        | Partial<Pick<FakeRecurringExpenseInstance, 'userId' | 'templateId' | 'monthId'>>
-        | { id: { in: string[] } };
-    }): Promise<FakeRecurringExpenseInstance[]>;
-    update(args: {
-      where: { id: string };
-      data: Partial<Pick<FakeRecurringExpenseInstance, 'amountCents'>>;
-    }): Promise<FakeRecurringExpenseInstance>;
-    delete(args: { where: { id: string } }): Promise<FakeRecurringExpenseInstance>;
+    }): Promise<FakeRecurringExpense>;
+    delete(args: { where: { id: string } }): Promise<FakeRecurringExpense>;
   };
   transaction: {
     findUnique(args: { where: { id: string } }): Promise<FakeTransaction | null>;
@@ -185,18 +170,18 @@ interface FakeDelegates {
       where:
         | { categoryMonthId: string }
         | { categoryMonthId: { in: string[] } }
-        | { recurringExpenseInstanceId: string };
+        | { recurringExpenseId: string };
     }): Promise<FakeTransaction | null>;
     findMany(args: {
       where:
         | { categoryMonthId: { in: string[] }; userId?: string }
-        | { recurringExpenseInstanceId: { in: string[] } };
+        | { recurringExpenseId: { in: string[] } };
     }): Promise<FakeTransaction[]>;
     create(args: {
       data: {
         userId: string;
         categoryMonthId: string;
-        recurringExpenseInstanceId?: string | null;
+        recurringExpenseId?: string | null;
         amountCents: number;
         date: Date;
         merchant: string | null;
@@ -221,8 +206,7 @@ interface FakePrismaClient extends FakeDelegates {
   categories: FakeCategory[];
   budgetMonths: FakeBudgetMonth[];
   categoryMonths: FakeCategoryMonth[];
-  recurringExpenseTemplates: FakeRecurringExpenseTemplate[];
-  recurringExpenseInstances: FakeRecurringExpenseInstance[];
+  recurringExpenses: FakeRecurringExpense[];
   transactions: FakeTransaction[];
   $transaction<T>(callback: (tx: FakeDelegates) => Promise<T>): Promise<T>;
 }
@@ -244,16 +228,14 @@ export function createFakePrisma(): FakePrismaClient {
   const categories: FakeCategory[] = [];
   const budgetMonths: FakeBudgetMonth[] = [];
   const categoryMonths: FakeCategoryMonth[] = [];
-  const recurringExpenseTemplates: FakeRecurringExpenseTemplate[] = [];
-  const recurringExpenseInstances: FakeRecurringExpenseInstance[] = [];
+  const recurringExpenses: FakeRecurringExpense[] = [];
   const transactions: FakeTransaction[] = [];
 
   const client: FakePrismaClient = {
     categories,
     budgetMonths,
     categoryMonths,
-    recurringExpenseTemplates,
-    recurringExpenseInstances,
+    recurringExpenses,
     transactions,
     async $transaction(callback) {
       // Deep-cloned, not just a shallow array copy — the delegates below
@@ -264,8 +246,7 @@ export function createFakePrisma(): FakePrismaClient {
         categories: categories.map((row) => ({ ...row })),
         budgetMonths: budgetMonths.map((row) => ({ ...row })),
         categoryMonths: categoryMonths.map((row) => ({ ...row })),
-        recurringExpenseTemplates: recurringExpenseTemplates.map((row) => ({ ...row })),
-        recurringExpenseInstances: recurringExpenseInstances.map((row) => ({ ...row })),
+        recurringExpenses: recurringExpenses.map((row) => ({ ...row })),
         transactions: transactions.map((row) => ({ ...row })),
       };
       try {
@@ -277,10 +258,8 @@ export function createFakePrisma(): FakePrismaClient {
         budgetMonths.push(...snapshot.budgetMonths);
         categoryMonths.length = 0;
         categoryMonths.push(...snapshot.categoryMonths);
-        recurringExpenseTemplates.length = 0;
-        recurringExpenseTemplates.push(...snapshot.recurringExpenseTemplates);
-        recurringExpenseInstances.length = 0;
-        recurringExpenseInstances.push(...snapshot.recurringExpenseInstances);
+        recurringExpenses.length = 0;
+        recurringExpenses.push(...snapshot.recurringExpenses);
         transactions.length = 0;
         transactions.push(...snapshot.transactions);
         throw error;
@@ -288,6 +267,9 @@ export function createFakePrisma(): FakePrismaClient {
     },
     async $queryRaw() {
       return [];
+    },
+    async $executeRawUnsafe() {
+      return 0;
     },
     category: {
       async create({ data }) {
@@ -325,11 +307,11 @@ export function createFakePrisma(): FakePrismaClient {
         const index = categories.findIndex((c) => c.id === where.id);
         if (index === -1) throw new Error('not found');
         // Mimics the real onDelete: Restrict FKs from category_month and
-        // recurring_expense_templates — simulates either landing between an
+        // recurring_expenses — simulates either landing between an
         // app-level "no active months" check and this delete.
         if (
           categoryMonths.some((cm) => cm.categoryId === where.id) ||
-          recurringExpenseTemplates.some((t) => t.categoryId === where.id)
+          recurringExpenses.some((re) => re.categoryId === where.id)
         ) {
           throw new FakeForeignKeyConstraintError();
         }
@@ -337,7 +319,7 @@ export function createFakePrisma(): FakePrismaClient {
         return row!;
       },
     },
-    budgetMonth: createFakeBudgetMonthDelegate(budgetMonths, { categoryMonths, recurringExpenseInstances }),
+    budgetMonth: createFakeBudgetMonthDelegate(budgetMonths, { categoryMonths, recurringExpenses }),
     categoryMonth: {
       async findUnique({ where }) {
         if ('categoryId_monthId' in where) {
@@ -406,110 +388,78 @@ export function createFakePrisma(): FakePrismaClient {
         return row!;
       },
     },
-    recurringExpenseTemplate: {
+    recurringExpense: {
       async create({ data }) {
-        const row: FakeRecurringExpenseTemplate = {
+        // Mirrors the real @@unique([monthId, name]) — scoped per month,
+        // not global (see docs/PLAN.md's Data Model note on why: "Rent" can
+        // exist once in October and once in November, just never twice in
+        // the same month).
+        const duplicate = recurringExpenses.find(
+          (re) => re.monthId === data.monthId && re.name === data.name,
+        );
+        if (duplicate) throw new FakeUniqueConstraintError();
+
+        const row: FakeRecurringExpense = {
           id: randomUUID(),
           userId: data.userId,
+          monthId: data.monthId,
+          categoryId: data.categoryId,
           name: data.name,
           amountCents: data.amountCents,
-          categoryId: data.categoryId,
           budgetType: data.budgetType,
           dueDay: data.dueDay,
           createdAt: nextTimestamp(),
           updatedAt: nextTimestamp(),
         };
-        recurringExpenseTemplates.push(row);
+        recurringExpenses.push(row);
         return row;
       },
       async findUnique({ where }) {
-        return recurringExpenseTemplates.find((t) => t.id === where.id) ?? null;
-      },
-      async findMany({ where }) {
-        if ('id' in where) {
-          return recurringExpenseTemplates.filter((t) => where.id.in.includes(t.id));
-        }
-        if ('categoryId' in where) {
-          return recurringExpenseTemplates.filter((t) => t.categoryId === where.categoryId);
-        }
-        return recurringExpenseTemplates.filter((t) => t.userId === where.userId);
-      },
-      async update({ where, data }) {
-        const row = recurringExpenseTemplates.find((t) => t.id === where.id);
-        if (!row) throw new Error('not found');
-        Object.assign(row, data);
-        row.updatedAt = nextTimestamp();
-        return row;
-      },
-      async delete({ where }) {
-        const index = recurringExpenseTemplates.findIndex((t) => t.id === where.id);
-        if (index === -1) throw new Error('not found');
-        // Mimics the real onDelete: Restrict FK from recurring_expense_instances —
-        // simulates an instance landing between an app-level "no active
-        // instances" check and this delete.
-        if (recurringExpenseInstances.some((i) => i.templateId === where.id)) {
-          throw new FakeForeignKeyConstraintError();
-        }
-        const [row] = recurringExpenseTemplates.splice(index, 1);
-        return row!;
-      },
-    },
-    recurringExpenseInstance: {
-      async create({ data }) {
-        const duplicate = recurringExpenseInstances.find(
-          (i) => i.templateId === data.templateId && i.monthId === data.monthId,
-        );
-        if (duplicate) throw new FakeUniqueConstraintError();
-
-        const row: FakeRecurringExpenseInstance = {
-          id: randomUUID(),
-          userId: data.userId,
-          templateId: data.templateId,
-          monthId: data.monthId,
-          amountCents: data.amountCents,
-          createdAt: nextTimestamp(),
-          updatedAt: nextTimestamp(),
-        };
-        recurringExpenseInstances.push(row);
-        return row;
-      },
-      async findUnique({ where }) {
-        return recurringExpenseInstances.find((i) => i.id === where.id) ?? null;
+        return recurringExpenses.find((re) => re.id === where.id) ?? null;
       },
       async findFirst({ where }) {
         return (
-          recurringExpenseInstances.find((i) => {
-            if (where.templateId !== undefined && i.templateId !== where.templateId) return false;
-            if (where.monthId !== undefined && i.monthId !== where.monthId) return false;
+          recurringExpenses.find((re) => {
+            if (where.categoryId !== undefined && re.categoryId !== where.categoryId) return false;
+            if (where.monthId !== undefined && re.monthId !== where.monthId) return false;
             return true;
           }) ?? null
         );
       },
       async findMany({ where }) {
         if ('id' in where) {
-          return recurringExpenseInstances.filter((i) => where.id.in.includes(i.id));
+          return recurringExpenses.filter((re) => where.id.in.includes(re.id));
         }
-        return recurringExpenseInstances.filter((i) => {
-          if (where.userId !== undefined && i.userId !== where.userId) return false;
-          if (where.templateId !== undefined && i.templateId !== where.templateId) return false;
-          if (where.monthId !== undefined && i.monthId !== where.monthId) return false;
+        return recurringExpenses.filter((re) => {
+          if (where.userId !== undefined && re.userId !== where.userId) return false;
+          if (where.categoryId !== undefined && re.categoryId !== where.categoryId) return false;
+          if (where.monthId !== undefined && re.monthId !== where.monthId) return false;
           return true;
         });
       },
       async update({ where, data }) {
-        const row = recurringExpenseInstances.find((i) => i.id === where.id);
+        const row = recurringExpenses.find((re) => re.id === where.id);
         if (!row) throw new Error('not found');
+        // Mirrors the real @@unique([monthId, name]) on UPDATE too, not
+        // just create — a rename can collide just as easily as a fresh
+        // insert.
+        if (data.name !== undefined) {
+          const duplicate = recurringExpenses.find(
+            (re) => re.id !== where.id && re.monthId === row.monthId && re.name === data.name,
+          );
+          if (duplicate) throw new FakeUniqueConstraintError();
+        }
         Object.assign(row, data);
         row.updatedAt = nextTimestamp();
         return row;
       },
       async delete({ where }) {
-        const index = recurringExpenseInstances.findIndex((i) => i.id === where.id);
+        const index = recurringExpenses.findIndex((re) => re.id === where.id);
         if (index === -1) throw new Error('not found');
-        if (transactions.some((t) => t.recurringExpenseInstanceId === where.id)) {
+        if (transactions.some((t) => t.recurringExpenseId === where.id)) {
           throw new FakeForeignKeyConstraintError();
         }
-        const [row] = recurringExpenseInstances.splice(index, 1);
+        const [row] = recurringExpenses.splice(index, 1);
         return row!;
       },
     },
@@ -518,9 +468,9 @@ export function createFakePrisma(): FakePrismaClient {
         return transactions.find((t) => t.id === where.id) ?? null;
       },
       async findFirst({ where }) {
-        if ('recurringExpenseInstanceId' in where) {
+        if ('recurringExpenseId' in where) {
           return (
-            transactions.find((t) => t.recurringExpenseInstanceId === where.recurringExpenseInstanceId) ??
+            transactions.find((t) => t.recurringExpenseId === where.recurringExpenseId) ??
             null
           );
         }
@@ -532,10 +482,10 @@ export function createFakePrisma(): FakePrismaClient {
         return transactions.find((t) => ids.includes(t.categoryMonthId)) ?? null;
       },
       async findMany({ where }) {
-        if ('recurringExpenseInstanceId' in where) {
-          const ids = where.recurringExpenseInstanceId.in;
+        if ('recurringExpenseId' in where) {
+          const ids = where.recurringExpenseId.in;
           return transactions.filter(
-            (t) => t.recurringExpenseInstanceId !== null && ids.includes(t.recurringExpenseInstanceId),
+            (t) => t.recurringExpenseId !== null && ids.includes(t.recurringExpenseId),
           );
         }
         const ids = where.categoryMonthId.in;
@@ -548,7 +498,7 @@ export function createFakePrisma(): FakePrismaClient {
           id: randomUUID(),
           userId: data.userId,
           categoryMonthId: data.categoryMonthId,
-          recurringExpenseInstanceId: data.recurringExpenseInstanceId ?? null,
+          recurringExpenseId: data.recurringExpenseId ?? null,
           amountCents: data.amountCents,
           date: data.date,
           merchant: data.merchant,

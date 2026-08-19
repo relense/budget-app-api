@@ -108,12 +108,12 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
   }
 
   /**
-   * recurringExpenseInstanceId is deliberately not part of TransactionInput
-   * (never client-settable, same reasoning as direction) — only
-   * recurringExpenseInstanceService's markRecurringPaid passes it, as a
-   * third argument, after resolving which instance this payment is for.
+   * recurringExpenseId is deliberately not part of TransactionInput (never
+   * client-settable, same reasoning as direction) — only
+   * recurringExpenseService's markRecurringPaid passes it, as a third
+   * argument, after resolving which recurring expense this payment is for.
    */
-  async function create(userId: string, input: TransactionInput, recurringExpenseInstanceId?: string) {
+  async function create(userId: string, input: TransactionInput, recurringExpenseId?: string) {
     assertValidAmount(input.amountCents);
     assertValidDateFormat(input.date);
 
@@ -124,7 +124,7 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
         data: {
           userId,
           categoryMonthId: input.categoryMonthId,
-          recurringExpenseInstanceId: recurringExpenseInstanceId ?? null,
+          recurringExpenseId: recurringExpenseId ?? null,
           amountCents: input.amountCents,
           date: new Date(input.date),
           merchant: input.merchant ?? null,
@@ -242,10 +242,10 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
   }
 
   /** Batch lookup for DataLoader use — trusts the caller to have already scoped the ids to one user. */
-  async function listByRecurringExpenseInstanceIds(recurringExpenseInstanceIds: string[]) {
-    if (recurringExpenseInstanceIds.length === 0) return [];
+  async function listByRecurringExpenseIds(recurringExpenseIds: string[]) {
+    if (recurringExpenseIds.length === 0) return [];
     return prisma.transaction.findMany({
-      where: { recurringExpenseInstanceId: { in: recurringExpenseInstanceIds } },
+      where: { recurringExpenseId: { in: recurringExpenseIds } },
     });
   }
 
@@ -255,7 +255,7 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
     deleteTransaction,
     list,
     listByCategoryMonthIds,
-    listByRecurringExpenseInstanceIds,
+    listByRecurringExpenseIds,
   };
 }
 
