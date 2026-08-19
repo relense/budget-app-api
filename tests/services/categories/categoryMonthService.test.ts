@@ -327,6 +327,76 @@ describe('addCategoryToMonth', () => {
     expect(onNewBudgetMonth).toHaveBeenCalledWith('user-1', '2026-08', prisma.budgetMonths[0]!.id);
   });
 
+  it('does not re-fire onNewBudgetMonth when adding a second category to an already-existing month (test-auditor gap)', async () => {
+    // A regression that changed `if (monthWasCreated && onNewBudgetMonth)`
+    // to `if (onNewBudgetMonth)` would pass every other test in this file
+    // (none of them wire onNewBudgetMonth for a month that already exists)
+    // — this is the one that would actually catch it.
+    const prisma = createFakePrisma();
+    const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
+    const categoryService = createCategoryService({ prisma: prisma as never });
+    const onNewBudgetMonth = jest.fn(async (_userId: string, _month: string, _monthId: string) => undefined);
+    const categoryMonthService = createCategoryMonthService({
+      prisma: prisma as never,
+      budgetMonthService,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+      onNewBudgetMonth,
+    });
+    const first = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    const second = await categoryService.createCategory('user-1', {
+      name: 'Housing',
+      icon: 'home',
+      color: '#FF0000',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
+    await categoryMonthService.addCategoryToMonth('user-1', first.id, '2026-08', 90000);
+    expect(onNewBudgetMonth).toHaveBeenCalledTimes(1);
+
+    await categoryMonthService.addCategoryToMonth('user-1', second.id, '2026-08', 50000);
+    expect(onNewBudgetMonth).toHaveBeenCalledTimes(1);
+  });
+
+  it('still returns the created categoryMonth even if onNewBudgetMonth throws (pr-reviewer round 2 gap)', async () => {
+    // The doc comment on CategoryMonthServiceDeps says the seed hook is
+    // "never allowed to fail the category-add the user actually asked
+    // for" and the code wraps the call in try/catch to enforce that — this
+    // is the test that actually proves the swallow works, not just that
+    // the try/catch exists.
+    const prisma = createFakePrisma();
+    const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
+    const categoryService = createCategoryService({ prisma: prisma as never });
+    const onNewBudgetMonth = jest.fn(async (_userId: string, _month: string, _monthId: string) => {
+      throw new Error('transient seeding failure');
+    });
+    const categoryMonthService = createCategoryMonthService({
+      prisma: prisma as never,
+      budgetMonthService,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+      onNewBudgetMonth,
+    });
+    const category = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
+    const categoryMonth = await categoryMonthService.addCategoryToMonth('user-1', category.id, '2026-08', 90000);
+
+    expect(categoryMonth.categoryId).toBe(category.id);
+    expect(onNewBudgetMonth).toHaveBeenCalledTimes(1);
+    expect(prisma.categoryMonths).toHaveLength(1);
+  });
+
   it('throws budget_month_not_found when the target BudgetMonth is deleted between the lock and the insert', async () => {
     // Simulates deleteBudgetMonth winning the race for a month with zero
     // category_month rows so far: the BudgetMonth row genuinely no longer

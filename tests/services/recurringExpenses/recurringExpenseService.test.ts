@@ -344,6 +344,52 @@ describe('carry-forward on first touch of a new month', () => {
     const september = await recurringExpenseService.listByMonth('user-1', '2026-09');
     expect(september.map((re) => re.name)).toEqual(['Rent']);
   });
+
+  it('still returns the created row even if seedNewMonth throws partway through (pr-reviewer round 2 gap)', async () => {
+    // createRecurringExpense's own doc comment says seeding "runs after
+    // this transaction commits, not nested inside it" specifically so a
+    // seeding failure can't undo the create the caller asked for — this
+    // proves the try/catch around it actually holds, using a genuine
+    // failure inside seedNewMonth's loop (assertOwnedCategory throwing on
+    // a category that's gone missing) rather than a mock, since
+    // seedNewMonth is an internal closure function, not independently
+    // injectable.
+    const { prisma, categoryService, recurringExpenseService, housing } = await setup();
+    await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+    // A separate category for September's explicit create, so it doesn't
+    // depend on `housing` (which is about to be sabotaged below) — this is
+    // what proves only the *seed* step fails, not the explicit create too.
+    const entertainment = await categoryService.createCategory('user-1', {
+      name: 'Entertainment',
+      icon: 'tv',
+      color: '#0000FF',
+      budgetType: 'want',
+      direction: 'expense',
+    });
+    // Simulates `housing` having gone missing between August's activity and
+    // September's first touch — assertOwnedCategory throws category_not_found
+    // when seedNewMonth tries to re-activate it for the copied-forward Rent.
+    prisma.categories.length = 0;
+    prisma.categories.push(entertainment);
+
+    const created = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Netflix', amountCents: 1500, categoryId: entertainment.id, budgetType: 'want', dueDay: 5 },
+      '2026-09',
+      2000,
+    );
+
+    expect(created.name).toBe('Netflix');
+    const september = await recurringExpenseService.listByMonth('user-1', '2026-09');
+    // Only the explicit create landed — the seed attempt for Rent failed
+    // and was swallowed, not silently partially applied.
+    expect(september.map((re) => re.name)).toEqual(['Netflix']);
+  });
 });
 
 describe('updateRecurringExpense', () => {
@@ -433,6 +479,69 @@ describe('updateRecurringExpense', () => {
       }),
     ).rejects.toMatchObject({ reason: 'month_locked' });
   });
+
+  it('reassigning categoryId auto-activates the new category for the same month, inheriting its budget', async () => {
+    // test-auditor gap: every other test in this file updates without
+    // changing categoryId, so ensureActiveForCategoryOnClient's call inside
+    // updateRecurringExpense (recurringExpenseService.ts:297) had no
+    // coverage at all for the case that actually exercises it.
+    const { prisma, categoryService, categoryMonthService, recurringExpenseService, housing } = await setup();
+    const transport = await categoryService.createCategory('user-1', {
+      name: 'Transport',
+      icon: 'car',
+      color: '#0000FF',
+      budgetType: 'want',
+      direction: 'expense',
+    });
+    await categoryMonthService.addCategoryToMonth('user-1', transport.id, '2026-08', 20000);
+    const created = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+
+    const updated = await recurringExpenseService.updateRecurringExpense('user-1', created.id, {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: transport.id,
+      budgetType: 'need',
+      dueDay: 1,
+    });
+
+    expect(updated.categoryId).toBe(transport.id);
+    // Transport was already active this month (budget 20000) — reassigning
+    // to it must not require/derive a new budget, just reuse the existing
+    // category_month.
+    expect(prisma.categoryMonths.filter((cm) => cm.categoryId === transport.id)).toHaveLength(1);
+  });
+
+  it('reassigning to a category never budgeted anywhere throws category_month_budget_required', async () => {
+    const { categoryService, recurringExpenseService, housing } = await setup();
+    const neverBudgeted = await categoryService.createCategory('user-1', {
+      name: 'Travel',
+      icon: 'plane',
+      color: '#0000FF',
+      budgetType: 'want',
+      direction: 'expense',
+    });
+    const created = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+
+    await expect(
+      recurringExpenseService.updateRecurringExpense('user-1', created.id, {
+        name: 'Rent',
+        amountCents: 80000,
+        categoryId: neverBudgeted.id,
+        budgetType: 'need',
+        dueDay: 1,
+      }),
+    ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
+  });
 });
 
 describe('removeFromMonth', () => {
@@ -462,6 +571,80 @@ describe('removeFromMonth', () => {
       amountCents: 80000,
       date: '2026-08-01',
     });
+
+    await expect(recurringExpenseService.removeFromMonth('user-1', created.id)).rejects.toMatchObject({
+      reason: 'recurring_expense_has_transactions',
+    });
+  });
+
+  it('throws recurring_expense_not_found for another user\'s row', async () => {
+    const { recurringExpenseService, housing } = await setup();
+    const created = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+
+    await expect(recurringExpenseService.removeFromMonth('user-2', created.id)).rejects.toMatchObject({
+      reason: 'recurring_expense_not_found',
+    });
+  });
+
+  it('throws recurring_expense_not_found for a nonexistent id', async () => {
+    const { recurringExpenseService } = await setup();
+
+    await expect(recurringExpenseService.removeFromMonth('user-1', 'missing')).rejects.toMatchObject({
+      reason: 'recurring_expense_not_found',
+    });
+  });
+
+  it('throws month_locked once the month is locked', async () => {
+    const { recurringExpenseService, budgetMonthService, housing } = await setup();
+    const created = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+    await budgetMonthService.lockMonth('user-1', '2026-08');
+
+    await expect(recurringExpenseService.removeFromMonth('user-1', created.id)).rejects.toMatchObject({
+      reason: 'month_locked',
+    });
+  });
+
+  it('throws recurring_expense_has_transactions (not a raw FK error) when a transaction is created between the check and the delete', async () => {
+    const { prisma, recurringExpenseService, housing } = await setup();
+    const created = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+    const categoryMonth = prisma.categoryMonths.find((cm) => cm.categoryId === housing.id)!;
+
+    // Simulate the race: the "no referencing transaction" check reports
+    // none (as if it ran a moment before the concurrent insert), but a
+    // transaction lands in the table right after — the fake's delete()
+    // enforces onDelete: Restrict just like the real DB, same pattern as
+    // categoryMonthService's identical race test.
+    prisma.transaction.findFirst = (async () => {
+      prisma.transactions.push({
+        id: 'tx-race',
+        userId: 'user-1',
+        categoryMonthId: categoryMonth.id,
+        recurringExpenseId: created.id,
+        amountCents: 500,
+        date: new Date('2026-08-05'),
+        merchant: null,
+        note: null,
+        direction: 'expense',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return null;
+    }) as typeof prisma.transaction.findFirst;
 
     await expect(recurringExpenseService.removeFromMonth('user-1', created.id)).rejects.toMatchObject({
       reason: 'recurring_expense_has_transactions',
@@ -510,6 +693,57 @@ describe('markRecurringPaid', () => {
     const transactions = await recurringExpenseService.listByMonth('user-1', '2026-08');
     expect(transactions).toHaveLength(1); // still one recurring expense row
   });
+
+  it('throws recurring_expense_not_found for another user\'s row', async () => {
+    const { recurringExpenseService, housing } = await setup();
+    const created = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+
+    await expect(
+      recurringExpenseService.markRecurringPaid('user-2', created.id, {
+        amountCents: 80000,
+        date: '2026-08-01',
+      }),
+    ).rejects.toMatchObject({ reason: 'recurring_expense_not_found' });
+  });
+
+  it('throws recurring_expense_not_found for a nonexistent id', async () => {
+    const { recurringExpenseService } = await setup();
+
+    await expect(
+      recurringExpenseService.markRecurringPaid('user-1', 'missing', {
+        amountCents: 80000,
+        date: '2026-08-01',
+      }),
+    ).rejects.toMatchObject({ reason: 'recurring_expense_not_found' });
+  });
+
+  it('throws a data-integrity Error if the recurring expense outlived its category_month', async () => {
+    // Not reachable through normal service calls (a category_month can't be
+    // removed while a recurring expense still references it — see
+    // categoryMonthService's category_month_has_recurring_expenses check)
+    // — this proves markRecurringPaid's own defensive check actually fires
+    // if that invariant is ever violated by something else.
+    const { prisma, recurringExpenseService, housing } = await setup();
+    const created = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+    prisma.categoryMonths.length = 0;
+
+    await expect(
+      recurringExpenseService.markRecurringPaid('user-1', created.id, {
+        amountCents: 80000,
+        date: '2026-08-01',
+      }),
+    ).rejects.toThrow(/Data integrity error: CategoryMonth not found/);
+  });
 });
 
 describe('sumCommittedCentsForCategoryMonth', () => {
@@ -539,5 +773,32 @@ describe('sumCommittedCentsForCategoryMonth', () => {
     const sum = await recurringExpenseService.sumCommittedCentsForCategoryMonth(housing.id, 'no-such-month');
 
     expect(sum).toBe(0);
+  });
+});
+
+describe('findManyByIds', () => {
+  it('batches multiple ids into a single lookup and returns the matching rows', async () => {
+    const { recurringExpenseService, housing } = await setup();
+    const rent = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+    const electricity = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Electricity', amountCents: 6479, categoryId: housing.id, budgetType: 'need', dueDay: 10 },
+      '2026-08',
+    );
+
+    const rows = await recurringExpenseService.findManyByIds([rent.id, electricity.id, 'missing']);
+
+    expect(rows.map((row) => row.id).sort()).toEqual([electricity.id, rent.id].sort());
+  });
+
+  it('returns an empty array for an empty id list, without querying', async () => {
+    const { recurringExpenseService } = await setup();
+
+    expect(await recurringExpenseService.findManyByIds([])).toEqual([]);
   });
 });
