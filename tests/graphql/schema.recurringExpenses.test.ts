@@ -39,6 +39,8 @@ function buildContext(userId: string | null): GraphQLContext {
       removeFromMonth: jest.fn(async () => undefined),
       markRecurringPaid: jest.fn(async () => transaction),
     } as never,
+    savingsFundService: {} as never,
+    savingsMovementService: {} as never,
     loaders: {} as never,
   };
 }

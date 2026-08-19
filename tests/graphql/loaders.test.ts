@@ -148,6 +148,42 @@ describe('transactionsByRecurringExpenseId', () => {
   });
 });
 
+describe('savingsFundById', () => {
+  it('resolves to null for an id with no matching row', async () => {
+    const deps = buildDeps({
+      savingsFundService: { findManyByIds: jest.fn(async () => []) } as never,
+      savingsMovementService: {
+        listByFundIds: jest.fn(async () => []),
+        computeCurrentAmountCents: jest.fn(async () => 0),
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    const result = await loaders.savingsFundById.load('missing-fund');
+
+    expect(result).toBeNull();
+  });
+});
+
+describe('currentAmountCentsBySavingsFundId', () => {
+  it('returns 0 without calling computeCurrentAmountCents when the fund id is unknown', async () => {
+    const computeCurrentAmountCents = jest.fn(async () => 0);
+    const deps = buildDeps({
+      savingsFundService: { findManyByIds: jest.fn(async () => []) } as never,
+      savingsMovementService: {
+        listByFundIds: jest.fn(async () => []),
+        computeCurrentAmountCents,
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    const result = await loaders.currentAmountCentsBySavingsFundId.load('missing-fund');
+
+    expect(result).toBe(0);
+    expect(computeCurrentAmountCents).not.toHaveBeenCalled();
+  });
+});
+
 describe('per-request isolation', () => {
   it('does not share a cache across two createGraphQLLoaders() calls', async () => {
     const findManyByIds = jest.fn(async (ids: string[]) => ids.map((id) => ({ id })));

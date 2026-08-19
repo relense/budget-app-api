@@ -17,6 +17,8 @@ import { createCategoryMonthService } from './services/categories/categoryMonthS
 import { createCategoryService } from './services/categories/categoryService.js';
 import { createTransactionService } from './services/categories/transactionService.js';
 import { createRecurringExpenseService } from './services/recurringExpenses/recurringExpenseService.js';
+import { createSavingsFundService } from './services/savings/savingsFundService.js';
+import { createSavingsMovementService } from './services/savings/savingsMovementService.js';
 
 const MAX_QUERY_DEPTH = 10;
 const BEARER_PREFIX = 'Bearer ';
@@ -40,6 +42,8 @@ export interface BuildServerOptions {
     | 'budgetMonth'
     | 'transaction'
     | 'recurringExpense'
+    | 'savingsFund'
+    | 'savingsMovement'
   >;
   authService: Pick<
     AuthService,
@@ -80,12 +84,16 @@ export async function buildServer({
     budgetMonthService,
     onNewBudgetMonth: recurringExpenseService.seedNewMonth,
   });
+  const savingsFundService = createSavingsFundService({ prisma });
+  const savingsMovementService = createSavingsMovementService({ prisma });
   const buildGraphQLContext = createGraphQLContextBuilder({
     categoryService,
     categoryMonthService,
     budgetMonthService,
     transactionService,
     recurringExpenseService,
+    savingsFundService,
+    savingsMovementService,
   });
 
   app.get('/health', async (_request, reply) => {

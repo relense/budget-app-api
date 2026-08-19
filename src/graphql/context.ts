@@ -3,6 +3,8 @@ import type { CategoryMonthService } from '../services/categories/categoryMonthS
 import type { CategoryService } from '../services/categories/categoryService.js';
 import type { TransactionService } from '../services/categories/transactionService.js';
 import type { RecurringExpenseService } from '../services/recurringExpenses/recurringExpenseService.js';
+import type { SavingsFundService } from '../services/savings/savingsFundService.js';
+import type { SavingsMovementService } from '../services/savings/savingsMovementService.js';
 import { createGraphQLLoaders, type GraphQLLoaders } from './loaders.js';
 
 export interface GraphQLContext {
@@ -12,6 +14,8 @@ export interface GraphQLContext {
   budgetMonthService: BudgetMonthService;
   transactionService: TransactionService;
   recurringExpenseService: RecurringExpenseService;
+  savingsFundService: SavingsFundService;
+  savingsMovementService: SavingsMovementService;
   loaders: GraphQLLoaders;
 }
 
@@ -21,6 +25,8 @@ export interface GraphQLContextBuilderDeps {
   budgetMonthService: BudgetMonthService;
   transactionService: TransactionService;
   recurringExpenseService: RecurringExpenseService;
+  savingsFundService: SavingsFundService;
+  savingsMovementService: SavingsMovementService;
 }
 
 /**
@@ -37,6 +43,8 @@ export function createGraphQLContextBuilder(deps: GraphQLContextBuilderDeps) {
       budgetMonthService: deps.budgetMonthService,
       transactionService: deps.transactionService,
       recurringExpenseService: deps.recurringExpenseService,
+      savingsFundService: deps.savingsFundService,
+      savingsMovementService: deps.savingsMovementService,
       loaders: createGraphQLLoaders(deps),
     };
   };

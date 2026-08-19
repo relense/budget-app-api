@@ -175,6 +175,49 @@ Both `createRecurringExpense` and `seedNewMonth` auto-activate categories via
 `ensureActiveForCategoryOnClient` — the one deliberate exception to
 categories' otherwise-always-manual activation rule (see `PLAN.md`).
 
+### `savingsFundService` — `src/services/savings/savingsFundService.ts`
+
+CRUD for savings goals — unrelated to any single month (see `GLOSSARY.md`'s
+"Category vs. Savings Fund"). Hard-deleted, no soft-delete, matching every
+other entity in this app. Deps: `prisma`.
+
+| Function | Does |
+|---|---|
+| `listCatalog(userId)` | Every fund for this user. |
+| `findManyByIds(ids)` | Batch lookup for DataLoader use. |
+| `createSavingsFund(userId, input)` | `initialBalanceCents` required (can be 0); `targetAmountCents`/`monthlyTargetCents`/`startDate`/`endDate` all optional. Rejects a negative amount (`invalid_amount`), a malformed date (`invalid_date`), or `endDate` before `startDate` (`invalid_date_range`). |
+| `updateSavingsFund(userId, id, input)` | Same validation as create, minus `initialBalanceCents` — that field isn't in the input type at all, so it can never change after creation (see the type's own doc comment for why: `currentAmountCents` derives from it, and letting it drift would corrupt every movement already logged against the fund). |
+| `deleteSavingsFund(userId, id)` | Hard delete, blocked while any movement references it (`fund_has_movements`). |
+
+`currentAmountCents` and `achieved` are **not** columns on `SavingsFund` —
+both are computed at read time by `savingsMovementService`, same
+"never let a derived value drift out of sync" reasoning as
+`recurringCommittedCents`/`paidThisMonth`.
+
+### `savingsMovementService` — `src/services/savings/savingsMovementService.ts`
+
+CRUD for deposit/withdrawal events against a fund — same relationship to
+`SavingsFund` as `Transaction` has to `CategoryMonth`. Every write
+(create/update/delete) re-validates that the fund's resulting balance can
+never go negative — "you can't withdraw money you don't have" is a standing
+invariant, not just checked at creation. Deps: `prisma`.
+
+| Function | Does |
+|---|---|
+| `createSavingsMovement(userId, input)` | Validates a positive `amountCents` and a well-formed `date`; rejects a withdrawal (or deposit shrinkage — n/a here) that would leave the fund's balance negative (`insufficient_funds`). |
+| `updateSavingsMovement(userId, id, input)` | `amountCents`/`type`/`date` editable; `fundId` deliberately isn't — a movement can't be reassigned to a different fund (that's really two funds' balances changing atomically, out of scope for now). Recomputes the resulting balance with the edit applied (excluding the row's own prior contribution) and rejects if it would go negative. |
+| `deleteSavingsMovement(userId, id)` | Recomputes the resulting balance with the row's contribution removed entirely and rejects (`insufficient_funds`) if that would go negative — e.g. deleting a deposit a later, still-logged withdrawal already depends on. |
+| `listByFundIds(fundIds)` | Batch lookup for DataLoader use — backs `SavingsFund.movements`. |
+| `computeCurrentAmountCents(fundId, initialBalanceCents)` | `initialBalanceCents` + the net of every movement against the fund (deposits positive, withdrawals negative). Computed fresh, never stored. |
+
+Every write path takes a row lock (`SELECT ... FOR UPDATE` on the fund,
+`lockSavingsFundRow`, same pattern as `lockBudgetMonthRow`) before computing
+the resulting balance — so two concurrent movements against the same fund
+can never both read the same "current balance" and both think an overdraft
+is safe. Verified against real Postgres with a genuine concurrent race (two
+simultaneous withdrawals that are each individually safe but would overdraw
+together) — exactly one succeeds, the balance never goes negative.
+
 ---
 
 ## Supporting libs — `src/lib/`
@@ -230,6 +273,7 @@ Introspection and query-depth (max 10) are limited in production.
 | `categoryMonths` | `month: String!` | `[CategoryMonth!]!` |
 | `transactions` | `month: String!, categoryId: ID` | `[Transaction!]!` |
 | `recurringExpenses` | `month: String!` | `[RecurringExpense!]!` |
+| `savingsFunds` | — | `[SavingsFund!]!` |
 
 **Mutation**
 
@@ -250,14 +294,23 @@ Introspection and query-depth (max 10) are limited in production.
 | `updateRecurringExpense` | `id: ID!, input: RecurringExpenseInput!` | `RecurringExpense!` |
 | `removeRecurringExpenseFromMonth` | `id: ID!` | `Boolean!` |
 | `markRecurringPaid` | `id: ID!, input: MarkRecurringPaidInput!` | `Transaction!` |
+| `createSavingsFund` | `input: CreateSavingsFundInput!` | `SavingsFund!` |
+| `updateSavingsFund` | `id: ID!, input: UpdateSavingsFundInput!` | `SavingsFund!` |
+| `deleteSavingsFund` | `id: ID!` | `Boolean!` |
+| `createSavingsMovement` | `input: CreateSavingsMovementInput!` | `SavingsMovement!` |
+| `updateSavingsMovement` | `id: ID!, input: UpdateSavingsMovementInput!` | `SavingsMovement!` |
+| `deleteSavingsMovement` | `id: ID!` | `Boolean!` |
 
 **Types**: `Category`, `CategoryMonth` (+ computed `recurringCommittedCents`),
 `Transaction` (+ nullable `recurringExpense`), `RecurringExpense` (+ computed
-`paidThisMonth`). Enums: `BudgetType` (`NEED`\|`WANT`\|`SAVINGS`), `Direction`
-(`EXPENSE`\|`INCOME`) — DB stores lowercase, GraphQL exposes upper-case,
-mapped in `enumMapping.ts`.
+`paidThisMonth`), `SavingsFund` (+ computed `currentAmountCents`/`achieved`),
+`SavingsMovement` (+ `fund` back-reference, mirroring `Transaction.categoryMonth`).
+Enums: `BudgetType` (`NEED`\|`WANT`\|`SAVINGS`), `Direction`
+(`EXPENSE`\|`INCOME`), `MovementType` (`DEPOSIT`\|`WITHDRAW`) — DB stores
+lowercase, GraphQL exposes upper-case, mapped in `enumMapping.ts`.
 
 **DataLoaders** (`src/graphql/loaders.ts`, rebuilt fresh per request — never
 cached across requests/users): `categoryById`, `categoryMonthById`,
 `budgetMonthById`, `transactionsByCategoryMonthId`, `recurringExpenseById`,
-`transactionsByRecurringExpenseId`, `recurringCommittedCentsByCategoryMonthId`.
+`transactionsByRecurringExpenseId`, `recurringCommittedCentsByCategoryMonthId`,
+`savingsFundById`, `movementsBySavingsFundId`, `currentAmountCentsBySavingsFundId`.

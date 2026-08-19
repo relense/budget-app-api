@@ -38,8 +38,8 @@ The 50/30/20 classification (Need / Want / Savings) from the original Excel trac
 **direction** (DB: `expense` | `income`)
 Whether money is leaving or entering. Applies to Categories and Transactions. Same DB-lowercase / GraphQL-UPPER_CASE mapping as `budgetType`.
 
-**achieved** (boolean, on Savings Fund)
-True once `currentAmountCents` has reached `targetAmountCents`. Distinct from "fully funded on schedule" — it's just a threshold flag, not a projection.
+**achieved** (boolean, on Savings Fund — computed, not stored)
+True once `currentAmountCents` has reached `targetAmountCents`; always `false` if no `targetAmountCents` is set — no target means there's nothing to have achieved. Distinct from "fully funded on schedule" — it's just a threshold flag, not a projection.
 
 **paidThisMonth** (boolean, on Recurring Expense — computed, not stored)
 `SUM(amountCents)` across every Transaction linked to this row `>= amountCents` — fully covered, not "any payment logged." Split payments (e.g. rent paid in two installments) are allowed and expected; the sum accounts for all of them. Not a raw DB column — see "Notes for Claude Code" in the project plan for why (avoids a scheduled monthly reset job).

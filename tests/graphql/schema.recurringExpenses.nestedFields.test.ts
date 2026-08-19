@@ -87,6 +87,8 @@ function buildContext(overrides: {
         recurringExpenseId: recurringExpense.id,
       })),
     } as never,
+    savingsFundService: {} as never,
+    savingsMovementService: {} as never,
     loaders: createGraphQLLoaders(loaderDeps),
   };
 }
