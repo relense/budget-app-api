@@ -195,7 +195,7 @@ describe('updateTemplate', () => {
       color: '#000',
       budgetType: 'need',
       direction: 'expense',
-        createdAt: new Date(),
+      createdAt: new Date(),
       updatedAt: new Date(),
     });
     const template = await service.createTemplate('user-1', {
@@ -227,7 +227,7 @@ describe('updateTemplate', () => {
       color: '#000',
       budgetType: 'need',
       direction: 'expense',
-        createdAt: new Date(),
+      createdAt: new Date(),
       updatedAt: new Date(),
     });
     const template = await service.createTemplate('user-1', {
@@ -269,7 +269,7 @@ describe('updateTemplate', () => {
       color: '#000',
       budgetType: 'need',
       direction: 'expense',
-        createdAt: new Date(),
+      createdAt: new Date(),
       updatedAt: new Date(),
     });
     const template = await service.createTemplate('user-1', {
@@ -436,7 +436,7 @@ describe('deleteTemplate', () => {
         templateId: template.id,
         monthId: 'month-race',
         amountCents: 80000,
-        createdAt: new Date(),
+      createdAt: new Date(),
         updatedAt: new Date(),
       });
       return null;
