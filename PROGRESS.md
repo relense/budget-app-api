@@ -721,7 +721,24 @@ against the real implementation, not just the reasoning. Corrected
 `addCategoryToMonth`'s comment (previously left this as an open,
 unproven caveat) to state the invariant and point at the tests. No logic
 change — the existing code was already correct. 335 Jest tests total (was
-333). `npm run typecheck`, `npm run lint` both clean.
+333). `npm run typecheck`, `npm run lint` both clean. Opened as **PR #12**
+(`chore/lockmonth-jump-invariant` → `develop`).
+
+`pr-reviewer` on PR #12: **approved**, with a real, non-blocking gap in the
+write-up rather than the code — the induction argument and both new tests
+only walked through `lockMonth` as the mechanism that advances "current,"
+but `deleteBudgetMonth` (removing the current, empty, unlocked row) is the
+*other* way current advances, and hadn't been explicitly traced. Worked
+through it: the same induction holds — a row two months out can only exist
+once current has already reached one month out, regardless of whether that
+advance happened via a lock or a delete of the (by-then-empty) current row
+— but this hadn't been checked or written down anywhere. Broadened the
+`addCategoryToMonth` comment to credit both mechanisms, renamed the test
+`describe` block to `'lockMonth/deleteBudgetMonth cannot skip more than one
+month'`, and replaced the weaker of the two tests (which the reviewer also
+flagged as not actually proving anything test 1 didn't already cover) with
+one that traces the same multi-step sequence through `deleteBudgetMonth`
+instead of `lockMonth`. 336 Jest tests total (was 335).
 
 Next actions, in order:
 1. Wait for human review/approval on `chore/lockmonth-jump-invariant`.
