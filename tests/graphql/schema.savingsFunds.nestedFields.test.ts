@@ -24,7 +24,10 @@ const fund = {
   monthlyTargetCents: null,
 };
 
-function buildContext(overrides: { movementsForFund?: Array<{ id: string; fundId: string; amountCents: number; type: 'deposit' | 'withdraw'; date: Date }> } = {}): GraphQLContext {
+function buildContext(overrides: {
+  movementsForFund?: Array<{ id: string; fundId: string; amountCents: number; type: 'deposit' | 'withdraw'; date: Date }>;
+  savingsFundByIdMissesEveryId?: boolean;
+} = {}): GraphQLContext {
   const movementsForFund = overrides.movementsForFund ?? [
     { id: 'movement-1', fundId: fund.id, amountCents: 20000, type: 'deposit' as const, date: new Date('2026-08-01') },
   ];
@@ -42,7 +45,9 @@ function buildContext(overrides: { movementsForFund?: Array<{ id: string; fundId
       sumCommittedCentsForCategoryMonth: jest.fn(async () => 0),
     },
     savingsFundService: {
-      findManyByIds: jest.fn(async (ids: string[]) => (ids.includes(fund.id) ? [fund] : [])),
+      findManyByIds: jest.fn(async (ids: string[]) =>
+        overrides.savingsFundByIdMissesEveryId ? [] : ids.includes(fund.id) ? [fund] : [],
+      ),
     },
     savingsMovementService: {
       listByFundIds: jest.fn(async (ids: string[]) =>
@@ -117,6 +122,23 @@ describe('SavingsFund nested fields', () => {
     expect(data.savingsFunds[0]?.currentAmountCents).toBe(500000);
     expect(data.savingsFunds[0]?.achieved).toBe(true);
   });
+
+  it('achieved is false without a target, regardless of currentAmountCents (no-target short-circuit)', async () => {
+    const context = buildContext({
+      movementsForFund: [
+        { id: 'movement-1', fundId: fund.id, amountCents: 999999, type: 'deposit', date: new Date('2026-08-01') },
+      ],
+    });
+    (context.savingsFundService.listCatalog as jest.Mock).mockImplementation(async () => [
+      { ...fund, targetAmountCents: null },
+    ]);
+
+    const result = await graphql({ schema, source: query, contextValue: context });
+
+    expect(result.errors).toBeUndefined();
+    const data = result.data as { savingsFunds: Array<{ achieved: boolean }> };
+    expect(data.savingsFunds[0]?.achieved).toBe(false);
+  });
 });
 
 describe('SavingsMovement.fund', () => {
@@ -133,5 +155,17 @@ describe('SavingsMovement.fund', () => {
     expect(result.data).toEqual({
       savingsFunds: [{ movements: [{ id: 'movement-1', fund: { id: 'fund-1', name: 'Wedding' } }] }],
     });
+  });
+
+  it('throws a data integrity error when the movement references a fund the loader cannot find', async () => {
+    const context = buildContext({ savingsFundByIdMissesEveryId: true });
+
+    const result = await graphql({
+      schema,
+      source: '{ savingsFunds { movements { id fund { id } } } }',
+      contextValue: context,
+    });
+
+    expect(result.errors?.[0]?.message).toMatch(/Data integrity error: SavingsFund fund-1 not found/);
   });
 });

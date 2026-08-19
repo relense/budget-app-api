@@ -5,6 +5,8 @@ import { CategoryMonthServiceError } from '../../src/services/categories/categor
 import { CategoryServiceError } from '../../src/services/categories/categoryService.js';
 import { TransactionServiceError } from '../../src/services/categories/transactionService.js';
 import { RecurringExpenseServiceError } from '../../src/services/recurringExpenses/recurringExpenseService.js';
+import { SavingsFundServiceError } from '../../src/services/savings/savingsFundService.js';
+import { SavingsMovementServiceError } from '../../src/services/savings/savingsMovementService.js';
 import { requireUserId, toGraphQLError } from '../../src/graphql/errors.js';
 
 describe('requireUserId', () => {
@@ -46,6 +48,12 @@ describe('toGraphQLError', () => {
       'RecurringExpenseServiceError',
       new RecurringExpenseServiceError('recurring_expense_not_found'),
       'RECURRING_EXPENSE_NOT_FOUND',
+    ],
+    ['SavingsFundServiceError', new SavingsFundServiceError('fund_has_movements'), 'FUND_HAS_MOVEMENTS'],
+    [
+      'SavingsMovementServiceError',
+      new SavingsMovementServiceError('insufficient_funds'),
+      'INSUFFICIENT_FUNDS',
     ],
   ])('maps %s to a GraphQLError with extensions.code %s', (_label, error, expectedCode) => {
     expect(() => toGraphQLError(error)).toThrow(GraphQLError);

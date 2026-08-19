@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { createSavingsFundService } from '../../../src/services/savings/savingsFundService.js';
 import { createSavingsMovementService } from '../../../src/services/savings/savingsMovementService.js';
 import { createFakePrisma } from './testFakePrisma.js';
@@ -186,6 +186,35 @@ describe('updateSavingsMovement', () => {
     expect(await savingsMovementService.computeCurrentAmountCents(fund.id, 10000)).toBe(17000);
   });
 
+  it('allows an edit that shrinks the balance to exactly zero', async () => {
+    const { savingsMovementService, savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 0,
+    });
+    const deposit = await savingsMovementService.createSavingsMovement('user-1', {
+      fundId: fund.id,
+      amountCents: 5000,
+      type: 'deposit',
+      date: '2026-08-01',
+    });
+    await savingsMovementService.createSavingsMovement('user-1', {
+      fundId: fund.id,
+      amountCents: 3000,
+      type: 'withdraw',
+      date: '2026-08-05',
+    });
+
+    // Shrinking the deposit to 3000 leaves exactly: 3000 - 3000 = 0.
+    await savingsMovementService.updateSavingsMovement('user-1', deposit.id, {
+      amountCents: 3000,
+      type: 'deposit',
+      date: '2026-08-01',
+    });
+
+    expect(await savingsMovementService.computeCurrentAmountCents(fund.id, 0)).toBe(0);
+  });
+
   it('rejects an edit that would push the balance negative', async () => {
     const { savingsMovementService, savingsFundService } = setup();
     const fund = await savingsFundService.createSavingsFund('user-1', {
@@ -306,6 +335,37 @@ describe('deleteSavingsMovement', () => {
     expect(await savingsMovementService.computeCurrentAmountCents(fund.id, 0)).toBe(0);
   });
 
+  it('allows deleting a movement that leaves the balance at exactly zero', async () => {
+    const { savingsMovementService, savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 0,
+    });
+    await savingsMovementService.createSavingsMovement('user-1', {
+      fundId: fund.id,
+      amountCents: 3000,
+      type: 'deposit',
+      date: '2026-08-01',
+    });
+    await savingsMovementService.createSavingsMovement('user-1', {
+      fundId: fund.id,
+      amountCents: 3000,
+      type: 'withdraw',
+      date: '2026-08-05',
+    });
+    const extraDeposit = await savingsMovementService.createSavingsMovement('user-1', {
+      fundId: fund.id,
+      amountCents: 2000,
+      type: 'deposit',
+      date: '2026-08-10',
+    });
+
+    // Deleting the extra deposit leaves exactly: 3000 - 3000 = 0.
+    await savingsMovementService.deleteSavingsMovement('user-1', extraDeposit.id);
+
+    expect(await savingsMovementService.computeCurrentAmountCents(fund.id, 0)).toBe(0);
+  });
+
   it('rejects deleting a deposit that a later withdrawal already depends on', async () => {
     const { savingsMovementService, savingsFundService } = setup();
     const fund = await savingsFundService.createSavingsFund('user-1', {
@@ -404,6 +464,41 @@ describe('listByFundIds', () => {
     const { savingsMovementService } = setup();
 
     expect(await savingsMovementService.listByFundIds([])).toEqual([]);
+  });
+});
+
+describe('row locking', () => {
+  it('locks the fund row (via $queryRaw ... FOR UPDATE) on every write path', async () => {
+    const { prisma, savingsMovementService, savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 10000,
+    });
+    const queryRawSpy = jest.fn(prisma.$queryRaw);
+    prisma.$queryRaw = queryRawSpy as typeof prisma.$queryRaw;
+
+    const movement = await savingsMovementService.createSavingsMovement('user-1', {
+      fundId: fund.id,
+      amountCents: 1000,
+      type: 'deposit',
+      date: '2026-08-01',
+    });
+    expect(queryRawSpy).toHaveBeenCalledTimes(1);
+
+    await savingsMovementService.updateSavingsMovement('user-1', movement.id, {
+      amountCents: 1500,
+      type: 'deposit',
+      date: '2026-08-01',
+    });
+    expect(queryRawSpy).toHaveBeenCalledTimes(2);
+
+    await savingsMovementService.deleteSavingsMovement('user-1', movement.id);
+    expect(queryRawSpy).toHaveBeenCalledTimes(3);
+
+    for (const call of queryRawSpy.mock.calls) {
+      const [strings] = call as [TemplateStringsArray, ...unknown[]];
+      expect(strings.join('')).toContain('FOR UPDATE');
+    }
   });
 });
 

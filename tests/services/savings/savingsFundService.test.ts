@@ -84,6 +84,30 @@ describe('createSavingsFund', () => {
       }),
     ).rejects.toMatchObject({ reason: 'invalid_date_range' });
   });
+
+  it('rejects a negative monthlyTargetCents', async () => {
+    const { savingsFundService } = setup();
+
+    await expect(
+      savingsFundService.createSavingsFund('user-1', {
+        name: 'X',
+        initialBalanceCents: 0,
+        monthlyTargetCents: -1,
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_amount' });
+  });
+
+  it('rejects a malformed endDate given alone (no startDate)', async () => {
+    const { savingsFundService } = setup();
+
+    await expect(
+      savingsFundService.createSavingsFund('user-1', {
+        name: 'X',
+        initialBalanceCents: 0,
+        endDate: 'not-a-date',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
+  });
 });
 
 describe('updateSavingsFund', () => {
@@ -134,6 +158,34 @@ describe('updateSavingsFund', () => {
     await expect(
       savingsFundService.updateSavingsFund('user-1', fund.id, { name: 'X', targetAmountCents: -1 }),
     ).rejects.toMatchObject({ reason: 'invalid_amount' });
+  });
+
+  it('rejects a malformed startDate on update', async () => {
+    const { savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 0,
+    });
+
+    await expect(
+      savingsFundService.updateSavingsFund('user-1', fund.id, { name: 'X', startDate: 'not-a-date' }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
+  });
+
+  it('rejects an endDate before startDate on update', async () => {
+    const { savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 0,
+    });
+
+    await expect(
+      savingsFundService.updateSavingsFund('user-1', fund.id, {
+        name: 'X',
+        startDate: '2026-06-01',
+        endDate: '2026-01-01',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_date_range' });
   });
 });
 

@@ -271,4 +271,15 @@ describe('Mutation.deleteSavingsMovement', () => {
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
     expect(context.savingsMovementService.deleteSavingsMovement).not.toHaveBeenCalled();
   });
+
+  it('maps movement_not_found to a GraphQLError', async () => {
+    const context = buildContext('user-1');
+    (context.savingsMovementService.deleteSavingsMovement as jest.Mock).mockImplementation(async () => {
+      throw new SavingsMovementServiceError('movement_not_found');
+    });
+
+    const result = await run(mutation, context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('MOVEMENT_NOT_FOUND');
+  });
 });
