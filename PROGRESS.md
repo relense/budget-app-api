@@ -657,35 +657,42 @@ call sites (a rejected month, past or future, never reaches
 non-blocking round-1 findings were fixed, and confirmed the adjusted/new
 tests actually exercise what they claim. One further non-blocking
 observation, addressed by tightening a comment rather than the logic
-itself (out of scope for this PR — it concerns `lockMonth`, which lives on
-the still-unmerged `feature/month-locking`): the TOCTOU-is-always-safe
-claim in `addCategoryToMonth`'s comment was technically too strong.
-`lockMonth` can advance "current" by more than one month in a single jump
-if a user has a non-contiguous gap of pre-provisioned unlocked months
-(e.g. `2026-08` current, `2026-09` never provisioned, `2026-10` already
-pre-provisioned unlocked — locking `2026-08` jumps current straight to
-`2026-10`). A call racing in the middle of that jump, having captured
-`current = 2026-08` just before it committed, could in principle still let
-`2026-09` through even though a fully up-to-date check would have rejected
-it — a milder, race-and-precondition-gated echo of the original hijack.
-Comment corrected to state this precisely instead of claiming an absolute
-guarantee; the underlying question (should `lockMonth`'s current-advancement
-itself be bounded to rule this out?) is left as a follow-up, tracked below,
-since fixing it means touching `feature/month-locking`'s code, not this
-branch's. `npm run typecheck`, `npm test` (333 passing), `npm run lint`,
-`npm run build` all clean.
+itself (out of scope for this PR — it concerns `lockMonth`): the
+TOCTOU-is-always-safe claim in `addCategoryToMonth`'s comment was
+technically too strong. `lockMonth` can advance "current" by more than one
+month in a single jump if a user has a non-contiguous gap of
+pre-provisioned unlocked months (e.g. `2026-08` current, `2026-09` never
+provisioned, `2026-10` already pre-provisioned unlocked — locking `2026-08`
+jumps current straight to `2026-10`). A call racing in the middle of that
+jump, having captured `current = 2026-08` just before it committed, could
+in principle still let `2026-09` through even though a fully up-to-date
+check would have rejected it — a milder, race-and-precondition-gated echo
+of the original hijack. Comment corrected to state this precisely instead
+of claiming an absolute guarantee; the underlying question (should
+`lockMonth`'s current-advancement itself be bounded to rule this out?) is
+left as a follow-up, tracked below. `npm run typecheck`, `npm test` (333
+passing), `npm run lint`, `npm run build` all clean.
+
+Discovered, while pushing this branch, that `feature/month-locking` (PR #8)
+had already been merged into `develop` (along with `develop` → `main`, both
+done by the human outside this session, between conversations) — this
+session's local repo still had a stale cached remote-tracking ref from
+before that happened. Confirmed via `git merge-base --is-ancestor` that the
+merge was a regular (non-squash) merge, so `feature/planning-horizon`'s
+history lined up cleanly against `develop` with no rebase needed — just
+retargeted the PR's base from the (now-deleted) `feature/month-locking` to
+`develop` directly. Opened as **PR #10** (`feature/planning-horizon` →
+`develop`), open, both `pr-reviewer` rounds resolved (round 2 approved),
+`test-auditor` deliberately skipped this round, awaiting human review.
 
 Next actions, in order:
-1. Wait for human review/approval on `feature/month-locking`.
-2. Open a PR for `feature/planning-horizon` with `--base feature/month-locking`
-   (stacked, since it depends on that branch's `findCurrentMonthOnClient`) —
-   no `test-auditor` pass this round per user instruction.
-3. Follow-up, not blocking: decide whether `lockMonth` (on
-   `feature/month-locking`) should bound how far it can advance "current"
-   in one jump, per the narrow TOCTOU observation above.
-4. Still to design/build: recurring-template edit propagation ("apply to
+1. Wait for human review/approval on PR #10.
+2. Follow-up, not blocking: decide whether `lockMonth` should bound how far
+   it can advance "current" in one jump, per the narrow TOCTOU observation
+   above.
+3. Still to design/build: recurring-template edit propagation ("apply to
    future months too?" on `updateRecurringExpenseInstance`).
-5. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
+4. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
    should check for a referencing `recurring_expense_instance`, not just
    `transaction`, before deleting a `category_month` row.
 
@@ -789,12 +796,19 @@ Next actions, in order:
       — `markRecurringPaid` derives the resulting transaction's `direction`
       from the category, so an income category would otherwise silently
       produce an income transaction from a "recurring expense" payment. →
-      PR #4 (`feature/recurring-expenses` → `develop`), open, reviewed
-      (4 rounds, approved on round 4), awaiting human review.
-- [ ] **5. Month lifecycle** — carry-forward (with budget-inheritance for
-      `category_month`), month locking + auto-lock cascade for empty months,
-      recurring-template edit propagation, soft-delete + undo for the
-      entities that still have it. Depends on steps 3 and 4 both being done.
+      PR #4 (`feature/recurring-expenses` → `develop`), merged.
+- [ ] **5. Month lifecycle** — in progress, three increments merged/in
+      review so far: budget-inheritance on category/recurring-expense
+      activation (PR #7, merged), `lockMonth`/`deleteBudgetMonth`/
+      `Query.currentMonth` (PR #8, merged), server-side planning-horizon
+      enforcement (PR #10, open). Carry-forward turned out to need no
+      dedicated mutation (reuses `addCategoryToMonth`/`addRecurringExpenseToMonth`'s
+      existing budget-omit-to-inherit behavior) and auto-lock cascade was
+      dropped entirely — both revised out of the original scope described
+      here during the step's kickoff interview, see `plan.md`'s Month
+      Lifecycle section for the actual design. Still outstanding:
+      recurring-template edit propagation ("apply to future months too?"),
+      soft-delete + undo for the entities that still have it.
 - [ ] **6. Savings funds + movements** — CRUD + `addSavingsMovement` updating
       `currentAmountCents`; DataLoader for `SavingsFund.movements`.
 - [ ] **7. Income sources** — CRUD; `income_sources.month_id` already
