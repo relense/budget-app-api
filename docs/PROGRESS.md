@@ -983,8 +983,36 @@ including a dedicated concurrent-race test against real Postgres (two
 withdrawals each individually safe but together overdrawing) — exactly one
 succeeds, the balance never goes negative.
 
+`pr-reviewer` on `feature/savings-funds`, round 1: found one real, if
+narrow, gap — `updateSavingsMovement`/`deleteSavingsMovement` fetched the
+target movement before opening their transaction, then never re-verified
+it still existed once inside the fund's row lock. A concurrent update/delete
+of the same movement (double-click, or a race between two devices) could
+let the second caller's write hit an already-gone row, surfacing Prisma's
+raw P2025 instead of the typed `movement_not_found` every other not-found
+path produces. Explicitly not the PR #14 transaction-poisoning bug —
+confirmed nothing caught the error and kept querying the same `tx`
+afterward, it just propagated and rolled back cleanly. Fixed by mapping
+P2025 to `movement_not_found`, same "pre-check plus DB-level backstop"
+pattern as `deleteSavingsFund`'s P2003 catch elsewhere in this file. Two
+nitpicks also addressed: `schema.prisma`/`PLAN.md` now document why
+`savings_movements`' index is `(userId, fundId)` rather than the
+`(userId, date)` `PLAN.md`'s general guidance originally suggested
+(deliberate — matches the real query patterns). Two other round-1
+observations turned out to be non-issues on re-check (`docs/SERVICES.md`
+already listed `computeCurrentAmountCents`; `MovementType` runtime
+validation has no caller to validate against today). 363 Jest tests total
+(was 361, +2 regression tests simulating the race). Re-verified against
+real Postgres with a genuine concurrent double-delete.
+
+Round 2 (verifying the fix): **approved**. Confirmed the catch is scoped
+correctly (doesn't mask `insufficient_funds` or swallow unrelated errors),
+no further `tx` query happens after the catch, and both regression tests
+genuinely exercise the race rather than a mocked shortcut.
+
 Next actions, in order:
-1. Wait for human review on `feature/savings-funds`.
+1. Wait for human review/merge on `feature/savings-funds`
+   (`pr-reviewer`-approved as of round 2).
 2. Small tracked follow-up, not blocking: add logging on the
    `onNewBudgetMonth`/`seedNewMonth` swallow path (recurring-expenses
    step) once this service layer has a logger dependency to hang it on
@@ -1125,7 +1153,8 @@ Next actions, in order:
       (not a single `addSavingsMovement` — movements are editable/deletable)
       all re-validate the fund's resulting balance under a real row lock,
       verified against real Postgres with a genuine concurrent-overdraft
-      race. Awaiting review on `feature/savings-funds`.
+      race. `pr-reviewer`-approved as of round 2, awaiting human review/merge
+      on `feature/savings-funds`.
 - [ ] **7. Income sources** — CRUD; `income_sources.month_id` already
       designed to reference `budget_months`, per step 3's month-modeling
       decision.
