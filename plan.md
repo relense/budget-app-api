@@ -241,11 +241,13 @@ A significant piece of design beyond the original flat data model above — reso
 
 **Soft delete + undo — revised, now scoped down to only the entities that haven't been built yet.** The original design here was: nothing hard-deleted, every table gets `deleted_at`, undo clears it within a short window (10min-1h, TBD), bulk actions share a `delete_batch_id` so undo restores the whole batch. `category_month` and `transactions` broke from this first (step 3), for referential-integrity reasons (a soft-deleted transaction could otherwise dangle on a hard-deleted `category_month`). During step 4's review, `categories` and `recurring_expense_templates` — until then still soft-deleted — dropped it too, on an explicit user call: either something can be deleted (nothing references it, ever, past or future) or it's permanently blocked, no third "soft-deleted but still around" state, anywhere. As of step 4, every entity that exists in the schema so far is hard-deleted, no undo. `savings_funds`/`savings_movements`/`income_sources` (steps 6-7, not yet built) still carry the original soft-delete-and-undo design below on paper, but given the direction taken here, re-grill that design when those steps actually get interviewed rather than assuming it stands as originally written.
 
-**Carry-forward, on locking a month.** When a month gets locked (below), the user is shown a checkbox list of the just-locked month's active categories and recurring expenses and picks which ones carry into the new month; anything left unchecked simply isn't activated there. **Planning horizon is capped at one month ahead** — a user can never activate/plan further out than the immediate next month. Planning further ahead than that is a candidate future paid-tier feature, not phase 1.
+> **Revised during Build Order step 5's kickoff interview: no auto-lock cascade, no automatic next-month creation, carry-forward isn't its own mechanism.** The three paragraphs below describe the original design; this callout is the actual decision the backend was built against — kept side by side rather than silently rewritten, since the reasoning matters. Explicit user call: locking a month was overcomplicating an edge case that "will only happen if a user creates more months for planning and doesn't do anything with them" — most of the time it won't happen at all. Simplified to: **`lockMonth` does exactly one thing** — locks the target month (which must be the current one — the earliest unlocked), nothing else. No cascade walk, no carry-forward parameter, no automatically-created next month. If a user goes away for a while, "current month" (derived, see below) just naturally falls back to today's real calendar month once nothing unlocked stands in the way — no cascade logic needed to make that happen. If they *did* pre-provision ahead and it's sitting there empty once its predecessor locks, that's on them to resolve explicitly — lock it too (even empty), or **`deleteBudgetMonth`** it (new capability this revision introduces: hard-delete an empty, unlocked month — same "remove everything referencing it first, then the empty shell becomes deletable" pattern `deleteCategory`/`deleteTemplate` already use, blocked by the same `onDelete: Restrict` FK category_month/recurring_expense_instance already have to `budget_months`). **Carry-forward turned out to need no dedicated mutation at all**: it's the existing `addCategoryToMonth`/`addRecurringExpenseToMonth` mutations (already support omitting the budget to auto-inherit, see the Data Model's `category_month` entry) called once per item the user checks, against whichever month they're planning — reusing the existing `categoryMonths(month)`/`recurringExpenseInstances(month)` queries against the previous month to know what to offer as checkboxes, all pre-checked, uncheck to opt out. This is deliberately the *same* flow whether the user is proactively planning ahead or just locked the month before and is starting the new current one — one mechanism, triggered at two different moments, never an automatic side effect of locking (so it can never silently clobber a month the user already set up differently). Planning horizon (one month ahead, never further) enforced server-side, not just a UI affordance — still open as of this note, see PROGRESS.md.
 
-**Month locking.** Months don't close automatically by calendar date. The month a user sees is always the earliest one, in chronological order, that isn't locked yet (see `budget_months` in the Data Model above — there's no separate "current month" pointer, it's derived). If that month is calendar-wise already in the past, the UI shows a banner: *"Lock month and create new"* (or *"Lock and show current month"* if a later month has already been pre-created — e.g. a paid-tier user who planned further ahead). This gives the user time to add/fix missing transactions from the ended month before it closes. Locking is always explicit — a user can keep editing an "old" month indefinitely, even if the calendar has moved on, until they choose to lock it. Locking a month: makes it immutable (see the referential-integrity callout above), runs the carry-forward flow described above, and makes the next month the new "current" one.
+**Carry-forward, on locking a month — original design, superseded above.** When a month gets locked (below), the user is shown a checkbox list of the just-locked month's active categories and recurring expenses and picks which ones carry into the new month; anything left unchecked simply isn't activated there. **Planning horizon is capped at one month ahead** — a user can never activate/plan further out than the immediate next month. Planning further ahead than that is a candidate future paid-tier feature, not phase 1.
 
-**Auto-lock cascade for empty months.** If a user hasn't opened the app in a while, there can be several unlocked months stacked up between the last locked one and the real current month. They're shown the oldest of these first for explicit review/lock. Once that one's locked, the system walks forward through the rest automatically: any month with zero transactions gets auto-locked without prompting (nothing to review), and the walk stops — requiring explicit review again — the moment it hits a month that actually has data, or the real current month, whichever comes first. Exact definition of "empty" (transactions only, or also untouched recurring instances/activations) — decide precisely during this Build Order step.
+**Month locking.** Months don't close automatically by calendar date. The month a user sees is always the earliest one, in chronological order, that isn't locked yet (see `budget_months` in the Data Model above — there's no separate "current month" pointer, it's derived). If that month is calendar-wise already in the past, the UI shows a banner: *"Lock month and create new"* (or *"Lock and show current month"* if a later month has already been pre-created — e.g. a paid-tier user who planned further ahead). This gives the user time to add/fix missing transactions from the ended month before it closes. Locking is always explicit — a user can keep editing an "old" month indefinitely, even if the calendar has moved on, until they choose to lock it.
+
+**Auto-lock cascade for empty months — dropped, see the callout above.** Original design: if a user hasn't opened the app in a while, there can be several unlocked months stacked up between the last locked one and the real current month. They're shown the oldest of these first for explicit review/lock. Once that one's locked, the system walks forward through the rest automatically: any month with zero transactions gets auto-locked without prompting (nothing to review), and the walk stops — requiring explicit review again — the moment it hits a month that actually has data, or the real current month, whichever comes first.
 
 ## API Schema (Phase 1, GraphQL)
 
@@ -272,6 +274,15 @@ enum Direction {
 enum MovementType {
   DEPOSIT
   WITHDRAW
+}
+
+type BudgetMonth {
+  month: String! # "YYYY-MM"
+  locked: Boolean!
+  # No id field: nothing else in this schema references a BudgetMonth by id
+  # — every other type denormalizes the month string directly, and
+  # currentMonth can represent a not-yet-persisted month (see Query above),
+  # which wouldn't have a real id to expose anyway.
 }
 
 type Category {
@@ -408,6 +419,7 @@ input IncomeSourceInput {
 }
 
 type Query {
+  currentMonth: BudgetMonth! # derived, never persisted by this query — earliest unlocked BudgetMonth, or today's real calendar month if none exists
   categories: [Category!]! # full catalog, every category regardless of month — the "reuse an existing category" picker
   categoryMonths(month: String!): [CategoryMonth!]! # this is "which categories are active this month" — a month has an array of categories, not the reverse
   # month filters everywhere in this schema use "YYYY-MM" — same format as IncomeSource.month.
@@ -420,6 +432,9 @@ type Query {
 }
 
 type Mutation {
+  lockMonth(month: String!): BudgetMonth! # must be the current (earliest unlocked) month; no carry-forward, no next-month creation — those are separate client-driven actions (see Month Lifecycle above)
+  deleteBudgetMonth(month: String!): Boolean! # hard delete an empty unlocked month; blocked while any category_month references it
+
   createCategory(input: CategoryInput!): Category! # pure catalog insert, no activation
   updateCategory(id: ID!, input: CategoryInput!): Category! # blocks a direction change if any transaction references this category
   deleteCategory(id: ID!): Boolean! # blocked unless inactive in every month, past and future

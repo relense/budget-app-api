@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   createFakeBudgetMonthDelegate,
+  FakeForeignKeyConstraintError,
   type FakeBudgetMonth,
   type FakeBudgetMonthDelegate,
 } from '../budgetMonths/testFakePrisma.js';
@@ -82,14 +83,6 @@ export class FakeUniqueConstraintError extends Error {
   readonly code = 'P2002';
   constructor() {
     super('Unique constraint failed');
-  }
-}
-
-/** Mimics the shape of Prisma's PrismaClientKnownRequestError for P2003 (foreign key constraint). */
-export class FakeForeignKeyConstraintError extends Error {
-  readonly code = 'P2003';
-  constructor() {
-    super('Foreign key constraint failed');
   }
 }
 
@@ -344,7 +337,7 @@ export function createFakePrisma(): FakePrismaClient {
         return row!;
       },
     },
-    budgetMonth: createFakeBudgetMonthDelegate(budgetMonths),
+    budgetMonth: createFakeBudgetMonthDelegate(budgetMonths, { categoryMonths, recurringExpenseInstances }),
     categoryMonth: {
       async findUnique({ where }) {
         if ('categoryId_monthId' in where) {

@@ -10,6 +10,7 @@ export interface GraphQLContext {
   userId: string | null;
   categoryService: CategoryService;
   categoryMonthService: CategoryMonthService;
+  budgetMonthService: BudgetMonthService;
   transactionService: TransactionService;
   templateService: RecurringExpenseTemplateService;
   instanceService: RecurringExpenseInstanceService;
@@ -36,6 +37,7 @@ export function createGraphQLContextBuilder(deps: GraphQLContextBuilderDeps) {
       userId,
       categoryService: deps.categoryService,
       categoryMonthService: deps.categoryMonthService,
+      budgetMonthService: deps.budgetMonthService,
       transactionService: deps.transactionService,
       templateService: deps.templateService,
       instanceService: deps.instanceService,

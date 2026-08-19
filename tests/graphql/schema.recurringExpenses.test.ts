@@ -37,6 +37,7 @@ function buildContext(userId: string | null): GraphQLContext {
     userId,
     categoryService: {} as never,
     categoryMonthService: {} as never,
+    budgetMonthService: {} as never,
     transactionService: {} as never,
     templateService: {
       listCatalog: jest.fn(async () => [template]),

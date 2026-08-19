@@ -37,13 +37,17 @@ refresh tokens, log out. Deps: `prisma`, `emailService`, `jwtSecret`.
 ### `budgetMonthService` — `src/services/budgetMonths/budgetMonthService.ts`
 
 Resolves `"YYYY-MM"` strings to the real per-user `BudgetMonth` row every
-other month-scoped table references via `month_id`. Deps: `prisma`.
+other month-scoped table references via `month_id`; owns month locking.
+Deps: `prisma`, `now?` (defaults to `() => new Date()`, injectable for tests).
 
 | Function | Does |
 |---|---|
 | `resolveBudgetMonthId(userId, month)` | Upserts and returns the row's id — creates it if it's the first time this user has touched that month. Callers must validate the month format first. |
 | `findBudgetMonthId(userId, month)` | Read-only lookup, returns `null` if it doesn't exist yet — never creates a row as a side effect of a query. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
+| `findCurrentMonth(userId)` | Derived, never persisted: the earliest unlocked `BudgetMonth` row for this user, or today's real calendar month if none exists (brand new, or every row is locked with nothing planned past it). No auto-lock cascade, no automatic next-month creation — both deliberately dropped in favor of simpler, always-explicit user actions (see `PROGRESS.md`). |
+| `lockMonth(userId, month)` | Locks the target month permanently — must be the current (earliest unlocked) month, or throws `budget_month_not_current`. No carry-forward or next-month creation here; the client drives those separately afterward if the user wants them, using the same `addCategoryToMonth`/`addRecurringExpenseToMonth` mutations (budget auto-inherits when omitted). |
+| `deleteBudgetMonth(userId, month)` | Hard delete for an unlocked month the user pre-provisioned but decided not to use. Blocked while any `category_month` references it — same "remove what's in it first" pattern as `deleteCategory`/`deleteTemplate`. |
 
 Also exports **`resolveBudgetMonthId(client, userId, month)`** standalone
 (client-parameterized) — lets a caller with its own open transaction run
@@ -202,6 +206,7 @@ Introspection and query-depth (max 10) are limited in production.
 | Field | Args | Returns |
 |---|---|---|
 | `ping` | — | `String!` (no auth required) |
+| `currentMonth` | — | `BudgetMonth!` |
 | `categories` | — | `[Category!]!` |
 | `categoryMonths` | `month: String!` | `[CategoryMonth!]!` |
 | `transactions` | `month: String!, categoryId: ID` | `[Transaction!]!` |
@@ -212,6 +217,8 @@ Introspection and query-depth (max 10) are limited in production.
 
 | Field | Args | Returns |
 |---|---|---|
+| `lockMonth` | `month: String!` | `BudgetMonth!` |
+| `deleteBudgetMonth` | `month: String!` | `Boolean!` |
 | `createCategory` | `input: CategoryInput!` | `Category!` |
 | `updateCategory` | `id: ID!, input: CategoryInput!` | `Category!` |
 | `deleteCategory` | `id: ID!` | `Boolean!` |

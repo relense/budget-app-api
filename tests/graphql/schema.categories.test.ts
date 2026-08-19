@@ -17,6 +17,7 @@ function buildContext(userId: string | null): GraphQLContext {
     categoryMonthService: {
       addCategoryToMonth: jest.fn(async () => categoryMonth),
     } as never,
+    budgetMonthService: {} as never,
     transactionService: {} as never,
     templateService: {} as never,
     instanceService: {} as never,

@@ -288,16 +288,75 @@ meaningfully different (required → optional), so it's a good time to
 start closing that gap rather than a place to widen it further. 283 Jest
 tests total (was 280).
 
+PR #7 (`feature/month-lifecycle`, budget-inheritance increment) is
+**merged into `develop`.**
+
+Second increment, on a fresh `feature/month-locking` branch (the old
+`feature/month-lifecycle` name was reused once already and deleted after
+merging, so this one's under its own name). Before writing any of it,
+resumed the interview on the three still-open questions and it reshaped
+the design significantly — **the auto-lock cascade and automatic
+next-month creation are both dropped entirely**, on an explicit user
+call: locking was being overcomplicated for an edge case ("a user plans
+ahead and doesn't touch it") that mostly won't happen. Revised model,
+recorded in full in `plan.md`'s Month Lifecycle section (original design
+kept alongside, not silently overwritten, since the reasoning matters):
+- `lockMonth(month)` does exactly one thing — locks the current
+  (earliest unlocked) month. No `carryForward` argument, no cascade walk,
+  no automatically-created next month.
+- New `deleteBudgetMonth(month)` — hard-deletes an empty, unlocked month
+  a user pre-provisioned but decided not to use. Same "remove what
+  references it first, then the empty shell becomes deletable" pattern
+  `deleteCategory`/`deleteTemplate` already use, backed by the same
+  `onDelete: Restrict` FKs `category_month`/`recurring_expense_instance`
+  already have to `budget_months`.
+- **Carry-forward needed no dedicated mutation at all** — it's just the
+  client calling the already-existing `addCategoryToMonth`/
+  `addRecurringExpenseToMonth` (omitting the budget to auto-inherit,
+  from the increment above) once per item the user checks, using the
+  already-existing `categoryMonths(month)`/`recurringExpenseInstances(month)`
+  queries against the previous month to populate the checkbox list
+  (pre-checked, uncheck to opt out). Same flow whether planning ahead
+  proactively or starting the new current month right after locking —
+  never an automatic side effect of locking itself, so it can't silently
+  clobber a month the user already set up differently.
+- New `Query.currentMonth: BudgetMonth!` and a `BudgetMonth` GraphQL type
+  (`{ month, locked }`, deliberately no `id` — nothing else in the schema
+  references a BudgetMonth by id, and a not-yet-persisted "current month"
+  wouldn't have a real one anyway). "Current month" is derived, never
+  persisted by the query itself: earliest unlocked row, or today's real
+  calendar month if none exists.
+
+Implementation: `budgetMonthService` gained `findCurrentMonth`,
+`lockMonth`, `deleteBudgetMonth`, and a `BudgetMonthServiceError` class
+(reasons: `budget_month_not_found`, `budget_month_already_locked`,
+`budget_month_not_current`, `budget_month_locked`,
+`budget_month_has_activations`, `invalid_month`). `lockMonth` rejects
+locking anything other than the current month, to protect the "current
+is always earliest unlocked" invariant every derivation relies on.
+`findCurrentMonth` sorts unlocked rows by the real `month` string, not
+`createdAt` or insertion order — deliberately, having just fixed the
+identical bug class in PR #7. Test infrastructure: `budgetMonthService`'s
+fake-Prisma delegate (shared across every service's test double via
+`createFakeBudgetMonthDelegate`) gained `update`/`delete` with the same
+FK-restrict simulation pattern as `categoryMonth`/`recurringExpenseTemplate`;
+`budgetMonthService.test.ts` switched from its own minimal fake to the
+fuller `categories/testFakePrisma.ts` one, since `deleteBudgetMonth` now
+genuinely depends on `categoryMonth` — same "one shared fake per
+composition graph" rule already established. New `formatMonth(date)`
+helper in `lib/monthFormat.ts` (UTC, not local timezone). 311 Jest tests
+total (was 283). Verified against real Postgres: derives current month
+without creating a row, locks it, current month naturally falls back to
+today's real date with no cascade needed, `deleteBudgetMonth` blocked
+while referenced and succeeds once empty.
+
 Next actions, in order:
-1. Wait for human review/approval on `feature/month-lifecycle` (this first
-   increment — budget inheritance only).
-2. Still to design/build on this branch or the next: the `lockMonth`
-   mutation itself (checkbox-list carry-forward input, makes the month
-   immutable, provisions next month's `budget_months` row), the auto-lock
-   cascade for empty months, recurring-template edit propagation
-   ("apply to future months too?"), and the GraphQL surface for month/lock
-   state (no `BudgetMonth` type exists yet — nothing today lets a client
-   ask "what's my current month" or "is it locked").
+1. Wait for human review/approval on `feature/month-locking`.
+2. Still to design/build: recurring-template edit propagation ("apply to
+   future months too?" on `updateRecurringExpenseInstance`), and
+   server-side enforcement of the one-month planning horizon (still not
+   implemented anywhere — flagged again during this increment's review
+   groundwork, see PR #7's history).
 
 ## Phase 1 — Backend
 

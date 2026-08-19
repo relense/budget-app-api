@@ -78,6 +78,7 @@ function buildContext(overrides: {
     userId: 'user-1',
     categoryService: {} as never,
     categoryMonthService: {} as never,
+    budgetMonthService: {} as never,
     transactionService: {} as never,
     templateService: {
       listCatalog: jest.fn(async () => [template]),
