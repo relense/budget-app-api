@@ -93,18 +93,27 @@ standalone — lets a caller with its own open transaction (e.g.
 transaction, so a row lock taken earlier in the same transaction actually
 protects this step too.
 
-**Planning horizon.** A category can never be newly activated more than one
-calendar month past the derived "current" month (see `budgetMonthService`
-below) — plan.md's Month Lifecycle rule, enforced server-side via
-`assertWithinPlanningHorizon(currentMonth, month)`. It's a pure sync
-comparison, not a query — every call site must derive `currentMonth` via
-`findCurrentMonthOnClient` itself, and must do so *before* calling
-`resolveBudgetMonthId` for the target month: `resolveBudgetMonthId` upserts
-(permanently creates) a `BudgetMonth` row for that month, and since a
-freshly created row is always unlocked, it would otherwise become the
-"earliest unlocked" candidate the current-month derivation picks up,
-self-satisfying the check for exactly the case (a brand-new activation with
-no other unlocked month yet) it most needs to catch. Exported standalone so
+**Planning horizon.** A category can never be newly activated outside
+`[current, current + 1]` — the derived "current" month itself, or the one
+right after it, never further ahead and never in the past (see
+`budgetMonthService` below for "current") — plan.md's Month Lifecycle rule,
+enforced server-side via `assertWithinPlanningHorizon(currentMonth, month)`.
+It's a pure sync comparison, not a query — every call site must derive
+`currentMonth` via `findCurrentMonthOnClient` itself, and must do so
+*before* calling `resolveBudgetMonthId` for the target month:
+`resolveBudgetMonthId` upserts (permanently creates) a `BudgetMonth` row for
+that month, and since a freshly created row is always unlocked, calling it
+ahead of the check would let a rejected month leak a permanent row anyway.
+For a rejected *past* month specifically, that stray row would go on to
+become the new "earliest unlocked" row itself — silently dragging "current"
+backwards for every later call this user makes, no concurrency required.
+(This was caught by `pr-reviewer` before merge, via exactly that two-call
+sequential repro — not a race, a deterministic bug in the original
+future-only version of this check.) `ensureActiveForCategoryOnClient`
+determines the idempotent-return case (category already active this month)
+via a read-only `budgetMonth.findUnique` lookup, specifically so that path
+also never triggers `resolveBudgetMonthId`'s upsert before the horizon
+check has had a chance to reject. Exported standalone so
 `recurringExpenseInstanceService`'s auto-activation path enforces the
 identical rule, not a separately-maintained copy.
 

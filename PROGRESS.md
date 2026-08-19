@@ -600,17 +600,69 @@ exemption), and one on the recurring-expense path proving the shared check
 applies there too. 330 Jest tests total (was 329 before this increment's
 net test additions; two rewritten, six added).
 
-`npm run typecheck`, `npm test`, `npm run lint`, `npm run build` all clean.
-Not yet reviewed by `pr-reviewer` — per explicit user instruction this
-round, `test-auditor` is deliberately being skipped ("don't use the auditor
-this time at all. If we need the auditor I will use it") to conserve
-tokens; only `pr-reviewer` will run before opening the PR.
+`pr-reviewer` round 1: **needs changes** — caught a real, deterministic bug
+(not a race) in the future-only version of the check above: "current" is
+the earliest *unlocked* `BudgetMonth` row, and nothing stopped a category
+from being newly activated in an arbitrary untouched past month, which
+would silently create a fresh (always-unlocked) row there — and that row
+would then become the new "earliest unlocked" row, dragging "current"
+itself backwards for every later call by that user. Reviewer's repro was
+two sequential, non-concurrent calls: activate a category in `2020-01`,
+then try to activate a different category in `2026-08` (the real current
+month) — the second call was incorrectly rejected as "beyond the planning
+horizon" because "current" had been hijacked to `2020-01` by the first
+call. This also broke the "TOCTOU gap is safe because current only ever
+advances" reasoning the design leaned on — it wasn't just unsafe under a
+race, it was wrong in ordinary sequential use.
+
+Brought the finding to the user rather than fixing unilaterally, since it
+implied a product decision (should past-month activation be allowed at
+all?), not just a code fix. User's call: never allow creating a new month
+in the past — a user can revisit a past month if it already exists, but
+can't newly activate a category in one that was never touched. Implemented
+as a symmetric bound: `assertWithinPlanningHorizon` now rejects any newly
+created activation outside `[current, current + 1]`, not just past
+`current + 1`. Both call sites (`addCategoryToMonth`,
+`ensureActiveForCategoryOnClient`) already captured `current` before
+`resolveBudgetMonthId`'s upsert (from the ordering fix earlier in this same
+increment) — extending that same ordering to the lower bound closes the
+hijack: a rejected month, past or future, now never reaches
+`resolveBudgetMonthId` at all, so it can never leave a stray row behind.
+`ensureActiveForCategoryOnClient`'s idempotent-return path (a pre-existing
+activation is always allowed regardless of the horizon) now determines
+"already active" via a read-only `budgetMonth.findUnique` lookup instead of
+via `resolveBudgetMonthId`'s upsert, so that path doesn't reopen the same
+hole for its own case; the lock check still runs unconditionally right
+before either the early return or the create, matching every other write
+path in this file. Fixed the 5 tests that broke as a result (two
+`month_locked` tests were relying on a *past* locked month, no longer
+reachable — moved to a locked *current* month instead, still exercising the
+lock check distinctly from the horizon check; three inheritance tests were
+using a past month as live-call setup scaffolding — moved to using the
+current month instead). Added regression coverage: rejecting a month before
+current, and the reviewer's exact two-call hijack repro asserting the
+second (legitimate, current-month) activation now succeeds. Also fixed
+finding #2 from this same review round — the idempotent-return test's
+fixture made "current" trivially equal to the far-future target month
+itself (the only unlocked row), so it would have passed even with the
+exemption deleted; added a distinct, earlier unlocked row so the test
+actually pins "current" somewhere the horizon check would fail if it ran.
+And finding #3: `resolveBudgetForActivation`'s docstring still said the
+horizon "isn't enforced server-side yet" — corrected. 333 Jest tests total
+(was 330).
+
+`npm run typecheck`, `npm test`, `npm run lint`, `npm run build` all clean
+after the round-1 fixes. Not yet re-reviewed. Per explicit user instruction
+this round, `test-auditor` is deliberately being skipped ("don't use the
+auditor this time at all. If we need the auditor I will use it") to
+conserve tokens; only `pr-reviewer` runs before opening the PR.
 
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-locking`.
-2. Run `pr-reviewer` on `feature/planning-horizon`, loop on any findings,
-   then open a PR with `--base feature/month-locking` (stacked, pending
-   PR #8's merge) — no `test-auditor` pass this round per user instruction.
+2. Re-run `pr-reviewer` on `feature/planning-horizon` to verify the round-1
+   fixes, loop on any further findings, then open a PR with
+   `--base feature/month-locking` (stacked, pending PR #8's merge) — no
+   `test-auditor` pass this round per user instruction.
 3. Still to design/build: recurring-template edit propagation ("apply to
    future months too?" on `updateRecurringExpenseInstance`).
 4. Small tracked follow-up, not blocking: `removeCategoryFromMonth`
