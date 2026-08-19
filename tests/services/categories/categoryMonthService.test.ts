@@ -129,7 +129,7 @@ describe('addCategoryToMonth', () => {
     ).rejects.toMatchObject({ reason: 'category_not_found' });
   });
 
-  it('throws category_not_found for a soft-deleted category', async () => {
+  it('throws category_not_found for a deleted category', async () => {
     const { categoryService, categoryMonthService, categoryA } = await setup();
     await categoryService.deleteCategory('user-1', categoryA.id);
 

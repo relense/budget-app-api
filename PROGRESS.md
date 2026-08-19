@@ -129,15 +129,33 @@ and their CRUD mutations still have zero GraphQL-layer tests
 (`tests/graphql/schema.test.ts` only checks `Query.ping`) — pre-existing,
 predates this PR, left as backlog rather than expanding this PR's scope.
 
+PR #4 is **merged into `develop`.**
+
+`fix/categories-hard-delete` (branched off the now-updated `develop`):
+`categories`' long-flagged soft→hard delete follow-up (see round-2's
+decision above). Dropped `Category.deletedAt` (migration
+`20260819084400_category_hard_delete`); `categoryService.deleteCategory`
+now hard-deletes via `prisma.category.delete`, same pattern as
+`recurringExpenseTemplateService.deleteTemplate`: pre-check
+`category_month` references (unchanged precondition, per `plan.md`), then
+catch the `P2003` FK-restrict backstop. That backstop turned out to matter
+for a second, non-obvious reason beyond the usual check-then-delete race:
+`RecurringExpenseTemplate.category` is *also* `onDelete: Restrict`, and a
+template can outlive every `category_month` that ever activated its
+category (instance removed, then the `category_month` removed too, template
+left behind) — so a category can have zero `category_month` rows and still
+be undeletable. The pre-check alone can't see that; only the FK catch does.
+Verified against real Postgres with a throwaway smoke script (removed after):
+plain delete, `category_month`-blocked delete, and this
+template-without-a-`category_month` case, all three behaving as expected.
+266 Jest tests total (was 264, +2 for this branch: the FK-race canary and
+the template-only-reference case).
+
 Next actions, in order:
-1. Wait for human review/approval on PR #4 per `CLAUDE.md`'s git
-   workflow — don't merge, don't start step 5 until approved.
-2. Separately: branch off `develop` for `categories`' soft→hard delete
-   follow-up (drop `deleted_at`, update `categoryService`/
-   `categoryMonthService` and their tests) — its own PR, not bundled into
-   step 4.
-3. Once both are merged: sync `develop`, branch for step 5 (Month
-   lifecycle), and start with its own "grill me" interview.
+1. Wait for human review/approval on `fix/categories-hard-delete` per
+   `CLAUDE.md`'s git workflow.
+2. Once merged: sync `develop`, branch for step 5 (Month lifecycle), and
+   start with its own "grill me" interview.
 
 ## Phase 1 — Backend
 

@@ -27,7 +27,6 @@ export interface FakeCategory {
   color: string;
   budgetType: FakeBudgetType | null;
   direction: FakeDirection;
-  deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -116,14 +115,13 @@ interface FakeDelegates {
     }): Promise<FakeCategory>;
     findUnique(args: { where: { id: string } }): Promise<FakeCategory | null>;
     findMany(args: {
-      where: { userId: string; deletedAt: null } | { id: { in: string[] } };
+      where: { userId: string } | { id: { in: string[] } };
     }): Promise<FakeCategory[]>;
     update(args: {
       where: { id: string };
-      data: Partial<
-        Pick<FakeCategory, 'name' | 'icon' | 'color' | 'budgetType' | 'direction' | 'deletedAt'>
-      >;
+      data: Partial<Pick<FakeCategory, 'name' | 'icon' | 'color' | 'budgetType' | 'direction'>>;
     }): Promise<FakeCategory>;
+    delete(args: { where: { id: string } }): Promise<FakeCategory>;
   };
   categoryMonth: {
     findUnique(args: {
@@ -308,7 +306,6 @@ export function createFakePrisma(): FakePrismaClient {
           color: data.color,
           budgetType: data.budgetType,
           direction: data.direction,
-          deletedAt: null,
           createdAt: nextTimestamp(),
           updatedAt: nextTimestamp(),
         };
@@ -322,7 +319,7 @@ export function createFakePrisma(): FakePrismaClient {
         if ('id' in where) {
           return categories.filter((c) => where.id.in.includes(c.id));
         }
-        return categories.filter((c) => c.userId === where.userId && c.deletedAt === null);
+        return categories.filter((c) => c.userId === where.userId);
       },
       async update({ where, data }) {
         const row = categories.find((c) => c.id === where.id);
@@ -330,6 +327,21 @@ export function createFakePrisma(): FakePrismaClient {
         Object.assign(row, data);
         row.updatedAt = nextTimestamp();
         return row;
+      },
+      async delete({ where }) {
+        const index = categories.findIndex((c) => c.id === where.id);
+        if (index === -1) throw new Error('not found');
+        // Mimics the real onDelete: Restrict FKs from category_month and
+        // recurring_expense_templates — simulates either landing between an
+        // app-level "no active months" check and this delete.
+        if (
+          categoryMonths.some((cm) => cm.categoryId === where.id) ||
+          recurringExpenseTemplates.some((t) => t.categoryId === where.id)
+        ) {
+          throw new FakeForeignKeyConstraintError();
+        }
+        const [row] = categories.splice(index, 1);
+        return row!;
       },
     },
     budgetMonth: createFakeBudgetMonthDelegate(budgetMonths),

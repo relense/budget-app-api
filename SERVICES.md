@@ -55,20 +55,16 @@ Pure catalog CRUD for categories — no month-awareness at all. Deps: `prisma`.
 
 | Function | Does |
 |---|---|
-| `listCatalog(userId)` | Every non-deleted category for this user. |
+| `listCatalog(userId)` | Every category for this user. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
 | `createCategory(userId, input)` | Requires `budgetType` when `direction: 'expense'`; not meaningful (and stored `null`) for `'income'`. |
 | `updateCategory(userId, id, input)` | Blocks a `direction` change if any transaction already references this category. |
-| `deleteCategory(userId, id)` | Soft-delete (`deletedAt`), blocked while any `category_month` row references it, for any month past or future. |
+| `deleteCategory(userId, id)` | Hard delete, blocked while any `category_month` row references it, for any month past or future. |
 
 Also exports **`assertOwnedCategory(client, userId, id)`** standalone — the
 shared ownership-check, reused by `categoryMonthService` and
 `recurringExpenseTemplateService` against either the outer `prisma` or a
 transactional client.
-
-> Category is still soft-deleted as of this writing — a follow-up branch to
-> switch it to hard-deleted (matching `recurring_expense_templates`, see
-> below) is planned but not yet done. See `PROGRESS.md`.
 
 ### `categoryMonthService` — `src/services/categories/categoryMonthService.ts`
 

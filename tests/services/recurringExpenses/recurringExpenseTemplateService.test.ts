@@ -14,7 +14,6 @@ function setup() {
     color: '#000',
     budgetType: 'need',
     direction: 'expense',
-    deletedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -26,7 +25,6 @@ function setup() {
     color: '#000',
     budgetType: 'need',
     direction: 'expense',
-    deletedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -38,7 +36,6 @@ function setup() {
     color: '#000',
     budgetType: null,
     direction: 'income',
-    deletedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -198,8 +195,7 @@ describe('updateTemplate', () => {
       color: '#000',
       budgetType: 'need',
       direction: 'expense',
-      deletedAt: null,
-      createdAt: new Date(),
+        createdAt: new Date(),
       updatedAt: new Date(),
     });
     const template = await service.createTemplate('user-1', {
@@ -231,8 +227,7 @@ describe('updateTemplate', () => {
       color: '#000',
       budgetType: 'need',
       direction: 'expense',
-      deletedAt: null,
-      createdAt: new Date(),
+        createdAt: new Date(),
       updatedAt: new Date(),
     });
     const template = await service.createTemplate('user-1', {
@@ -274,8 +269,7 @@ describe('updateTemplate', () => {
       color: '#000',
       budgetType: 'need',
       direction: 'expense',
-      deletedAt: null,
-      createdAt: new Date(),
+        createdAt: new Date(),
       updatedAt: new Date(),
     });
     const template = await service.createTemplate('user-1', {

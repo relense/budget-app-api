@@ -28,7 +28,6 @@ describe('createCategory', () => {
       color: '#00FF00',
       budgetType: 'need',
       direction: 'expense',
-      deletedAt: null,
     });
   });
 
@@ -76,7 +75,7 @@ describe('createCategory', () => {
 });
 
 describe('listCatalog', () => {
-  it('returns only the user\'s non-deleted categories', async () => {
+  it("excludes a deleted category and another user's categories", async () => {
     const { categoryService } = setup();
     const mine = await categoryService.createCategory('user-1', {
       name: 'Groceries',
@@ -290,7 +289,7 @@ describe('updateCategory', () => {
 });
 
 describe('deleteCategory', () => {
-  it('soft-deletes a category with no category_month rows', async () => {
+  it('hard-deletes a category with no category_month rows', async () => {
     const { prisma, categoryService } = setup();
     const category = await categoryService.createCategory('user-1', {
       name: 'Groceries',
@@ -302,7 +301,7 @@ describe('deleteCategory', () => {
 
     await categoryService.deleteCategory('user-1', category.id);
 
-    expect(prisma.categories[0]!.deletedAt).not.toBeNull();
+    expect(prisma.categories).toHaveLength(0);
   });
 
   it('throws category_has_active_months when a category_month row exists', async () => {
@@ -327,7 +326,72 @@ describe('deleteCategory', () => {
     await expect(categoryService.deleteCategory('user-1', category.id)).rejects.toMatchObject({
       reason: 'category_has_active_months',
     });
-    expect(prisma.categories[0]!.deletedAt).toBeNull();
+    expect(prisma.categories).toHaveLength(1);
+  });
+
+  it('throws category_has_active_months (not a raw FK error) when a category_month is created between the check and the delete', async () => {
+    const { prisma, categoryService } = setup();
+    const category = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
+    // Simulate the race: the "no active months" check reports none (as if
+    // it ran a moment before the concurrent insert), but a category_month
+    // lands right after — the fake's delete() enforces onDelete: Restrict
+    // just like the real DB, so this exercises the same path a concurrent
+    // request would hit.
+    prisma.categoryMonth.findFirst = (async () => {
+      prisma.categoryMonths.push({
+        id: 'cm-race',
+        userId: 'user-1',
+        categoryId: category.id,
+        monthId: 'month-race',
+        monthlyBudgetCents: 10000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return null;
+    }) as typeof prisma.categoryMonth.findFirst;
+
+    await expect(categoryService.deleteCategory('user-1', category.id)).rejects.toMatchObject({
+      reason: 'category_has_active_months',
+    });
+    expect(prisma.categories).toHaveLength(1);
+  });
+
+  it('throws category_has_active_months when a recurring expense template references the category, even with no category_month row', async () => {
+    const { prisma, categoryService } = setup();
+    const category = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    // No category_month row for this category — the pre-check alone
+    // wouldn't catch this. Reachable in practice: a template's instance
+    // (and the category_month it activated) can both be removed later
+    // while the template itself is kept.
+    prisma.recurringExpenseTemplates.push({
+      id: 'tpl-1',
+      userId: 'user-1',
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: category.id,
+      budgetType: 'need',
+      dueDay: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await expect(categoryService.deleteCategory('user-1', category.id)).rejects.toMatchObject({
+      reason: 'category_has_active_months',
+    });
+    expect(prisma.categories).toHaveLength(1);
   });
 
   it('throws category_not_found for another user\'s category', async () => {
