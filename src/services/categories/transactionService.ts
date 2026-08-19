@@ -164,7 +164,16 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
       });
       const monthIdsToLock = new Set<string>();
       if (existingCategoryMonth) monthIdsToLock.add(existingCategoryMonth.monthId);
-      if (targetCategoryMonth) monthIdsToLock.add(targetCategoryMonth.monthId);
+      // Ownership-gated: unlike existingCategoryMonth (already implied
+      // owned — it came off a transaction row whose userId was just
+      // checked above), input.categoryMonthId is client-supplied and
+      // unverified at this point. Without this check, an unowned/guessed
+      // id would still contribute its budget_months row to the pre-lock
+      // step below — taking a real row lock against another tenant's data
+      // before loadCategoryMonthForWrite's ownership check ever runs.
+      if (targetCategoryMonth && targetCategoryMonth.userId === userId) {
+        monthIdsToLock.add(targetCategoryMonth.monthId);
+      }
       for (const monthId of Array.from(monthIdsToLock).sort()) {
         await lockBudgetMonthRow(tx, monthId);
       }

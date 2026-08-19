@@ -445,6 +445,30 @@ surfaced two more, narrower issues in the same class:
 
 315 Jest tests total (was 312).
 
+`pr-reviewer` round 3: **needs changes**, once more — found a real issue
+introduced by round 2's own deadlock fix. `transactionService.update`'s
+new pre-lock step looked up the *target* `categoryMonth` (from the
+client-supplied `input.categoryMonthId`) and added its `monthId` to the
+lock set with no ownership check — unlike every other lookup in this
+file, which checks `userId` before touching a row. Practically: an
+unowned/guessed `categoryMonthId` would still cause the server to take a
+real row lock on another tenant's `budget_months` row, briefly
+contending against their own concurrent writes to that month, before the
+existing (unchanged) ownership check inside `loadCategoryMonthForWrite`
+rejected the request moments later. No data leak, request still
+correctly denied — but a genuine deviation from CLAUDE.md's
+multi-tenancy rule, and the only place in the whole fix where a lock was
+taken before ownership was verified. Fixed: gate adding the target
+month to the lock set on `targetCategoryMonth.userId === userId`, so an
+unowned id contributes nothing to the pre-lock step at all. Added the
+missing cross-user regression test for `update`'s target `categoryMonthId`
+(the `create` path already had the equivalent). Deterministic fix (not
+timing-dependent — a simple "don't call the lock function if ownership
+fails" gate), so verified with the functional test alone; no additional
+real-Postgres concurrency run was needed for this one, unlike the
+timing-dependent races earlier in this PR. 316 Jest tests total (was
+315).
+
 Next actions, in order:
 1. Wait for human review/approval on `feature/month-locking`.
 2. Still to design/build: recurring-template edit propagation ("apply to

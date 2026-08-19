@@ -47,6 +47,7 @@ async function setup() {
   return {
     prisma,
     budgetMonthService,
+    categoryService,
     categoryMonthService,
     transactionService,
     expenseCategory,
@@ -217,6 +218,37 @@ describe('update', () => {
         date: '2026-08-15',
       }),
     ).rejects.toMatchObject({ reason: 'transaction_not_found' });
+  });
+
+  it('rejects moving a transaction to another user\'s categoryMonthId', async () => {
+    const { transactionService, categoryMonthService, categoryService, expenseCategoryMonth } =
+      await setup();
+    const otherUsersCategory = await categoryService.createCategory('user-2', {
+      name: 'Other',
+      icon: 'x',
+      color: '#000',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    const otherUsersCategoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-2',
+      otherUsersCategory.id,
+      '2026-08',
+      10000,
+    );
+    const transaction = await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 2500,
+      date: '2026-08-15',
+    });
+
+    await expect(
+      transactionService.update('user-1', transaction.id, {
+        categoryMonthId: otherUsersCategoryMonth.id,
+        amountCents: 2500,
+        date: '2026-08-15',
+      }),
+    ).rejects.toMatchObject({ reason: 'category_month_not_found' });
   });
 
   it('moves a transaction to a categoryMonth in a different month', async () => {
