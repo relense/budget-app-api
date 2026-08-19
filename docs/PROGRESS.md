@@ -906,13 +906,38 @@ would currently be invisible in production. Tracked here rather than
 addressed now, since round 2 explicitly called them out as follow-up
 material.
 
+`test-auditor` on `feature/recurring-expenses-flat-redesign`: suite
+trustworthy (307 tests at the time, all passing, no `.skip`/`.only`, no
+cross-test ordering dependency), but flagged real gaps — most notably that
+`withSavepoint` (the fix motivating this whole PR's prep commit) had *zero*
+dedicated Jest coverage, since the fake Prisma's `$executeRawUnsafe` is a
+no-op and nothing asserted the actual SQL sequence it issues. Also flagged:
+no test distinguishing `monthWasCreated: true` from `false` with
+`onNewBudgetMonth` actually wired (a `&&` → always-true regression would've
+passed every existing test); zero coverage on several `recurringExpenseService`
+negative paths (`removeFromMonth`'s `month_locked`/not-found/P2003-race,
+`markRecurringPaid`'s not-found paths and its own CategoryMonth-not-found
+data-integrity check, `findManyByIds`); and `updateRecurringExpense`'s
+category-reassignment/auto-activation branch, untested because every
+existing test happened to reuse the same category on create and update.
+Also closed round 2's two follow-up notes (above) while at it: a test
+proving `withSavepoint` issues `SAVEPOINT`/`RELEASE SAVEPOINT` correctly
+via a spy, and two tests that actually exercise the `onNewBudgetMonth`/
+`seedNewMonth` swallow (make it throw, assert the outer mutation still
+succeeds) rather than just asserting the try/catch exists. Logging on the
+swallowed path still not done — no logger dependency exists anywhere in
+the service layer yet, so this stays a real "consider it later" rather
+than a quick add. 307 Jest tests total (was 288 before this pass, +19).
+
 Next actions, in order:
 1. Wait for human review/merge on `feature/recurring-expenses-flat-redesign`
-   (`pr-reviewer`-approved as of round 2).
-2. Small tracked follow-up, not blocking: add a test exercising the
-   `onNewBudgetMonth`/`seedNewMonth` swallow itself, and consider logging
-   the swallowed error (this service layer has no logger dependency
-   anywhere yet — `src/lib/shutdown.ts` is the only existing precedent).
+   (`pr-reviewer`-approved as of round 2, `test-auditor`-reviewed and gaps
+   closed).
+2. Small tracked follow-up, not blocking: add logging on the
+   `onNewBudgetMonth`/`seedNewMonth` swallow path once this service layer
+   has a logger dependency to hang it on (none exists yet —
+   `src/lib/shutdown.ts` is the only existing precedent, at the app-startup
+   level, not per-service).
 3. Recurring-template edit propagation no longer exists as a concept under
    the flat design — nothing outstanding there.
 4. Still open from step 5's original scope: soft-delete + undo for
