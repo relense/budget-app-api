@@ -41,10 +41,19 @@ export async function assertOwnedCategory(
   id: string,
 ) {
   const category = await client.category.findUnique({ where: { id } });
-  if (!category || category.userId !== userId || category.deletedAt) {
+  if (!category || category.userId !== userId) {
     throw new CategoryServiceError('category_not_found');
   }
   return category;
+}
+
+function hasPrismaErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === code
+  );
 }
 
 export function createCategoryService({ prisma }: CategoryServiceDeps) {
@@ -60,7 +69,7 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
   }
 
   async function listCatalog(userId: string) {
-    return prisma.category.findMany({ where: { userId, deletedAt: null } });
+    return prisma.category.findMany({ where: { userId } });
   }
 
   /** Batch lookup for DataLoader use — trusts the caller to have already scoped the ids to one user. */
@@ -123,7 +132,20 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
       throw new CategoryServiceError('category_has_active_months');
     }
 
-    await prisma.category.update({ where: { id }, data: { deletedAt: new Date() } });
+    try {
+      // Hard delete now, backed by CategoryMonth.category's and
+      // RecurringExpenseTemplate.category's onDelete: Restrict FKs — the
+      // DB-level backstop closes the race the pre-check above can't (a
+      // concurrent category_month or recurring-expense-template insert
+      // landing between the check and this delete), same pattern as
+      // recurringExpenseTemplateService's deleteTemplate.
+      await prisma.category.delete({ where: { id } });
+    } catch (error) {
+      if (hasPrismaErrorCode(error, 'P2003')) {
+        throw new CategoryServiceError('category_has_active_months');
+      }
+      throw error;
+    }
   }
 
   return {
