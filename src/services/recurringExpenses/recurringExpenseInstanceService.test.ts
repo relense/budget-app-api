@@ -188,6 +188,44 @@ describe('addRecurringExpenseToMonth', () => {
     expect(prisma.recurringExpenseInstances).toHaveLength(1);
   });
 
+  it('locks the template row before re-reading its category — canary against reordering the fix', async () => {
+    // The fake can't prove real concurrency-safety (no true row locking),
+    // but it can catch a *structural* regression: an earlier version of
+    // this code read the template's category before taking the lock at
+    // all, which is exactly the bug a real-Postgres concurrent test caught
+    // (see PROGRESS.md). This asserts the call order stays lock-then-read.
+    const { prisma, categoryMonthService, templateService, instanceService, housing } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', housing.id, '2026-08', 90000);
+    const template = await templateService.createTemplate('user-1', {
+      name: 'Gas',
+      amountCents: 4000,
+      categoryId: housing.id,
+      budgetType: 'want',
+      dueDay: 15,
+    });
+
+    const order: string[] = [];
+    const originalQueryRaw = prisma.$queryRaw.bind(prisma);
+    prisma.$queryRaw = (async (...args: Parameters<typeof originalQueryRaw>) => {
+      order.push('lock');
+      return originalQueryRaw(...args);
+    }) as typeof prisma.$queryRaw;
+    const originalFindUnique = prisma.recurringExpenseTemplate.findUnique.bind(
+      prisma.recurringExpenseTemplate,
+    );
+    prisma.recurringExpenseTemplate.findUnique = (async (args: Parameters<typeof originalFindUnique>[0]) => {
+      order.push('read');
+      return originalFindUnique(args);
+    }) as typeof prisma.recurringExpenseTemplate.findUnique;
+
+    await instanceService.addRecurringExpenseToMonth('user-1', template.id, '2026-08');
+
+    // read = outer ownership check (before opening the transaction), then
+    // lock, then read = the fresh, post-lock re-read that decides which
+    // category to activate.
+    expect(order).toEqual(['read', 'lock', 'read']);
+  });
+
   it('auto-activates the category for the month if not already active', async () => {
     const { prisma, templateService, instanceService, housing } = await setup();
     const template = await templateService.createTemplate('user-1', {

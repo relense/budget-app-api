@@ -238,6 +238,49 @@ describe('updateTemplate', () => {
     expect(prisma.recurringExpenseTemplates[0]!.categoryId).toBe('cat-housing');
   });
 
+  it('throws template_not_found (not a raw error) when the template is deleted between the initial check and the locked transaction', async () => {
+    const { prisma, service } = setup();
+    prisma.categories.push({
+      id: 'cat-transport',
+      userId: 'user-1',
+      name: 'Transport',
+      icon: 'car',
+      color: '#000',
+      budgetType: 'need',
+      direction: 'expense',
+      deletedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const template = await service.createTemplate('user-1', {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: 'cat-housing',
+      budgetType: 'need',
+      dueDay: 1,
+    });
+
+    // Simulate the race: a concurrent delete removes the template right as
+    // our transaction begins — after the outer assertOwnedTemplate check
+    // above already passed, but before the locked re-check inside it runs.
+    const originalTransaction = prisma.$transaction.bind(prisma);
+    prisma.$transaction = (async (callback) => {
+      const index = prisma.recurringExpenseTemplates.findIndex((t) => t.id === template.id);
+      if (index !== -1) prisma.recurringExpenseTemplates.splice(index, 1);
+      return originalTransaction(callback);
+    }) as typeof prisma.$transaction;
+
+    await expect(
+      service.updateTemplate('user-1', template.id, {
+        name: 'Rent',
+        amountCents: 80000,
+        categoryId: 'cat-transport',
+        budgetType: 'need',
+        dueDay: 1,
+      }),
+    ).rejects.toMatchObject({ reason: 'template_not_found' });
+  });
+
   it('allows updating other fields while keeping the same categoryId, even with instances', async () => {
     const { prisma, service } = setup();
     const template = await service.createTemplate('user-1', {

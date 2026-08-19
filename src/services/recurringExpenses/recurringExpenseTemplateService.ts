@@ -165,10 +165,16 @@ export function createRecurringExpenseTemplateService({ prisma }: RecurringExpen
     // No onDelete: Restrict backstop applies here (this is an UPDATE, not a
     // delete), so the check-then-write race is closed explicitly: lock the
     // template row before checking, inside the same transaction as the
-    // write. createInstanceRow takes the identical lock before inserting an
-    // instance, so the two paths can never interleave.
+    // write. addRecurringExpenseToMonth/createTemplateForMonth take the
+    // identical lock before inserting an instance, so the two paths can
+    // never interleave.
     return prisma.$transaction(async (tx) => {
       await lockTemplateRow(tx, id);
+      // Re-checked inside the lock, not just before it: a concurrent delete
+      // could otherwise land in the gap between the outer assertOwnedTemplate
+      // above and this transaction, leaving a raw Prisma "record not found"
+      // to leak through the update below instead of the typed error.
+      await assertOwnedTemplate(tx, userId, id);
       const existingInstance = await tx.recurringExpenseInstance.findFirst({ where: { templateId: id } });
       if (existingInstance) {
         throw new RecurringExpenseTemplateServiceError('category_change_blocked');

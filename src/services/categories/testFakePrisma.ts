@@ -265,13 +265,17 @@ export function createFakePrisma(): FakePrismaClient {
     recurringExpenseInstances,
     transactions,
     async $transaction(callback) {
+      // Deep-cloned, not just a shallow array copy — the delegates below
+      // mutate rows in place via Object.assign(row, data), so a shallow
+      // snapshot would restore array membership on rollback but leave an
+      // in-place update from earlier in the same transaction un-undone.
       const snapshot = {
-        categories: [...categories],
-        budgetMonths: [...budgetMonths],
-        categoryMonths: [...categoryMonths],
-        recurringExpenseTemplates: [...recurringExpenseTemplates],
-        recurringExpenseInstances: [...recurringExpenseInstances],
-        transactions: [...transactions],
+        categories: categories.map((row) => ({ ...row })),
+        budgetMonths: budgetMonths.map((row) => ({ ...row })),
+        categoryMonths: categoryMonths.map((row) => ({ ...row })),
+        recurringExpenseTemplates: recurringExpenseTemplates.map((row) => ({ ...row })),
+        recurringExpenseInstances: recurringExpenseInstances.map((row) => ({ ...row })),
+        transactions: transactions.map((row) => ({ ...row })),
       };
       try {
         return await callback(client);
