@@ -3,6 +3,7 @@ import { signAccessToken } from '../../lib/jwt.js';
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from '../../lib/otp.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 import { generateRefreshToken, hashRefreshToken } from '../../lib/refreshToken.js';
+import { DEFAULT_CATEGORIES } from './defaultCategories.js';
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_MAX_FAILED_ATTEMPTS = 5;
@@ -54,10 +55,19 @@ export interface VerifyOtpInput {
 }
 
 export interface AuthServiceDeps {
-  prisma: Pick<PrismaClient, 'otpCode' | 'user' | 'refreshToken' | '$transaction'>;
+  prisma: Pick<PrismaClient, 'otpCode' | 'user' | 'category' | 'refreshToken' | '$transaction'>;
   emailService: EmailService;
   jwtSecret: string;
   now?: () => Date;
+}
+
+function hasPrismaErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === code
+  );
 }
 
 export function createAuthService({
@@ -119,14 +129,41 @@ export function createAuthService({
     const refreshTokenHash = hashRefreshToken(refreshToken);
     const refreshExpiresAt = new Date(now().getTime() + REFRESH_TOKEN_TTL_MS);
 
-    const { user } = await prisma.$transaction(async (tx) => {
+    // Explicit create-then-detect-conflict instead of upsert: upsert can't
+    // tell a genuine first-time signup apart from a returning login (both
+    // take the same code path), and that distinction is exactly what
+    // decides whether the default category catalog gets seeded below.
+    //
+    // Deliberately run as standalone statements, not inside the
+    // $transaction below: a failed statement poisons the rest of a
+    // Postgres transaction (25P02, "current transaction is aborted") until
+    // it's rolled back, so a caught unique-constraint error here couldn't
+    // be recovered from with a findUnique on the same tx — confirmed
+    // against real Postgres, not just the fake. The accepted tradeoff: if
+    // the process crashes between this create and the transaction below
+    // committing, a user could in principle end up without a category
+    // catalog — narrow, matches this codebase's existing risk tolerance
+    // (e.g. requestOtp's insert + email send aren't atomic either).
+    let user;
+    let isNewUser = false;
+    try {
+      user = await prisma.user.create({ data: { email } });
+      isNewUser = true;
+    } catch (error) {
+      if (!hasPrismaErrorCode(error, 'P2002')) throw error;
+      const existing = await prisma.user.findUnique({ where: { email } });
+      if (!existing) throw error;
+      user = existing;
+    }
+
+    await prisma.$transaction(async (tx) => {
       await tx.otpCode.update({ where: { id: otp.id }, data: { used: true } });
 
-      const user = await tx.user.upsert({
-        where: { email },
-        create: { email },
-        update: {},
-      });
+      if (isNewUser) {
+        await tx.category.createMany({
+          data: DEFAULT_CATEGORIES.map((category) => ({ ...category, userId: user.id })),
+        });
+      }
 
       await tx.refreshToken.create({
         data: {
@@ -136,8 +173,6 @@ export function createAuthService({
           expiresAt: refreshExpiresAt,
         },
       });
-
-      return { user };
     });
 
     const accessToken = await signAccessToken({ userId: user.id }, jwtSecret);

@@ -151,11 +151,48 @@ template-without-a-`category_month` case, all three behaving as expected.
 266 Jest tests total (was 264, +2 for this branch: the FK-race canary and
 the template-only-reference case).
 
+PR #5 (`fix/categories-hard-delete`) is **merged into `develop`.**
+
+Started the "grill me" interview for step 5 (Month lifecycle) on a fresh
+`feature/month-lifecycle` branch; the first question (what creates a user's
+first `budget_months` row) surfaced a real, separate product decision the
+user wanted instead: **every new signup gets a default starter category
+catalog** (Supermarket, Eating Out, Gas/Transport, Health, Hobbies —
+catalog only, not auto-activated into any month, budgets stay
+user-entered), not just the existing personal seed script. Deliberately
+out of Month Lifecycle's scope (it's a signup-flow change, not
+locking/carry-forward) — the `feature/month-lifecycle` branch was dropped
+(no commits yet) and rebuilt as `feature/default-categories` to do this
+first, on its own.
+
+`defaultCategories.ts` holds the fixed list. `authService.verifyOtp`
+previously used `user.upsert`, which can't distinguish a genuine first-time
+signup from a returning login (both hit the same code path) — needed that
+distinction to know when to seed. Replaced with an explicit
+create-then-catch-`P2002`-then-`findUnique` pattern. **Caught by the
+real-Postgres smoke test, not the fake-Prisma suite**: the first version
+nested that recovery `findUnique` inside the same `$transaction` as the
+failed `create` — Postgres poisons an entire transaction after any failed
+statement (`25P02`) until it's rolled back, so the recovery read failed
+too. Fixed by running the create-or-find as standalone statements *before*
+opening the transaction that seeds categories + creates the refresh token;
+accepted tradeoff noted in a code comment (a crash in the narrow window
+between the user-row commit and the transaction commit could leave a user
+without a catalog — matches this codebase's existing risk tolerance
+elsewhere, e.g. `requestOtp`'s insert + email send aren't atomic either).
+Verified against real Postgres: first signup seeds exactly 5 categories, a
+second login doesn't reseed, and two concurrent `verifyOtp` calls for the
+same brand-new email still result in one user row and exactly one seeding
+pass. 268 Jest tests total (was 266).
+
 Next actions, in order:
-1. Wait for human review/approval on `fix/categories-hard-delete` per
-   `CLAUDE.md`'s git workflow.
-2. Once merged: sync `develop`, branch for step 5 (Month lifecycle), and
-   start with its own "grill me" interview.
+1. Wait for human review/approval on `feature/default-categories`.
+2. Once merged: sync `develop`, branch `feature/month-lifecycle`, and
+   resume step 5's "grill me" interview from where it left off (empty-month
+   definition for auto-lock, budget-inheritance on carry-forward,
+   server-side enforcement of the one-month planning horizon, and the
+   GraphQL surface for month/lock state — none of the original four
+   questions got answered yet).
 
 ## Phase 1 — Backend
 
