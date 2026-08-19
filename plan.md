@@ -158,7 +158,7 @@ There is no `activate`/bundle-into-`createCategory` behavior: `createCategory` i
 - user_id (fk)
 - name
 - amount_cents (integer — cents) — the current default/expected value; new instances (below) snapshot this at creation time unless overridden per-instance; also what `markRecurringPaid` defaults to suggesting, though the actual transaction amount can differ (variable bills — see below)
-- category_id (fk) — an *existing* category (e.g. "Housing"); creating a recurring expense never creates a new category
+- category_id (fk) — an *existing* category (e.g. "Housing"); creating a recurring expense never creates a new category; must be an `expense`-direction category (enforced service-side, `invalid_category_direction`) — an income category has no meaning here, since `direction` on the resulting `markRecurringPaid` transaction is derived from it
 - budget_type ('need' | 'want')
 - due_day
 

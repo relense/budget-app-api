@@ -30,6 +30,18 @@ function setup() {
     createdAt: new Date(),
     updatedAt: new Date(),
   });
+  prisma.categories.push({
+    id: 'cat-salary',
+    userId: 'user-1',
+    name: 'Salary',
+    icon: 'wallet',
+    color: '#000',
+    budgetType: null,
+    direction: 'income',
+    deletedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
 
   return { prisma, service };
 }
@@ -111,6 +123,20 @@ describe('createTemplate', () => {
         dueDay: 1,
       }),
     ).rejects.toMatchObject({ reason: 'invalid_budget_type' });
+  });
+
+  it('rejects a category whose direction is income — not meaningful for a recurring expense', async () => {
+    const { service } = setup();
+
+    await expect(
+      service.createTemplate('user-1', {
+        name: 'Salary',
+        amountCents: 300000,
+        categoryId: 'cat-salary',
+        budgetType: 'need',
+        dueDay: 1,
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_category_direction' });
   });
 });
 
@@ -330,6 +356,27 @@ describe('updateTemplate', () => {
         dueDay: 1,
       }),
     ).rejects.toMatchObject({ reason: 'invalid_budget_type' });
+  });
+
+  it('rejects changing categoryId to an income-direction category', async () => {
+    const { service } = setup();
+    const template = await service.createTemplate('user-1', {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: 'cat-housing',
+      budgetType: 'need',
+      dueDay: 1,
+    });
+
+    await expect(
+      service.updateTemplate('user-1', template.id, {
+        name: 'Rent',
+        amountCents: 80000,
+        categoryId: 'cat-salary',
+        budgetType: 'need',
+        dueDay: 1,
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_category_direction' });
   });
 });
 

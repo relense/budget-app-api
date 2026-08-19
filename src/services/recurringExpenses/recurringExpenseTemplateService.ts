@@ -18,6 +18,7 @@ export type RecurringExpenseTemplateServiceErrorReason =
   | 'invalid_amount'
   | 'invalid_due_day'
   | 'invalid_budget_type'
+  | 'invalid_category_direction'
   | 'template_not_found'
   | 'template_has_active_instances'
   | 'category_change_blocked';
@@ -77,7 +78,14 @@ export async function assertValidTemplateInput(
   assertValidAmount(input.amountCents);
   assertValidDueDay(input.dueDay);
   assertValidBudgetType(input.budgetType);
-  await assertOwnedCategory(client, userId, input.categoryId);
+  const category = await assertOwnedCategory(client, userId, input.categoryId);
+  // An income category (e.g. Salary) has no meaning as a recurring expense's
+  // category — direction is derived from the category at markRecurringPaid
+  // time, so this would otherwise let a "recurring expense" payment land as
+  // an income transaction.
+  if (category.direction !== 'expense') {
+    throw new RecurringExpenseTemplateServiceError('invalid_category_direction');
+  }
 }
 
 /** Public so recurringExpenseInstanceService can reuse the same ownership check. */
@@ -138,10 +146,7 @@ export function createRecurringExpenseTemplateService({ prisma }: RecurringExpen
 
   async function updateTemplate(userId: string, id: string, input: RecurringExpenseTemplateInput) {
     const existing = await assertOwnedTemplate(prisma, userId, id);
-    assertValidAmount(input.amountCents);
-    assertValidDueDay(input.dueDay);
-    assertValidBudgetType(input.budgetType);
-    await assertOwnedCategory(prisma, userId, input.categoryId);
+    await assertValidTemplateInput(prisma, userId, input);
 
     const data = {
       name: input.name,

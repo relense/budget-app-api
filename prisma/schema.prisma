@@ -162,8 +162,9 @@ model Transaction {
 }
 
 // Pure catalog — transversal across months, no month-awareness. Points at
-// an existing Category (never creates one). Soft-deleted, matching
-// Category, for the identical reason (see plan.md's step 4 design notes).
+// an existing Category (never creates one). Hard-deleted, not soft-deleted
+// (see plan.md's "Month Lifecycle" section) — blocked while any instance
+// references it, for any month, past or future.
 model RecurringExpenseTemplate {
   id          String     @id @default(uuid()) @db.Uuid
   userId      String     @map("user_id") @db.Uuid
