@@ -26,6 +26,13 @@ export async function withSavepoint<T>(
   await tx.$executeRawUnsafe(`SAVEPOINT ${savepointName}`);
   try {
     const value = await attempt();
+    // Released on success, not left to accumulate for the rest of the
+    // transaction — harmless either way under Postgres (a same-named
+    // SAVEPOINT can be re-declared repeatedly, and ROLLBACK TO SAVEPOINT
+    // doesn't require a prior RELEASE), but this keeps a caller that reuses
+    // one savepoint name in a loop (e.g. seedNewMonth) from stacking up
+    // unreleased savepoints for no reason.
+    await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${savepointName}`);
     return { ok: true, value };
   } catch (error) {
     await tx.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${savepointName}`);

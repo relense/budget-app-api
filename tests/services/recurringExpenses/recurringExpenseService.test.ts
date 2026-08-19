@@ -244,6 +244,45 @@ describe('carry-forward on first touch of a new month', () => {
     expect(prisma.recurringExpenses).toHaveLength(5);
   });
 
+  it('skips a name collision mid-seed but still seeds the remaining items (pr-reviewer coverage gap)', async () => {
+    // Proves withSavepoint's per-item skip in seedNewMonth's loop actually
+    // continues to the next item, not just that the overall call doesn't
+    // throw — the other "allows the same name" test only had one item to
+    // seed, so it couldn't distinguish "skipped and continued" from
+    // "skipped and stopped".
+    const { recurringExpenseService, housing } = await setup();
+    await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+    await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Electricity', amountCents: 6000, categoryId: housing.id, budgetType: 'need', dueDay: 10 },
+      '2026-08',
+    );
+    await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Gym', amountCents: 3000, categoryId: housing.id, budgetType: 'want', dueDay: 1 },
+      '2026-08',
+    );
+
+    // First touch of September, explicitly naming it "Rent" too — collides
+    // with the copied-forward Rent, but Electricity and Gym don't collide
+    // with anything and should still get seeded.
+    await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 85000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-09',
+    );
+
+    const september = await recurringExpenseService.listByMonth('user-1', '2026-09');
+    expect(september.map((re) => re.name).sort()).toEqual(['Electricity', 'Gym', 'Rent']);
+    // The explicit create wins the name — its amount, not the copied one's.
+    expect(september.find((re) => re.name === 'Rent')?.amountCents).toBe(85000);
+  });
+
   it('does not carry forward when the target month already existed', async () => {
     const { recurringExpenseService, housing } = await setup();
     await recurringExpenseService.createRecurringExpense(

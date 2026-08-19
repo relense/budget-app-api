@@ -347,35 +347,42 @@ export function createCategoryMonthService({
     const current = await findCurrentMonthOnClient(prisma, userId, now);
     assertWithinPlanningHorizon(current.month, month);
 
-    // In its own transaction, not on the raw (non-transactional) `prisma`
-    // client directly — resolveBudgetMonthIdWithCreatedFlag needs an active
-    // transaction to take a SAVEPOINT around its create attempt (see its
-    // own doc comment for why that's required, not optional, under this
-    // project's Prisma 7 + adapter-pg setup).
-    const { id: monthId, wasCreated: monthWasCreated } = await prisma.$transaction((tx) =>
-      resolveBudgetMonthIdWithCreatedFlag(tx, userId, month),
-    );
-
     let created;
+    let monthWasCreated = false;
     try {
-      // Re-checked inside the transaction, against the transactional
-      // client, right before the insert: narrows (does not fully close,
-      // since this is a plain read with no row lock under Postgres's
-      // default READ COMMITTED isolation) the window where a concurrent
-      // delete of this same category could otherwise land between the
-      // check above and the write, leaving a category_month row that
-      // references an already-soft-deleted category. The month-locked
-      // check, by contrast, *is* fully closed — assertMonthNotLockedOnClient
-      // takes lockBudgetMonthRow first, so this serializes against a
-      // concurrent lockMonth rather than racing it.
+      // resolveBudgetMonthIdWithCreatedFlag and the categoryMonth insert
+      // must share one transaction, not two separate ones — pr-reviewer
+      // caught that splitting them let a failure in the second (e.g.
+      // category_month_budget_required) leave the just-created BudgetMonth
+      // row committed from the first, permanently and silently losing the
+      // carry-forward trigger for that month: a retry would then find the
+      // row already exists and report wasCreated: false, even though this
+      // was genuinely the first successful activity there. One transaction
+      // means any failure — including the categoryId re-check and the
+      // month-locked check below — rolls back the BudgetMonth creation
+      // along with everything else, so there's never an orphaned row for a
+      // rejected attempt to hide behind.
       created = await prisma.$transaction(async (tx) => {
+        const { id: monthId, wasCreated } = await resolveBudgetMonthIdWithCreatedFlag(tx, userId, month);
+        // Re-checked inside the transaction, against the transactional
+        // client, right before the insert: narrows (does not fully close,
+        // since this is a plain read with no row lock under Postgres's
+        // default READ COMMITTED isolation) the window where a concurrent
+        // delete of this same category could otherwise land between the
+        // check above and the write, leaving a category_month row that
+        // references an already-soft-deleted category. The month-locked
+        // check, by contrast, *is* fully closed — assertMonthNotLockedOnClient
+        // takes lockBudgetMonthRow first, so this serializes against a
+        // concurrent lockMonth rather than racing it.
         await assertOwnedCategory(tx, userId, categoryId);
         await assertMonthNotLockedOnClient(tx, monthId);
         const resolvedBudget = await resolveBudgetForActivation(tx, userId, categoryId, monthlyBudgetCents);
 
-        return tx.categoryMonth.create({
+        const categoryMonth = await tx.categoryMonth.create({
           data: { userId, categoryId, monthId, monthlyBudgetCents: resolvedBudget },
         });
+        monthWasCreated = wasCreated;
+        return categoryMonth;
       });
     } catch (error) {
       if (error instanceof CategoryServiceError || error instanceof CategoryMonthServiceError) {
@@ -399,9 +406,19 @@ export function createCategoryMonthService({
     // doc comment on CategoryMonthServiceDeps for why). Only when this call
     // is genuinely the one that created the month — never on an
     // already-existing one — and never allowed to fail the category-add the
-    // user actually asked for: that already succeeded above.
+    // user actually asked for: caught and swallowed, not rethrown, since
+    // that already succeeded above and carry-forward seeding is best-effort
+    // (pr-reviewer flagged the missing try/catch here — a transient error
+    // inside seedNewMonth would otherwise report the whole mutation as
+    // failed even though the category was in fact added).
     if (monthWasCreated && onNewBudgetMonth) {
-      await onNewBudgetMonth(userId, month, monthId);
+      try {
+        await onNewBudgetMonth(userId, month, created.monthId);
+      } catch {
+        // Best-effort — the category-add above already succeeded and is
+        // what's returned; a missed carry-forward here just means the new
+        // month's recurring expenses need adding manually.
+      }
     }
 
     return created;

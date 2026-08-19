@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
 import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
 import { createCategoryService } from '../../../src/services/categories/categoryService.js';
@@ -288,6 +288,43 @@ describe('addCategoryToMonth', () => {
       categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08'),
     ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
     expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
+  it('leaves no orphaned BudgetMonth row behind when the insert fails, so a retry still triggers onNewBudgetMonth', async () => {
+    // Regression test (pr-reviewer, PR #14 round 1): resolveBudgetMonthIdWithCreatedFlag
+    // and the categoryMonth insert used to run in two separate transactions
+    // — a failure in the second (like category_month_budget_required below)
+    // left the first transaction's BudgetMonth row committed anyway, and a
+    // subsequent successful retry would then see wasCreated: false, silently
+    // and permanently losing the carry-forward trigger for that month.
+    const prisma = createFakePrisma();
+    const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
+    const categoryService = createCategoryService({ prisma: prisma as never });
+    const onNewBudgetMonth = jest.fn(async (_userId: string, _month: string, _monthId: string) => undefined);
+    const categoryMonthService = createCategoryMonthService({
+      prisma: prisma as never,
+      budgetMonthService,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+      onNewBudgetMonth,
+    });
+    const category = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', category.id, '2026-08'),
+    ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
+    expect(prisma.budgetMonths).toHaveLength(0);
+    expect(onNewBudgetMonth).not.toHaveBeenCalled();
+
+    await categoryMonthService.addCategoryToMonth('user-1', category.id, '2026-08', 90000);
+
+    expect(prisma.budgetMonths).toHaveLength(1);
+    expect(onNewBudgetMonth).toHaveBeenCalledWith('user-1', '2026-08', prisma.budgetMonths[0]!.id);
   });
 
   it('throws budget_month_not_found when the target BudgetMonth is deleted between the lock and the insert', async () => {

@@ -253,8 +253,17 @@ export function createRecurringExpenseService({
       throw error;
     }
 
+    // Best-effort, not allowed to fail the create above — that already
+    // succeeded and is what's returned. A transient error here just means
+    // the new month's other recurring expenses need adding manually,
+    // same reasoning as categoryMonthService.addCategoryToMonth's
+    // onNewBudgetMonth call (pr-reviewer flagged the missing try/catch).
     if (monthWasCreated) {
-      await seedNewMonth(userId, month, monthId);
+      try {
+        await seedNewMonth(userId, month, monthId);
+      } catch {
+        // Swallowed deliberately — see comment above.
+      }
     }
 
     return created;
