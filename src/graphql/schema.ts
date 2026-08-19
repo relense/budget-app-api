@@ -27,7 +27,7 @@ interface TransactionGraphQLInput {
   note?: string | null;
 }
 
-interface RecurringExpenseTemplateGraphQLInput {
+interface RecurringExpenseGraphQLInput {
   name: string;
   amountCents: number;
   categoryId: string;
@@ -90,23 +90,23 @@ export const schema = createSchema<GraphQLContext>({
       note: String
       direction: Direction!
       categoryMonth: CategoryMonth!
-      recurringExpenseInstance: RecurringExpenseInstance
+      recurringExpense: RecurringExpense
     }
 
-    type RecurringExpenseTemplate {
+    """
+    One flat row per recurring expense per month it exists in — no separate
+    template, unlike the superseded design (see docs/PLAN.md). Editing one
+    only ever touches this row; carrying it into a new month is automatic
+    (see Query.recurringExpenses / Month Lifecycle in docs/PLAN.md).
+    """
+    type RecurringExpense {
       id: ID!
+      month: String!
       name: String!
       amountCents: Int!
       budgetType: BudgetType!
       dueDay: Int!
       category: Category!
-    }
-
-    type RecurringExpenseInstance {
-      id: ID!
-      month: String!
-      amountCents: Int!
-      template: RecurringExpenseTemplate!
       paidThisMonth: Boolean!
       transactions: [Transaction!]!
     }
@@ -127,7 +127,7 @@ export const schema = createSchema<GraphQLContext>({
       note: String
     }
 
-    input RecurringExpenseTemplateInput {
+    input RecurringExpenseInput {
       name: String!
       amountCents: Int!
       categoryId: ID!
@@ -148,8 +148,7 @@ export const schema = createSchema<GraphQLContext>({
       categories: [Category!]!
       categoryMonths(month: String!): [CategoryMonth!]!
       transactions(month: String!, categoryId: ID): [Transaction!]!
-      recurringExpenseTemplates: [RecurringExpenseTemplate!]!
-      recurringExpenseInstances(month: String!): [RecurringExpenseInstance!]!
+      recurringExpenses(month: String!): [RecurringExpense!]!
     }
 
     type Mutation {
@@ -168,20 +167,12 @@ export const schema = createSchema<GraphQLContext>({
       updateTransaction(id: ID!, input: TransactionInput!): Transaction!
       deleteTransaction(id: ID!): Boolean!
 
-      createRecurringExpenseTemplate(
-        input: RecurringExpenseTemplateInput!
+      createRecurringExpense(
+        input: RecurringExpenseInput!
         month: String!
         categoryMonthlyBudgetCents: Int
-      ): RecurringExpenseTemplate!
-      updateRecurringExpenseTemplate(id: ID!, input: RecurringExpenseTemplateInput!): RecurringExpenseTemplate!
-      deleteRecurringExpenseTemplate(id: ID!): Boolean!
-
-      addRecurringExpenseToMonth(
-        templateId: ID!
-        month: String!
-        categoryMonthlyBudgetCents: Int
-      ): RecurringExpenseInstance!
-      updateRecurringExpenseInstance(id: ID!, amountCents: Int!): RecurringExpenseInstance!
+      ): RecurringExpense!
+      updateRecurringExpense(id: ID!, input: RecurringExpenseInput!): RecurringExpense!
       removeRecurringExpenseFromMonth(id: ID!): Boolean!
       markRecurringPaid(id: ID!, input: MarkRecurringPaidInput!): Transaction!
     }
@@ -205,13 +196,9 @@ export const schema = createSchema<GraphQLContext>({
         const userId = requireUserId(context.userId);
         return context.transactionService.list(userId, args.month, args.categoryId ?? undefined);
       },
-      recurringExpenseTemplates: async (_parent, _args: unknown, context) => {
+      recurringExpenses: async (_parent, args: { month: string }, context) => {
         const userId = requireUserId(context.userId);
-        return context.templateService.listCatalog(userId);
-      },
-      recurringExpenseInstances: async (_parent, args: { month: string }, context) => {
-        const userId = requireUserId(context.userId);
-        return context.instanceService.listByMonth(userId, args.month);
+        return context.recurringExpenseService.listByMonth(userId, args.month);
       },
     },
     Mutation: {
@@ -356,10 +343,10 @@ export const schema = createSchema<GraphQLContext>({
           toGraphQLError(error);
         }
       },
-      createRecurringExpenseTemplate: async (
+      createRecurringExpense: async (
         _parent,
         args: {
-          input: RecurringExpenseTemplateGraphQLInput;
+          input: RecurringExpenseGraphQLInput;
           month: string;
           categoryMonthlyBudgetCents?: number | null;
         },
@@ -367,7 +354,7 @@ export const schema = createSchema<GraphQLContext>({
       ) => {
         const userId = requireUserId(context.userId);
         try {
-          const { template } = await context.instanceService.createTemplateForMonth(
+          return await context.recurringExpenseService.createRecurringExpense(
             userId,
             {
               name: args.input.name,
@@ -379,19 +366,18 @@ export const schema = createSchema<GraphQLContext>({
             args.month,
             args.categoryMonthlyBudgetCents ?? undefined,
           );
-          return template;
         } catch (error) {
           toGraphQLError(error);
         }
       },
-      updateRecurringExpenseTemplate: async (
+      updateRecurringExpense: async (
         _parent,
-        args: { id: string; input: RecurringExpenseTemplateGraphQLInput },
+        args: { id: string; input: RecurringExpenseGraphQLInput },
         context,
       ) => {
         const userId = requireUserId(context.userId);
         try {
-          return await context.templateService.updateTemplate(userId, args.id, {
+          return await context.recurringExpenseService.updateRecurringExpense(userId, args.id, {
             name: args.input.name,
             amountCents: args.input.amountCents,
             categoryId: args.input.categoryId,
@@ -402,48 +388,10 @@ export const schema = createSchema<GraphQLContext>({
           toGraphQLError(error);
         }
       },
-      deleteRecurringExpenseTemplate: async (_parent, args: { id: string }, context) => {
-        const userId = requireUserId(context.userId);
-        try {
-          await context.templateService.deleteTemplate(userId, args.id);
-          return true;
-        } catch (error) {
-          toGraphQLError(error);
-        }
-      },
-      addRecurringExpenseToMonth: async (
-        _parent,
-        args: { templateId: string; month: string; categoryMonthlyBudgetCents?: number | null },
-        context,
-      ) => {
-        const userId = requireUserId(context.userId);
-        try {
-          return await context.instanceService.addRecurringExpenseToMonth(
-            userId,
-            args.templateId,
-            args.month,
-            args.categoryMonthlyBudgetCents ?? undefined,
-          );
-        } catch (error) {
-          toGraphQLError(error);
-        }
-      },
-      updateRecurringExpenseInstance: async (
-        _parent,
-        args: { id: string; amountCents: number },
-        context,
-      ) => {
-        const userId = requireUserId(context.userId);
-        try {
-          return await context.instanceService.updateInstance(userId, args.id, args.amountCents);
-        } catch (error) {
-          toGraphQLError(error);
-        }
-      },
       removeRecurringExpenseFromMonth: async (_parent, args: { id: string }, context) => {
         const userId = requireUserId(context.userId);
         try {
-          await context.instanceService.removeFromMonth(userId, args.id);
+          await context.recurringExpenseService.removeFromMonth(userId, args.id);
           return true;
         } catch (error) {
           toGraphQLError(error);
@@ -456,7 +404,7 @@ export const schema = createSchema<GraphQLContext>({
       ) => {
         const userId = requireUserId(context.userId);
         try {
-          return await context.instanceService.markRecurringPaid(userId, args.id, {
+          return await context.recurringExpenseService.markRecurringPaid(userId, args.id, {
             amountCents: args.input.amountCents,
             date: args.input.date,
             merchant: args.input.merchant ?? undefined,
@@ -496,22 +444,17 @@ export const schema = createSchema<GraphQLContext>({
       categoryMonth: async (parent: { categoryMonthId: string }, _args: unknown, context) => {
         return context.loaders.categoryMonthById.load(parent.categoryMonthId);
       },
-      recurringExpenseInstance: async (
-        parent: { recurringExpenseInstanceId: string | null },
+      recurringExpense: async (
+        parent: { recurringExpenseId: string | null },
         _args: unknown,
         context,
       ) => {
-        if (!parent.recurringExpenseInstanceId) return null;
-        return context.loaders.recurringExpenseInstanceById.load(parent.recurringExpenseInstanceId);
+        if (!parent.recurringExpenseId) return null;
+        return context.loaders.recurringExpenseById.load(parent.recurringExpenseId);
       },
     },
-    RecurringExpenseTemplate: {
+    RecurringExpense: {
       budgetType: (parent: { budgetType: 'need' | 'want' }) => budgetTypeToGraphQL(parent.budgetType),
-      category: async (parent: { categoryId: string }, _args: unknown, context) => {
-        return context.loaders.categoryById.load(parent.categoryId);
-      },
-    },
-    RecurringExpenseInstance: {
       month: async (parent: { monthId: string }, _args: unknown, context) => {
         const budgetMonth = await context.loaders.budgetMonthById.load(parent.monthId);
         if (!budgetMonth) {
@@ -519,20 +462,14 @@ export const schema = createSchema<GraphQLContext>({
         }
         return budgetMonth.month;
       },
-      template: async (parent: { templateId: string }, _args: unknown, context) => {
-        const template = await context.loaders.recurringExpenseTemplateById.load(parent.templateId);
-        if (!template) {
-          throw new Error(`Data integrity error: RecurringExpenseTemplate ${parent.templateId} not found`);
-        }
-        return template;
+      category: async (parent: { categoryId: string }, _args: unknown, context) => {
+        return context.loaders.categoryById.load(parent.categoryId);
       },
       transactions: async (parent: { id: string }, _args: unknown, context) => {
-        return context.loaders.transactionsByRecurringExpenseInstanceId.load(parent.id);
+        return context.loaders.transactionsByRecurringExpenseId.load(parent.id);
       },
       paidThisMonth: async (parent: { id: string; amountCents: number }, _args: unknown, context) => {
-        const transactions = await context.loaders.transactionsByRecurringExpenseInstanceId.load(
-          parent.id,
-        );
+        const transactions = await context.loaders.transactionsByRecurringExpenseId.load(parent.id);
         const paidCents = transactions.reduce((sum, transaction) => sum + transaction.amountCents, 0);
         return paidCents >= parent.amountCents;
       },

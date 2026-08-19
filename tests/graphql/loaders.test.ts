@@ -8,10 +8,9 @@ function buildDeps(overrides: Partial<GraphQLLoaderDeps> = {}): GraphQLLoaderDep
     budgetMonthService: { findManyByIds: jest.fn(async () => []) },
     transactionService: {
       listByCategoryMonthIds: jest.fn(async () => []),
-      listByRecurringExpenseInstanceIds: jest.fn(async () => []),
+      listByRecurringExpenseIds: jest.fn(async () => []),
     },
-    templateService: { findManyByIds: jest.fn(async () => []) },
-    instanceService: {
+    recurringExpenseService: {
       findManyByIds: jest.fn(async () => []),
       sumCommittedCentsForCategoryMonth: jest.fn(async () => 0),
     },
@@ -19,60 +18,44 @@ function buildDeps(overrides: Partial<GraphQLLoaderDeps> = {}): GraphQLLoaderDep
   } as unknown as GraphQLLoaderDeps;
 }
 
-describe('recurringExpenseTemplateById', () => {
+describe('recurringExpenseById', () => {
   it('batches multiple loads into a single findManyByIds call and maps rows back by id', async () => {
     const findManyByIds = jest.fn(async (ids: string[]) =>
       ids
-        .filter((id) => id === 'tpl-1' || id === 'tpl-2')
+        .filter((id) => id === 'recurring-1' || id === 'recurring-2')
         .map((id) => ({ id, name: id })),
     );
-    const deps = buildDeps({ templateService: { findManyByIds } as never });
-    const loaders = createGraphQLLoaders(deps);
-
-    const [a, b] = await Promise.all([
-      loaders.recurringExpenseTemplateById.load('tpl-1'),
-      loaders.recurringExpenseTemplateById.load('tpl-2'),
-    ]);
-
-    expect(findManyByIds).toHaveBeenCalledTimes(1);
-    expect(findManyByIds).toHaveBeenCalledWith(['tpl-1', 'tpl-2']);
-    expect(a).toMatchObject({ id: 'tpl-1' });
-    expect(b).toMatchObject({ id: 'tpl-2' });
-  });
-
-  it('resolves to null for an id with no matching row', async () => {
     const deps = buildDeps({
-      templateService: { findManyByIds: jest.fn(async () => []) } as never,
-    });
-    const loaders = createGraphQLLoaders(deps);
-
-    const result = await loaders.recurringExpenseTemplateById.load('missing');
-
-    expect(result).toBeNull();
-  });
-});
-
-describe('recurringExpenseInstanceById', () => {
-  it('batches multiple loads into a single findManyByIds call and maps rows back by id', async () => {
-    const findManyByIds = jest.fn(async (ids: string[]) =>
-      ids.filter((id) => id === 'inst-1').map((id) => ({ id, amountCents: 100 })),
-    );
-    const deps = buildDeps({
-      instanceService: {
+      recurringExpenseService: {
         findManyByIds,
         sumCommittedCentsForCategoryMonth: jest.fn(async () => 0),
       } as never,
     });
     const loaders = createGraphQLLoaders(deps);
 
-    const [found, missing] = await Promise.all([
-      loaders.recurringExpenseInstanceById.load('inst-1'),
-      loaders.recurringExpenseInstanceById.load('inst-2'),
+    const [a, b] = await Promise.all([
+      loaders.recurringExpenseById.load('recurring-1'),
+      loaders.recurringExpenseById.load('recurring-2'),
     ]);
 
     expect(findManyByIds).toHaveBeenCalledTimes(1);
-    expect(found).toMatchObject({ id: 'inst-1' });
-    expect(missing).toBeNull();
+    expect(findManyByIds).toHaveBeenCalledWith(['recurring-1', 'recurring-2']);
+    expect(a).toMatchObject({ id: 'recurring-1' });
+    expect(b).toMatchObject({ id: 'recurring-2' });
+  });
+
+  it('resolves to null for an id with no matching row', async () => {
+    const deps = buildDeps({
+      recurringExpenseService: {
+        findManyByIds: jest.fn(async () => []),
+        sumCommittedCentsForCategoryMonth: jest.fn(async () => 0),
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    const result = await loaders.recurringExpenseById.load('missing');
+
+    expect(result).toBeNull();
   });
 });
 
@@ -86,7 +69,7 @@ describe('recurringCommittedCentsByCategoryMonthId', () => {
     const sumCommittedCentsForCategoryMonth = jest.fn(async (_categoryId: string, _monthId: string) => 4000);
     const deps = buildDeps({
       categoryMonthService: { findManyByIds: categoryMonthFindManyByIds } as never,
-      instanceService: {
+      recurringExpenseService: {
         findManyByIds: jest.fn(async () => []),
         sumCommittedCentsForCategoryMonth,
       } as never,
@@ -103,7 +86,7 @@ describe('recurringCommittedCentsByCategoryMonthId', () => {
     const sumCommittedCentsForCategoryMonth = jest.fn(async () => 0);
     const deps = buildDeps({
       categoryMonthService: { findManyByIds: jest.fn(async () => []) } as never,
-      instanceService: {
+      recurringExpenseService: {
         findManyByIds: jest.fn(async () => []),
         sumCommittedCentsForCategoryMonth,
       } as never,
@@ -117,45 +100,49 @@ describe('recurringCommittedCentsByCategoryMonthId', () => {
   });
 });
 
-describe('transactionsByRecurringExpenseInstanceId', () => {
-  it('batches multiple loads into a single call and groups rows by instance id', async () => {
-    const listByRecurringExpenseInstanceIds = jest.fn(async (ids: string[]) => [
-      { id: 'tx-1', recurringExpenseInstanceId: 'inst-1', amountCents: 100 },
-      { id: 'tx-2', recurringExpenseInstanceId: 'inst-1', amountCents: 200 },
-      { id: 'tx-3', recurringExpenseInstanceId: ids.includes('inst-2') ? 'inst-2' : null, amountCents: 300 },
+describe('transactionsByRecurringExpenseId', () => {
+  it('batches multiple loads into a single call and groups rows by recurring expense id', async () => {
+    const listByRecurringExpenseIds = jest.fn(async (ids: string[]) => [
+      { id: 'tx-1', recurringExpenseId: 'recurring-1', amountCents: 100 },
+      { id: 'tx-2', recurringExpenseId: 'recurring-1', amountCents: 200 },
+      {
+        id: 'tx-3',
+        recurringExpenseId: ids.includes('recurring-2') ? 'recurring-2' : null,
+        amountCents: 300,
+      },
     ]);
     const deps = buildDeps({
       transactionService: {
         listByCategoryMonthIds: jest.fn(async () => []),
-        listByRecurringExpenseInstanceIds,
+        listByRecurringExpenseIds,
       } as never,
     });
     const loaders = createGraphQLLoaders(deps);
 
-    const [forInstance1, forInstance2] = await Promise.all([
-      loaders.transactionsByRecurringExpenseInstanceId.load('inst-1'),
-      loaders.transactionsByRecurringExpenseInstanceId.load('inst-2'),
+    const [forFirst, forSecond] = await Promise.all([
+      loaders.transactionsByRecurringExpenseId.load('recurring-1'),
+      loaders.transactionsByRecurringExpenseId.load('recurring-2'),
     ]);
 
-    expect(listByRecurringExpenseInstanceIds).toHaveBeenCalledTimes(1);
-    expect(listByRecurringExpenseInstanceIds).toHaveBeenCalledWith(['inst-1', 'inst-2']);
-    expect(forInstance1.map((tx) => tx.id)).toEqual(['tx-1', 'tx-2']);
-    expect(forInstance2.map((tx) => tx.id)).toEqual(['tx-3']);
+    expect(listByRecurringExpenseIds).toHaveBeenCalledTimes(1);
+    expect(listByRecurringExpenseIds).toHaveBeenCalledWith(['recurring-1', 'recurring-2']);
+    expect(forFirst.map((tx) => tx.id)).toEqual(['tx-1', 'tx-2']);
+    expect(forSecond.map((tx) => tx.id)).toEqual(['tx-3']);
   });
 
-  it('excludes rows with a null recurringExpenseInstanceId instead of grouping them under a falsy key', async () => {
-    const listByRecurringExpenseInstanceIds = jest.fn(async () => [
-      { id: 'tx-unlinked', recurringExpenseInstanceId: null, amountCents: 500 },
+  it('excludes rows with a null recurringExpenseId instead of grouping them under a falsy key', async () => {
+    const listByRecurringExpenseIds = jest.fn(async () => [
+      { id: 'tx-unlinked', recurringExpenseId: null, amountCents: 500 },
     ]);
     const deps = buildDeps({
       transactionService: {
         listByCategoryMonthIds: jest.fn(async () => []),
-        listByRecurringExpenseInstanceIds,
+        listByRecurringExpenseIds,
       } as never,
     });
     const loaders = createGraphQLLoaders(deps);
 
-    const result = await loaders.transactionsByRecurringExpenseInstanceId.load('inst-1');
+    const result = await loaders.transactionsByRecurringExpenseId.load('recurring-1');
 
     expect(result).toEqual([]);
   });
@@ -164,13 +151,18 @@ describe('transactionsByRecurringExpenseInstanceId', () => {
 describe('per-request isolation', () => {
   it('does not share a cache across two createGraphQLLoaders() calls', async () => {
     const findManyByIds = jest.fn(async (ids: string[]) => ids.map((id) => ({ id })));
-    const deps = buildDeps({ templateService: { findManyByIds } as never });
+    const deps = buildDeps({
+      recurringExpenseService: {
+        findManyByIds,
+        sumCommittedCentsForCategoryMonth: jest.fn(async () => 0),
+      } as never,
+    });
 
     const requestOneLoaders = createGraphQLLoaders(deps);
-    await requestOneLoaders.recurringExpenseTemplateById.load('tpl-1');
+    await requestOneLoaders.recurringExpenseById.load('recurring-1');
 
     const requestTwoLoaders = createGraphQLLoaders(deps);
-    await requestTwoLoaders.recurringExpenseTemplateById.load('tpl-1');
+    await requestTwoLoaders.recurringExpenseById.load('recurring-1');
 
     expect(findManyByIds).toHaveBeenCalledTimes(2);
   });

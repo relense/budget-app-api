@@ -29,7 +29,7 @@ export function budgetTypeToDb(value: GraphQLBudgetType | null | undefined): Bud
   return value ? BUDGET_TYPE_TO_DB[value] : undefined;
 }
 
-/** For inputs where budgetType is non-null in the GraphQL schema (e.g. RecurringExpenseTemplateInput). */
+/** For inputs where budgetType is non-null in the GraphQL schema (e.g. RecurringExpenseInput). */
 export function budgetTypeToDbRequired(value: GraphQLBudgetType): BudgetType {
   return BUDGET_TYPE_TO_DB[value];
 }

@@ -16,8 +16,7 @@ import { createBudgetMonthService } from './services/budgetMonths/budgetMonthSer
 import { createCategoryMonthService } from './services/categories/categoryMonthService.js';
 import { createCategoryService } from './services/categories/categoryService.js';
 import { createTransactionService } from './services/categories/transactionService.js';
-import { createRecurringExpenseInstanceService } from './services/recurringExpenses/recurringExpenseInstanceService.js';
-import { createRecurringExpenseTemplateService } from './services/recurringExpenses/recurringExpenseTemplateService.js';
+import { createRecurringExpenseService } from './services/recurringExpenses/recurringExpenseService.js';
 
 const MAX_QUERY_DEPTH = 10;
 const BEARER_PREFIX = 'Bearer ';
@@ -40,8 +39,7 @@ export interface BuildServerOptions {
     | 'categoryMonth'
     | 'budgetMonth'
     | 'transaction'
-    | 'recurringExpenseTemplate'
-    | 'recurringExpenseInstance'
+    | 'recurringExpense'
   >;
   authService: Pick<
     AuthService,
@@ -67,21 +65,27 @@ export async function buildServer({
 
   const budgetMonthService = createBudgetMonthService({ prisma });
   const categoryService = createCategoryService({ prisma });
-  const categoryMonthService = createCategoryMonthService({ prisma, budgetMonthService });
   const transactionService = createTransactionService({ prisma, budgetMonthService });
-  const templateService = createRecurringExpenseTemplateService({ prisma });
-  const instanceService = createRecurringExpenseInstanceService({
+  const recurringExpenseService = createRecurringExpenseService({
     prisma,
     budgetMonthService,
     transactionService,
+  });
+  // onNewBudgetMonth wired here, not imported directly by categoryMonthService
+  // — see CategoryMonthServiceDeps's doc comment for why (keeps the
+  // one-directional service-layer dependency graph: recurringExpenseService
+  // depends on categoryMonthService, never the reverse).
+  const categoryMonthService = createCategoryMonthService({
+    prisma,
+    budgetMonthService,
+    onNewBudgetMonth: recurringExpenseService.seedNewMonth,
   });
   const buildGraphQLContext = createGraphQLContextBuilder({
     categoryService,
     categoryMonthService,
     budgetMonthService,
     transactionService,
-    templateService,
-    instanceService,
+    recurringExpenseService,
   });
 
   app.get('/health', async (_request, reply) => {

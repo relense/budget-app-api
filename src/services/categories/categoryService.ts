@@ -132,11 +132,10 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
 
     try {
       // Hard delete now, backed by CategoryMonth.category's and
-      // RecurringExpenseTemplate.category's onDelete: Restrict FKs — the
-      // DB-level backstop closes the race the pre-check above can't (a
-      // concurrent category_month or recurring-expense-template insert
-      // landing between the check and this delete), same pattern as
-      // recurringExpenseTemplateService's deleteTemplate.
+      // RecurringExpense.category's onDelete: Restrict FKs — the DB-level
+      // backstop closes the race the pre-check above can't (a concurrent
+      // category_month or recurring-expense insert landing between the
+      // check and this delete).
       await prisma.category.delete({ where: { id } });
     } catch (error) {
       if (hasPrismaErrorCode(error, 'P2003')) {

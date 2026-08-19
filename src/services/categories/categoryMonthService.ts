@@ -2,17 +2,19 @@ import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
 import {
   findCurrentMonthOnClient,
   lockBudgetMonthRow,
-  resolveBudgetMonthId,
+  resolveBudgetMonthIdWithCreatedFlag,
 } from '../budgetMonths/budgetMonthService.js';
 import { assertOwnedCategory, CategoryServiceError } from './categoryService.js';
 import { addMonths, isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
+import { withSavepoint } from '../../lib/prismaSavepoint.js';
 
 export type CategoryMonthServiceErrorReason =
   | 'category_month_not_found'
   | 'category_month_already_active'
   | 'category_month_has_transactions'
+  | 'category_month_has_recurring_expenses'
   | 'category_month_budget_required'
   | 'category_month_beyond_planning_horizon'
   | 'month_locked'
@@ -30,10 +32,25 @@ export class CategoryMonthServiceError extends Error {
 export interface CategoryMonthServiceDeps {
   prisma: Pick<
     PrismaClient,
-    'category' | 'categoryMonth' | 'transaction' | 'budgetMonth' | '$transaction' | '$queryRaw'
+    'category' | 'categoryMonth' | 'transaction' | 'budgetMonth' | 'recurringExpense' | '$transaction' | '$queryRaw'
   >;
-  budgetMonthService: Pick<BudgetMonthService, 'resolveBudgetMonthId' | 'findBudgetMonthId'>;
+  budgetMonthService: Pick<BudgetMonthService, 'findBudgetMonthId'>;
   now?: () => Date;
+  /**
+   * Called once, only when addCategoryToMonth is the action that causes a
+   * brand-new BudgetMonth row to be created (never on an already-existing
+   * month) — seeds that new month's recurring expenses by copying the
+   * previous month's, same trigger recurringExpenseService's own
+   * createRecurringExpense uses. Optional, plain function injection (not a
+   * full service dependency) specifically so categoryMonthService never
+   * has to import recurringExpenseService directly — that service already
+   * depends on this one (via ensureActiveForCategoryOnClient), and a
+   * two-way file dependency between them would break the one-directional
+   * layering every other service in this codebase maintains. Wired in
+   * server.ts. Runs its own transaction — see recurringExpenseService's
+   * seedNewMonth for why this isn't threaded through the caller's.
+   */
+  onNewBudgetMonth?: (userId: string, month: string, monthId: string) => Promise<void>;
 }
 
 function assertValidBudget(monthlyBudgetCents: number): void {
@@ -132,7 +149,7 @@ async function assertMonthNotLockedOnClient(
  * freshly-created (always unlocked) row would itself become the new
  * "earliest unlocked" — silently dragging "current" itself backwards for
  * every future call this user makes. Exported standalone so
- * recurringExpenseInstanceService's auto-activation path (which shares
+ * recurringExpenseService's auto-activation path (which shares
  * ensureActiveForCategoryOnClient) enforces the identical rule, not a
  * separately-maintained copy.
  *
@@ -155,13 +172,19 @@ export function assertWithinPlanningHorizon(currentMonth: string, month: string)
 /**
  * Client-parameterized core of ensureActiveForCategory — exported standalone
  * so a caller that already has its own open transaction (e.g.
- * recurringExpenseInstanceService's locked instance-creation flow) can run
- * this as part of that same transaction. No nested transaction here (Prisma
- * doesn't support nesting $transaction calls) — the bound service method
- * below supplies one for regular (non-nested) callers.
+ * recurringExpenseService's locked-creation flow) can run this as part of
+ * that same transaction. No nested transaction here (Prisma doesn't support
+ * nesting $transaction calls) — the bound service method below supplies one
+ * for regular (non-nested) callers.
+ *
+ * Returns `monthWasCreated` alongside the categoryMonth row — true only when
+ * *this call* is the one that created the BudgetMonth row (never on an
+ * already-existing month, and never on the "already active" idempotent
+ * return below). recurringExpenseService uses this to decide whether to
+ * seed the new month's recurring expenses from the previous one.
  */
 export async function ensureActiveForCategoryOnClient(
-  client: Pick<PrismaClient, 'category' | 'categoryMonth' | 'budgetMonth' | '$queryRaw'>,
+  client: Pick<PrismaClient, 'category' | 'categoryMonth' | 'budgetMonth' | '$queryRaw' | '$executeRawUnsafe'>,
   userId: string,
   categoryId: string,
   month: string,
@@ -171,16 +194,16 @@ export async function ensureActiveForCategoryOnClient(
   assertValidMonth(month);
   await assertOwnedCategory(client, userId, categoryId);
 
-  // Captured before resolveBudgetMonthId's upsert below — see
+  // Captured before resolveBudgetMonthIdWithCreatedFlag's create below — see
   // assertWithinPlanningHorizon's doc comment for why the ordering matters.
   const current = await findCurrentMonthOnClient(client, userId, now);
 
-  // Read-only — unlike resolveBudgetMonthId below, never creates a row.
-  // Only used to decide whether this call is idempotent (category already
-  // active this month, the one case the horizon check doesn't apply to);
-  // resolveBudgetMonthId's upsert must not run at all until that's
-  // resolved, so a rejected month can't leave a row behind regardless of
-  // how this call would otherwise have turned out.
+  // Read-only — unlike resolveBudgetMonthIdWithCreatedFlag below, never
+  // creates a row. Only used to decide whether this call is idempotent
+  // (category already active this month, the one case the horizon check
+  // doesn't apply to); the row-creating call must not run at all until
+  // that's resolved, so a rejected month can't leave a row behind
+  // regardless of how this call would otherwise have turned out.
   const existingBudgetMonth = await client.budgetMonth.findUnique({
     where: { userId_month: { userId, month } },
   });
@@ -196,43 +219,56 @@ export async function ensureActiveForCategoryOnClient(
     assertWithinPlanningHorizon(current.month, month);
   }
 
-  const monthId = await resolveBudgetMonthId(client, userId, month);
+  const { id: monthId, wasCreated: monthWasCreated } = await resolveBudgetMonthIdWithCreatedFlag(
+    client,
+    userId,
+    month,
+  );
   await assertMonthNotLockedOnClient(client, monthId);
 
-  if (alreadyActive) return alreadyActive;
+  if (alreadyActive) return { categoryMonth: alreadyActive, monthWasCreated: false };
 
   const resolvedBudget = await resolveBudgetForActivation(client, userId, categoryId, monthlyBudgetCents);
 
-  try {
-    return await client.categoryMonth.create({
+  // Under withSavepoint, not a plain try/catch — a caught conflict here
+  // still needs a follow-up read (the winner lookup below) inside this same
+  // transaction, and Postgres aborts the rest of a transaction after any
+  // failed statement unless it's wrapped in a SAVEPOINT. Confirmed by a
+  // real-Postgres repro, not just theoretical — see withSavepoint's doc
+  // comment.
+  const attempt = await withSavepoint(client, 'category_month_create', () =>
+    client.categoryMonth.create({
       data: { userId, categoryId, monthId, monthlyBudgetCents: resolvedBudget },
-    });
-  } catch (error) {
-    if (hasPrismaErrorCode(error, 'P2002')) {
-      // Lost a race to a concurrent create for the same (categoryId,
-      // monthId) — fine here, "ensure active" is idempotent by design,
-      // just return the winner instead of erroring.
-      const winner = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
-      if (winner) return winner;
-    }
-    // Belt-and-suspenders, not expected to actually trigger: once
-    // assertMonthNotLockedOnClient above passes, this transaction holds
-    // the row lock on budget_months for its own remaining lifetime, so a
-    // concurrent deleteBudgetMonth can't win the row and delete out from
-    // under this insert. Kept anyway, matching this file's established
-    // pre-check-plus-FK-catch pattern elsewhere, in case that ordering
-    // ever changes.
-    if (hasPrismaErrorCode(error, 'P2003')) {
-      throw new CategoryMonthServiceError('budget_month_not_found');
-    }
-    throw error;
+    }),
+  );
+  if (attempt.ok) {
+    return { categoryMonth: attempt.value, monthWasCreated };
   }
+  if (hasPrismaErrorCode(attempt.error, 'P2002')) {
+    // Lost a race to a concurrent create for the same (categoryId,
+    // monthId) — fine here, "ensure active" is idempotent by design, just
+    // return the winner instead of erroring.
+    const winner = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
+    if (winner) return { categoryMonth: winner, monthWasCreated };
+  }
+  // Belt-and-suspenders, not expected to actually trigger: once
+  // assertMonthNotLockedOnClient above passes, this transaction holds the
+  // row lock on budget_months for its own remaining lifetime, so a
+  // concurrent deleteBudgetMonth can't win the row and delete out from
+  // under this insert. Kept anyway, matching this file's established
+  // pre-check-plus-FK-catch pattern elsewhere, in case that ordering ever
+  // changes.
+  if (hasPrismaErrorCode(attempt.error, 'P2003')) {
+    throw new CategoryMonthServiceError('budget_month_not_found');
+  }
+  throw attempt.error;
 }
 
 export function createCategoryMonthService({
   prisma,
   budgetMonthService,
   now = () => new Date(),
+  onNewBudgetMonth,
 }: CategoryMonthServiceDeps) {
   async function findOwnedCategoryMonth(userId: string, categoryMonthId: string) {
     const categoryMonth = await prisma.categoryMonth.findUnique({ where: { id: categoryMonthId } });
@@ -270,40 +306,40 @@ export function createCategoryMonthService({
     if (monthlyBudgetCents !== undefined) assertValidBudget(monthlyBudgetCents);
     assertValidMonth(month);
 
-    // Checked before resolveBudgetMonthId deliberately: that call upserts a
-    // permanent BudgetMonth row with no delete path, so a bad categoryId
-    // must fail before it, not after — otherwise every failed attempt
-    // leaves a corrupt-but-permanent row behind.
+    // Checked before resolveBudgetMonthIdWithCreatedFlag deliberately: that
+    // call permanently creates a BudgetMonth row, so a bad categoryId must
+    // fail before it, not after — otherwise every failed attempt leaves a
+    // corrupt-but-permanent row behind.
     await assertOwnedCategory(prisma, userId, categoryId);
 
-    // Captured before resolveBudgetMonthId's upsert below — see
-    // assertWithinPlanningHorizon's doc comment for why the ordering
+    // Captured before resolveBudgetMonthIdWithCreatedFlag's create below —
+    // see assertWithinPlanningHorizon's doc comment for why the ordering
     // matters (a rejected month must never leave a row behind, and for a
     // rejected *past* month specifically, that row would go on to corrupt
     // "current" itself for every later call). Checked immediately, before
-    // resolveBudgetMonthId runs at all — unlike the month-locked check
-    // below, this one can't be "re-checked inside the transaction, right
-    // before the insert" without reopening the exact bug it exists to
-    // prevent, so this is the only check of it there is. The TOCTOU gap
-    // between this read and the transaction below is left open
-    // deliberately, not just tolerated: "current" only ever advances by
-    // lockMonth or deleteBudgetMonth removing the current (empty, unlocked)
-    // row (both elsewhere, in budgetMonthService), so a race ordinarily
-    // just makes this check slightly more permissive by execution time, not
-    // less — never less permissive, and never by more than one month.
-    // pr-reviewer flagged a theoretical "milder echo" of the original
-    // hijack: could either of those ever jump "current" by *more* than one
-    // month (e.g. current=2026-08, 2026-09 never provisioned, 2026-10
-    // pre-provisioned and unlocked), making a stale `current` captured here
-    // more than one month behind reality? Worked out with the user and
-    // proven by the regression tests below ("lockMonth/deleteBudgetMonth
-    // cannot skip more than one month"): it can't happen. This horizon
-    // check's own lower bound (month >= current) means any BudgetMonth row
-    // that exists anywhere is always within one month of whatever "current"
-    // was at the moment it was created — by induction, that invariant holds
-    // no matter how many creates/deletes/locks happen, since "current" is
-    // never cached, only ever derived live from whichever rows currently
-    // exist. So a row at current+2 can only exist once current has already
+    // that call runs at all — unlike the month-locked check below, this one
+    // can't be "re-checked inside the transaction, right before the insert"
+    // without reopening the exact bug it exists to prevent, so this is the
+    // only check of it there is. The TOCTOU gap between this read and the
+    // transaction below is left open deliberately, not just tolerated:
+    // "current" only ever advances by lockMonth or deleteBudgetMonth
+    // removing the current (empty, unlocked) row (both elsewhere, in
+    // budgetMonthService), so a race ordinarily just makes this check
+    // slightly more permissive by execution time, not less — never less
+    // permissive, and never by more than one month. pr-reviewer flagged a
+    // theoretical "milder echo" of the original hijack: could either of
+    // those ever jump "current" by *more* than one month (e.g.
+    // current=2026-08, 2026-09 never provisioned, 2026-10 pre-provisioned
+    // and unlocked), making a stale `current` captured here more than one
+    // month behind reality? Worked out with the user and proven by the
+    // regression tests below ("lockMonth/deleteBudgetMonth cannot skip more
+    // than one month"): it can't happen. This horizon check's own lower
+    // bound (month >= current) means any BudgetMonth row that exists
+    // anywhere is always within one month of whatever "current" was at the
+    // moment it was created — by induction, that invariant holds no matter
+    // how many creates/deletes/locks happen, since "current" is never
+    // cached, only ever derived live from whichever rows currently exist.
+    // So a row at current+2 can only exist once current has already
     // reached current+1, i.e. once the month that would otherwise jump
     // current there is already locked or gone — never while it's still
     // pending. The TOCTOU gap is therefore bounded to at most one month of
@@ -311,8 +347,16 @@ export function createCategoryMonthService({
     const current = await findCurrentMonthOnClient(prisma, userId, now);
     assertWithinPlanningHorizon(current.month, month);
 
-    const monthId = await budgetMonthService.resolveBudgetMonthId(userId, month);
+    // In its own transaction, not on the raw (non-transactional) `prisma`
+    // client directly — resolveBudgetMonthIdWithCreatedFlag needs an active
+    // transaction to take a SAVEPOINT around its create attempt (see its
+    // own doc comment for why that's required, not optional, under this
+    // project's Prisma 7 + adapter-pg setup).
+    const { id: monthId, wasCreated: monthWasCreated } = await prisma.$transaction((tx) =>
+      resolveBudgetMonthIdWithCreatedFlag(tx, userId, month),
+    );
 
+    let created;
     try {
       // Re-checked inside the transaction, against the transactional
       // client, right before the insert: narrows (does not fully close,
@@ -324,7 +368,7 @@ export function createCategoryMonthService({
       // check, by contrast, *is* fully closed — assertMonthNotLockedOnClient
       // takes lockBudgetMonthRow first, so this serializes against a
       // concurrent lockMonth rather than racing it.
-      return await prisma.$transaction(async (tx) => {
+      created = await prisma.$transaction(async (tx) => {
         await assertOwnedCategory(tx, userId, categoryId);
         await assertMonthNotLockedOnClient(tx, monthId);
         const resolvedBudget = await resolveBudgetForActivation(tx, userId, categoryId, monthlyBudgetCents);
@@ -349,6 +393,18 @@ export function createCategoryMonthService({
       }
       throw error;
     }
+
+    // Fired after the transaction above has already committed, not inside
+    // it — seeding owns its own atomicity boundary (see onNewBudgetMonth's
+    // doc comment on CategoryMonthServiceDeps for why). Only when this call
+    // is genuinely the one that created the month — never on an
+    // already-existing one — and never allowed to fail the category-add the
+    // user actually asked for: that already succeeded above.
+    if (monthWasCreated && onNewBudgetMonth) {
+      await onNewBudgetMonth(userId, month, monthId);
+    }
+
+    return created;
   }
 
   /**
@@ -364,9 +420,10 @@ export function createCategoryMonthService({
     month: string,
     monthlyBudgetCents?: number,
   ) {
-    return prisma.$transaction((tx) =>
+    const { categoryMonth } = await prisma.$transaction((tx) =>
       ensureActiveForCategoryOnClient(tx, userId, categoryId, month, monthlyBudgetCents, now),
     );
+    return categoryMonth;
   }
 
   async function removeCategoryFromMonth(userId: string, categoryMonthId: string): Promise<void> {
@@ -381,6 +438,20 @@ export function createCategoryMonthService({
         });
         if (referencingTransaction) {
           throw new CategoryMonthServiceError('category_month_has_transactions');
+        }
+
+        // Folded in alongside the flat recurring_expenses rebuild (see
+        // docs/PROGRESS.md): a recurring expense references its category
+        // and month directly (no categoryMonthId FK — see the schema), so
+        // "referenced by a recurring expense" means matching on both. Same
+        // reasoning as the transaction check above — a category_month with
+        // an active recurring expense against it can't be removed out from
+        // under it.
+        const referencingRecurringExpense = await tx.recurringExpense.findFirst({
+          where: { categoryId: categoryMonth.categoryId, monthId: categoryMonth.monthId },
+        });
+        if (referencingRecurringExpense) {
+          throw new CategoryMonthServiceError('category_month_has_recurring_expenses');
         }
 
         await tx.categoryMonth.delete({ where: { id: categoryMonthId } });
