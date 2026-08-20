@@ -244,6 +244,43 @@ describe('updateCategory', () => {
     ).rejects.toMatchObject({ reason: 'direction_change_blocked' });
   });
 
+  it('blocks a direction change when a never-paid recurring expense references the category', async () => {
+    // A brand-new recurring expense has zero Transactions yet, so the
+    // transaction-based check above wouldn't have caught this on its own —
+    // markRecurringPaid derives its Transaction's direction from the
+    // category, so flipping it here would silently mislabel the next
+    // payment as income.
+    const { prisma, categoryService } = setup();
+    const category = await categoryService.createCategory('user-1', {
+      name: 'Housing',
+      icon: 'home',
+      color: '#000000',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    prisma.recurringExpenses.push({
+      id: 're-1',
+      userId: 'user-1',
+      categoryId: category.id,
+      monthId: 'month-1',
+      name: 'Rent',
+      amountCents: 80000,
+      budgetType: 'need',
+      dueDay: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await expect(
+      categoryService.updateCategory('user-1', category.id, {
+        name: 'Housing',
+        icon: 'home',
+        color: '#000000',
+        direction: 'income',
+      }),
+    ).rejects.toMatchObject({ reason: 'direction_change_blocked' });
+  });
+
   it('allows non-direction edits even when the category has transactions', async () => {
     const { prisma, categoryService } = setup();
     const category = await categoryService.createCategory('user-1', {

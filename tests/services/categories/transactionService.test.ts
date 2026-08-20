@@ -134,6 +134,24 @@ describe('create', () => {
     ).rejects.toMatchObject({ reason: 'invalid_date' });
   });
 
+  it('rejects a real-looking but nonexistent calendar date, instead of silently rolling it into the next month', async () => {
+    // "2026-08-32" isn't a real date — new Date() would silently roll it
+    // to 2026-09-01. Before this was fixed, the date_month_mismatch check
+    // compared the raw string's month prefix ("2026-08") against the
+    // categoryMonth's month, which matched — so this used to pass
+    // validation entirely and get stored as a September transaction still
+    // linked to an August CategoryMonth.
+    const { transactionService, expenseCategoryMonth } = await setup();
+
+    await expect(
+      transactionService.create('user-1', {
+        categoryMonthId: expenseCategoryMonth.id,
+        amountCents: 100,
+        date: '2026-08-32',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
+  });
+
   it('rejects a date whose month does not match the categoryMonth', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();
 
@@ -189,6 +207,23 @@ describe('update', () => {
 
     expect(updated.categoryMonthId).toBe(incomeCategoryMonth.id);
     expect(updated.direction).toBe('income');
+  });
+
+  it('rejects a real-looking but nonexistent calendar date on update', async () => {
+    const { transactionService, expenseCategoryMonth } = await setup();
+    const transaction = await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 2500,
+      date: '2026-08-15',
+    });
+
+    await expect(
+      transactionService.update('user-1', transaction.id, {
+        categoryMonthId: expenseCategoryMonth.id,
+        amountCents: 2500,
+        date: '2026-08-32',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
   });
 
   it('rejects updating a transaction that currently sits in a locked month', async () => {

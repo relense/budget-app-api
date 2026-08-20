@@ -1,8 +1,33 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
-import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
+import {
+  createCategoryMonthService,
+  ensureActiveForCategoryOnClient,
+} from '../../../src/services/categories/categoryMonthService.js';
 import { createCategoryService } from '../../../src/services/categories/categoryService.js';
 import { createFakePrisma } from './testFakePrisma.js';
+
+/**
+ * ensureActiveForCategoryOnClient is only ever called via a caller's own
+ * open transaction in production (recurringExpenseService) — no bound
+ * service-level wrapper exists (removed as dead code during a whole-
+ * codebase audit, see docs/PROGRESS.md). This reproduces the same
+ * single-call-transaction shape for the tests below, so they still cover
+ * this function's real behavior without resurrecting the unused wrapper.
+ */
+async function ensureActiveForCategory(
+  prisma: ReturnType<typeof createFakePrisma>,
+  now: () => Date,
+  userId: string,
+  categoryId: string,
+  month: string,
+  monthlyBudgetCents?: number,
+) {
+  const { categoryMonth } = await prisma.$transaction((tx) =>
+    ensureActiveForCategoryOnClient(tx as never, userId, categoryId, month, monthlyBudgetCents, now),
+  );
+  return categoryMonth;
+}
 
 // Fixed rather than the real clock — several tests below activate
 // categories across multiple months, and now that the one-month planning
@@ -50,6 +75,7 @@ async function setup(now: () => Date = () => new Date('2026-08-15T00:00:00.000Z'
     categoryA,
     categoryB,
     otherUsersCategory,
+    now,
   };
 }
 
@@ -614,23 +640,22 @@ describe('lockMonth/deleteBudgetMonth cannot skip more than one month (pr-review
   });
 });
 
-describe('ensureActiveForCategory', () => {
+describe('ensureActiveForCategoryOnClient', () => {
+  // No bound service-level wrapper exists — recurringExpenseService calls
+  // this standalone function directly against its own open transaction, so
+  // these tests do the same via the local ensureActiveForCategory helper
+  // above (production shape: one call, one transaction).
   it('creates a new category_month when none exists, using the given budget', async () => {
-    const { prisma, categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryA } = await setup();
 
-    const result = await categoryMonthService.ensureActiveForCategory(
-      'user-1',
-      categoryA.id,
-      '2026-08',
-      50000,
-    );
+    const result = await ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-08', 50000);
 
     expect(result.monthlyBudgetCents).toBe(50000);
     expect(prisma.categoryMonths).toHaveLength(1);
   });
 
   it('returns the existing category_month instead of erroring when already active, no budget needed', async () => {
-    const { prisma, categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryMonthService, categoryA } = await setup();
     const first = await categoryMonthService.addCategoryToMonth(
       'user-1',
       categoryA.id,
@@ -638,31 +663,31 @@ describe('ensureActiveForCategory', () => {
       50000,
     );
 
-    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08');
+    const result = await ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-08');
 
     expect(result.id).toBe(first.id);
     expect(prisma.categoryMonths).toHaveLength(1);
   });
 
   it('throws category_month_budget_required when creating fresh with no budget given', async () => {
-    const { categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryA } = await setup();
 
     await expect(
-      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08'),
+      ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-08'),
     ).rejects.toMatchObject({ reason: 'category_month_budget_required' });
   });
 
   it("inherits the category's most recent monthlyBudgetCents when creating fresh with no budget given", async () => {
-    const { categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryMonthService, categoryA } = await setup();
     await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 12000);
 
-    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-09');
+    const result = await ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-09');
 
     expect(result.monthlyBudgetCents).toBe(12000);
   });
 
   it('inherits by real calendar month, not insertion order, when multiple prior activations exist', async () => {
-    const { prisma, categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryA } = await setup();
     // Historical (already-locked) activations, same rationale as the
     // addCategoryToMonth version of this test above. Real-latest month
     // (2026-07) inserted neither first nor last — rules out "first/last
@@ -678,21 +703,21 @@ describe('ensureActiveForCategory', () => {
       { id: 'cm-06', userId: 'user-1', categoryId: categoryA.id, monthId: 'bm-06', monthlyBudgetCents: 20000, createdAt: new Date(), updatedAt: new Date() },
     );
 
-    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08');
+    const result = await ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-08');
 
     expect(result.monthlyBudgetCents).toBe(30000);
   });
 
   it('throws category_not_found for a category belonging to another user', async () => {
-    const { categoryMonthService, otherUsersCategory } = await setup();
+    const { prisma, now, otherUsersCategory } = await setup();
 
     await expect(
-      categoryMonthService.ensureActiveForCategory('user-1', otherUsersCategory.id, '2026-08', 50000),
+      ensureActiveForCategory(prisma, now, 'user-1', otherUsersCategory.id, '2026-08', 50000),
     ).rejects.toMatchObject({ reason: 'category_not_found' });
   });
 
   it('throws month_locked when the target month is already locked', async () => {
-    const { prisma, categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryA } = await setup();
     // Locked at the current month (2026-08, under the fixed clock) rather
     // than a past one — see the identical note on addCategoryToMonth's
     // version of this test above.
@@ -706,23 +731,23 @@ describe('ensureActiveForCategory', () => {
     });
 
     await expect(
-      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-08', 50000),
+      ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-08', 50000),
     ).rejects.toMatchObject({ reason: 'month_locked' });
   });
 
   it('throws category_month_beyond_planning_horizon for a month more than one month past current', async () => {
-    const { categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryA } = await setup();
 
     await expect(
-      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-10', 10000),
+      ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-10', 10000),
     ).rejects.toMatchObject({ reason: 'category_month_beyond_planning_horizon' });
   });
 
   it('throws category_month_beyond_planning_horizon for a month before current', async () => {
-    const { prisma, categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryA } = await setup();
 
     await expect(
-      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2026-07', 10000),
+      ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-07', 10000),
     ).rejects.toMatchObject({ reason: 'category_month_beyond_planning_horizon' });
     expect(prisma.categoryMonths).toHaveLength(0);
     expect(prisma.budgetMonths).toHaveLength(0);
@@ -730,7 +755,7 @@ describe('ensureActiveForCategory', () => {
 
   it('does not re-enforce the horizon when the category_month is already active (idempotent return)', async () => {
     // Pre-provisioned via a direct fixture push (bypassing the horizon
-    // check, same as a locked historical month would) — ensureActiveForCategory
+    // check, same as a locked historical month would) — ensureActiveForCategoryOnClient
     // must still return it rather than retroactively rejecting an
     // already-active month just because it's now far in the future relative
     // to the fixed clock. A distinct, earlier *unlocked* BudgetMonth row
@@ -739,7 +764,7 @@ describe('ensureActiveForCategory', () => {
     // it, this test would pass even if the idempotent-return exemption were
     // deleted, since the horizon check would then compare 2027-01 against
     // itself and pass regardless.
-    const { prisma, categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryA } = await setup();
     prisma.budgetMonths.push({
       id: 'bm-current',
       userId: 'user-1',
@@ -766,16 +791,16 @@ describe('ensureActiveForCategory', () => {
       updatedAt: new Date(),
     });
 
-    const result = await categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, '2027-01');
+    const result = await ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2027-01');
 
     expect(result.id).toBe('cm-far');
   });
 
   it('rejects a malformed month string', async () => {
-    const { categoryMonthService, categoryA } = await setup();
+    const { prisma, now, categoryA } = await setup();
 
     await expect(
-      categoryMonthService.ensureActiveForCategory('user-1', categoryA.id, 'banana', 50000),
+      ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, 'banana', 50000),
     ).rejects.toMatchObject({ reason: 'invalid_month' });
   });
 });

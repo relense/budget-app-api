@@ -1,9 +1,8 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
 import { lockBudgetMonthRow } from '../budgetMonths/budgetMonthService.js';
+import { isValidCalendarDate } from '../../lib/dateFormat.js';
 import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
-
-const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface TransactionInput {
   categoryMonthId: string;
@@ -44,7 +43,7 @@ function assertValidAmount(amountCents: number): void {
 }
 
 function assertValidDateFormat(date: string): void {
-  if (!DATE_REGEX.test(date)) {
+  if (!isValidCalendarDate(date)) {
     throw new TransactionServiceError('invalid_date');
   }
 }

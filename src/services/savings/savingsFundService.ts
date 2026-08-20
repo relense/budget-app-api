@@ -1,7 +1,6 @@
+import { isValidCalendarDate } from '../../lib/dateFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
-
-const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface SavingsFundInput {
   name: string;
@@ -56,7 +55,7 @@ function assertValidAmount(amountCents: number | undefined, required: boolean): 
 }
 
 function assertValidDate(date: string | undefined): void {
-  if (date !== undefined && !DATE_REGEX.test(date)) {
+  if (date !== undefined && !isValidCalendarDate(date)) {
     throw new SavingsFundServiceError('invalid_date');
   }
 }
