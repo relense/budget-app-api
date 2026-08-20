@@ -38,7 +38,10 @@ docker-compose.override.yml
 *.tsbuildinfo
 /src/generated/prisma
 
-# Personal financial data — never commit real income/spending/savings numbers
-*.xlsx
-*.xls
-*.csv
+# Personal financial data — never commit real income/spending/savings numbers.
+# Anchored to the repo root (where the real tracker lives), not unanchored,
+# so a future legitimate fixture (e.g. tests/fixtures/*.csv) doesn't
+# silently vanish from git status too.
+/*.xlsx
+/*.xls
+/*.csv

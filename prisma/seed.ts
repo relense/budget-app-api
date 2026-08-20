@@ -15,7 +15,7 @@
  */
 import { loadEnv } from '../src/lib/env.js';
 import { formatMonth } from '../src/lib/monthFormat.js';
-import { createPrismaClient } from '../src/lib/prisma.js';
+import { createPrismaClient, type PrismaClient } from '../src/lib/prisma.js';
 import { createBudgetMonthService } from '../src/services/budgetMonths/budgetMonthService.js';
 import { createCategoryMonthService } from '../src/services/categories/categoryMonthService.js';
 import { createCategoryService } from '../src/services/categories/categoryService.js';
@@ -100,10 +100,7 @@ const INCOME_CATEGORIES: IncomeCategorySeed[] = [
   { name: 'Segurança Social', icon: 'shield', color: '#2F9E44', expectedAmountCents: 81662 },
 ];
 
-async function main() {
-  const env = loadEnv();
-  const prisma = createPrismaClient(env.DATABASE_URL);
-
+async function seed(prisma: PrismaClient) {
   const budgetMonthService = createBudgetMonthService({ prisma });
   const categoryService = createCategoryService({ prisma });
   const categoryMonthService = createCategoryMonthService({ prisma, budgetMonthService });
@@ -119,11 +116,22 @@ async function main() {
   const existing = await prisma.user.findUnique({ where: { email: SEED_EMAIL } });
   if (existing) {
     console.log(`Removing existing seed user (${SEED_EMAIL})...`);
-    await prisma.recurringExpense.deleteMany({ where: { userId: existing.id } });
-    await prisma.transaction.deleteMany({ where: { userId: existing.id } });
-    await prisma.categoryMonth.deleteMany({ where: { userId: existing.id } });
-    await prisma.category.deleteMany({ where: { userId: existing.id } });
-    await prisma.user.delete({ where: { id: existing.id } });
+    // Order matters: transactions.recurring_expense_id and
+    // transactions.category_month_id are both ON DELETE RESTRICT, so
+    // transactions must go first. budget_months has no FK/relation to
+    // users at all (userId is a plain denormalized column, like
+    // everywhere else in this schema) — nothing cascades it, so it needs
+    // an explicit delete too, or every re-run leaks one more orphaned row.
+    // Wrapped in a transaction so a failure partway through never leaves
+    // this account half-deleted.
+    await prisma.$transaction([
+      prisma.transaction.deleteMany({ where: { userId: existing.id } }),
+      prisma.recurringExpense.deleteMany({ where: { userId: existing.id } }),
+      prisma.categoryMonth.deleteMany({ where: { userId: existing.id } }),
+      prisma.category.deleteMany({ where: { userId: existing.id } }),
+      prisma.budgetMonth.deleteMany({ where: { userId: existing.id } }),
+      prisma.user.delete({ where: { id: existing.id } }),
+    ]);
   }
 
   const user = await prisma.user.create({ data: { email: SEED_EMAIL } });
@@ -180,7 +188,19 @@ async function main() {
   console.log(
     `\nDone. ${EXPENSE_CATEGORIES.length + 1} expense categories, ${RECURRING_BILLS.length} recurring bills, ${INCOME_CATEGORIES.length} income categories seeded for ${SEED_EMAIL} in ${month}.`,
   );
-  await prisma.$disconnect();
+}
+
+async function main() {
+  const env = loadEnv();
+  if (env.NODE_ENV === 'production') {
+    throw new Error('Refusing to run the seed script against a production environment.');
+  }
+  const prisma = createPrismaClient(env.DATABASE_URL);
+  try {
+    await seed(prisma);
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 
 main().catch((error) => {
