@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "seed": "tsx --env-file=.env prisma/seed.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
