@@ -1,3 +1,4 @@
+import type { BankBalanceService } from '../services/bankBalance/bankBalanceService.js';
 import type { BudgetMonthService } from '../services/budgetMonths/budgetMonthService.js';
 import type { CategoryMonthService } from '../services/categories/categoryMonthService.js';
 import type { CategoryService } from '../services/categories/categoryService.js';
@@ -16,6 +17,7 @@ export interface GraphQLContext {
   recurringExpenseService: RecurringExpenseService;
   savingsFundService: SavingsFundService;
   savingsMovementService: SavingsMovementService;
+  bankBalanceService: BankBalanceService;
   loaders: GraphQLLoaders;
 }
 
@@ -27,6 +29,7 @@ export interface GraphQLContextBuilderDeps {
   recurringExpenseService: RecurringExpenseService;
   savingsFundService: SavingsFundService;
   savingsMovementService: SavingsMovementService;
+  bankBalanceService: BankBalanceService;
 }
 
 /**
@@ -45,6 +48,7 @@ export function createGraphQLContextBuilder(deps: GraphQLContextBuilderDeps) {
       recurringExpenseService: deps.recurringExpenseService,
       savingsFundService: deps.savingsFundService,
       savingsMovementService: deps.savingsMovementService,
+      bankBalanceService: deps.bankBalanceService,
       loaders: createGraphQLLoaders(deps),
     };
   };

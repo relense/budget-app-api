@@ -11,6 +11,7 @@ import type { Env } from './lib/env.js';
 import { verifyAccessToken } from './lib/jwt.js';
 import type { PrismaClient } from './lib/prisma.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { createBankBalanceService } from './services/bankBalance/bankBalanceService.js';
 import type { AuthService } from './services/auth/authService.js';
 import { createBudgetMonthService } from './services/budgetMonths/budgetMonthService.js';
 import { createCategoryMonthService } from './services/categories/categoryMonthService.js';
@@ -44,6 +45,7 @@ export interface BuildServerOptions {
     | 'recurringExpense'
     | 'savingsFund'
     | 'savingsMovement'
+    | 'user'
   >;
   authService: Pick<
     AuthService,
@@ -86,6 +88,7 @@ export async function buildServer({
   });
   const savingsFundService = createSavingsFundService({ prisma });
   const savingsMovementService = createSavingsMovementService({ prisma });
+  const bankBalanceService = createBankBalanceService({ prisma });
   const buildGraphQLContext = createGraphQLContextBuilder({
     categoryService,
     categoryMonthService,
@@ -94,6 +97,7 @@ export async function buildServer({
     recurringExpenseService,
     savingsFundService,
     savingsMovementService,
+    bankBalanceService,
   });
 
   app.get('/health', async (_request, reply) => {

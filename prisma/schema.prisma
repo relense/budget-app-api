@@ -18,6 +18,18 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // Bank balance checkpoint (see docs/PLAN.md's "Bank balance" note): the
+  // running balance is computed at read time as bankBalanceCheckpointCents
+  // + the net of every Transaction created after
+  // bankBalanceCheckpointSetAt — not a running total maintained on every
+  // write. No history is kept; setBankBalanceCheckpoint overwrites both
+  // fields in place, same "no undo, single current value" rule as every
+  // other entity in this schema. Defaults mean a user who never touches
+  // this feature still gets a sensible balance: 0 + every transaction
+  // they've ever logged.
+  bankBalanceCheckpointCents Int      @default(0) @map("bank_balance_checkpoint_cents")
+  bankBalanceCheckpointSetAt DateTime @default(now()) @map("bank_balance_checkpoint_set_at")
+
   refreshTokens RefreshToken[]
 
   @@map("users")
@@ -164,6 +176,7 @@ model Transaction {
   recurringExpense RecurringExpense? @relation(fields: [recurringExpenseId], references: [id], onDelete: Restrict)
 
   @@index([userId, date])
+  @@index([userId, createdAt]) // serves bankBalanceService's "every transaction created after the checkpoint" query — a different axis than date, since a backfilled transaction's date and its real insertion time can diverge
   @@index([categoryMonthId])
   @@index([recurringExpenseId])
   @@map("transactions")

@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { GraphQLError } from 'graphql';
+import { BankBalanceServiceError } from '../../src/services/bankBalance/bankBalanceService.js';
 import { BudgetMonthServiceError } from '../../src/services/budgetMonths/budgetMonthService.js';
 import { CategoryMonthServiceError } from '../../src/services/categories/categoryMonthService.js';
 import { CategoryServiceError } from '../../src/services/categories/categoryService.js';
@@ -55,6 +56,7 @@ describe('toGraphQLError', () => {
       new SavingsMovementServiceError('insufficient_funds'),
       'INSUFFICIENT_FUNDS',
     ],
+    ['BankBalanceServiceError', new BankBalanceServiceError('invalid_amount'), 'INVALID_AMOUNT'],
   ])('maps %s to a GraphQLError with extensions.code %s', (_label, error, expectedCode) => {
     expect(() => toGraphQLError(error)).toThrow(GraphQLError);
     try {

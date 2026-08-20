@@ -74,6 +74,7 @@ function buildContext(overrides: {
       listCatalog: jest.fn(async () => [fund]),
     } as never,
     savingsMovementService: {} as never,
+    bankBalanceService: {} as never,
     loaders: createGraphQLLoaders(loaderDeps),
   };
 }

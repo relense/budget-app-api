@@ -89,6 +89,7 @@ function buildContext(overrides: {
     } as never,
     savingsFundService: {} as never,
     savingsMovementService: {} as never,
+    bankBalanceService: {} as never,
     loaders: createGraphQLLoaders(loaderDeps),
   };
 }

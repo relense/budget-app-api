@@ -1,4 +1,5 @@
 import { GraphQLError } from 'graphql';
+import { BankBalanceServiceError } from '../services/bankBalance/bankBalanceService.js';
 import { BudgetMonthServiceError } from '../services/budgetMonths/budgetMonthService.js';
 import { CategoryMonthServiceError } from '../services/categories/categoryMonthService.js';
 import { CategoryServiceError } from '../services/categories/categoryService.js';
@@ -21,7 +22,8 @@ export function toGraphQLError(error: unknown): never {
     error instanceof TransactionServiceError ||
     error instanceof RecurringExpenseServiceError ||
     error instanceof SavingsFundServiceError ||
-    error instanceof SavingsMovementServiceError
+    error instanceof SavingsMovementServiceError ||
+    error instanceof BankBalanceServiceError
   ) {
     throw new GraphQLError(error.message, { extensions: { code: error.reason.toUpperCase() } });
   }
