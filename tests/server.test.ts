@@ -167,4 +167,32 @@ describe('buildServer', () => {
 
     await app.close();
   });
+
+  it('rejects a query deeper than the configured max depth (validation, not just a slow response)', async () => {
+    const app = await buildServer({
+      env: testEnv,
+      prisma: fakePrisma(async () => [{ 1: 1 }]),
+      authService,
+    });
+
+    // SavingsFund.movements -> SavingsMovement.fund is a cycle, so nesting
+    // it repeatedly builds an arbitrarily deep query with no real-world
+    // equivalent — 12 levels here, past MAX_QUERY_DEPTH (10) in server.ts.
+    // No Authorization header needed: depth-limit is a validation rule,
+    // enforced before execution/resolvers (and auth checks inside them)
+    // ever run.
+    const deepQuery = `{
+      savingsFunds { movements { fund { movements { fund { movements {
+        fund { movements { fund { movements { fund { movements { id } } } } } }
+      } } } } } }
+    }`;
+
+    const response = await app.inject({ method: 'POST', url: '/graphql', payload: { query: deepQuery } });
+
+    const body = response.json();
+    expect(body.errors).toBeDefined();
+    expect(body.errors[0].message).toMatch(/exceeds maximum operation depth/i);
+
+    await app.close();
+  });
 });
