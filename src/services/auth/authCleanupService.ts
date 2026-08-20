@@ -36,51 +36,32 @@ export function createAuthCleanupService({
     return totalDeleted;
   }
 
+  function cleanupOtpCodes(where: { expiresAt: { lt: Date } } | { used: true }): Promise<number> {
+    return deleteInBatches(
+      () => prisma.otpCode.findMany({ where, select: { id: true }, take: batchSize }),
+      (ids) => prisma.otpCode.deleteMany({ where: { id: { in: ids } } }),
+    );
+  }
+
+  function cleanupRefreshTokens(
+    where: { expiresAt: { lt: Date } } | { revoked: true },
+  ): Promise<number> {
+    return deleteInBatches(
+      () => prisma.refreshToken.findMany({ where, select: { id: true }, take: batchSize }),
+      (ids) => prisma.refreshToken.deleteMany({ where: { id: { in: ids } } }),
+    );
+  }
+
   async function cleanupExpiredAuthRecords(): Promise<AuthCleanupResult> {
     const cutoff = now();
 
-    const expiredOtpCodesDeleted = await deleteInBatches(
-      () =>
-        prisma.otpCode.findMany({
-          where: { expiresAt: { lt: cutoff } },
-          select: { id: true },
-          take: batchSize,
-        }),
-      (ids) => prisma.otpCode.deleteMany({ where: { id: { in: ids } } }),
-    );
-    const usedOtpCodesDeleted = await deleteInBatches(
-      () =>
-        prisma.otpCode.findMany({
-          where: { used: true },
-          select: { id: true },
-          take: batchSize,
-        }),
-      (ids) => prisma.otpCode.deleteMany({ where: { id: { in: ids } } }),
-    );
+    const otpCodesDeleted =
+      (await cleanupOtpCodes({ expiresAt: { lt: cutoff } })) + (await cleanupOtpCodes({ used: true }));
+    const refreshTokensDeleted =
+      (await cleanupRefreshTokens({ expiresAt: { lt: cutoff } })) +
+      (await cleanupRefreshTokens({ revoked: true }));
 
-    const expiredRefreshTokensDeleted = await deleteInBatches(
-      () =>
-        prisma.refreshToken.findMany({
-          where: { expiresAt: { lt: cutoff } },
-          select: { id: true },
-          take: batchSize,
-        }),
-      (ids) => prisma.refreshToken.deleteMany({ where: { id: { in: ids } } }),
-    );
-    const revokedRefreshTokensDeleted = await deleteInBatches(
-      () =>
-        prisma.refreshToken.findMany({
-          where: { revoked: true },
-          select: { id: true },
-          take: batchSize,
-        }),
-      (ids) => prisma.refreshToken.deleteMany({ where: { id: { in: ids } } }),
-    );
-
-    return {
-      otpCodesDeleted: expiredOtpCodesDeleted + usedOtpCodesDeleted,
-      refreshTokensDeleted: expiredRefreshTokensDeleted + revokedRefreshTokensDeleted,
-    };
+    return { otpCodesDeleted, refreshTokensDeleted };
   }
 
   return { cleanupExpiredAuthRecords };

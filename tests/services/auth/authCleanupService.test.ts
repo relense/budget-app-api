@@ -104,6 +104,30 @@ describe('cleanupExpiredAuthRecords', () => {
     expect(result).toEqual({ otpCodesDeleted: 0, refreshTokensDeleted: 0 });
   });
 
+  it('does not double-count a row that matches both delete conditions at once', async () => {
+    const { prisma, cleanupService } = setup();
+    prisma.otpCodes.push(
+      otpCode({
+        id: 'expired-and-used',
+        used: true,
+        expiresAt: new Date('2025-12-31T23:00:00.000Z'),
+      }),
+    );
+    prisma.refreshTokens.push(
+      refreshToken({
+        id: 'expired-and-revoked',
+        revoked: true,
+        expiresAt: new Date('2025-12-31T23:00:00.000Z'),
+      }),
+    );
+
+    const result = await cleanupService.cleanupExpiredAuthRecords();
+
+    expect(prisma.otpCodes).toHaveLength(0);
+    expect(prisma.refreshTokens).toHaveLength(0);
+    expect(result).toEqual({ otpCodesDeleted: 1, refreshTokensDeleted: 1 });
+  });
+
   it('deletes every eligible row across multiple batches, not just the first batch', async () => {
     const { prisma, cleanupService } = setup(2);
     for (let i = 0; i < 5; i += 1) {

@@ -1,6 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import type { Env } from '../src/lib/env.js';
 import { buildServer } from '../src/server.js';
+import type { AuthCleanupService } from '../src/services/auth/authCleanupService.js';
 import type { AuthService } from '../src/services/auth/authService.js';
 
 const testEnv: Env = {
@@ -26,12 +27,17 @@ const authService: Pick<
   logoutAll: jest.fn(async () => undefined),
 } as never;
 
+const authCleanupService: Pick<AuthCleanupService, 'cleanupExpiredAuthRecords'> = {
+  cleanupExpiredAuthRecords: jest.fn(async () => ({ otpCodesDeleted: 0, refreshTokensDeleted: 0 })),
+};
+
 describe('buildServer', () => {
   it('GET /health returns 200 when the database check succeeds', async () => {
     const app = await buildServer({
       env: testEnv,
       prisma: fakePrisma(async () => [{ 1: 1 }]),
       authService,
+      authCleanupService,
     });
 
     const response = await app.inject({ method: 'GET', url: '/health' });
@@ -49,6 +55,7 @@ describe('buildServer', () => {
         throw new Error('connection refused');
       }),
       authService,
+      authCleanupService,
     });
 
     const response = await app.inject({ method: 'GET', url: '/health' });
@@ -64,6 +71,7 @@ describe('buildServer', () => {
       env: testEnv,
       prisma: fakePrisma(async () => [{ 1: 1 }]),
       authService,
+      authCleanupService,
     });
 
     const response = await app.inject({
@@ -83,6 +91,7 @@ describe('buildServer', () => {
       env: testEnv,
       prisma: fakePrisma(async () => [{ 1: 1 }]),
       authService,
+      authCleanupService,
     });
 
     const response = await app.inject({
@@ -103,6 +112,7 @@ describe('buildServer', () => {
       env: testEnv,
       prisma: fakePrisma(async () => [{ 1: 1 }]),
       authService,
+      authCleanupService,
     });
 
     const response = await app.inject({
@@ -121,6 +131,7 @@ describe('buildServer', () => {
       env: testEnv,
       prisma: fakePrisma(async () => [{ 1: 1 }]),
       authService,
+      authCleanupService,
     });
 
     const response = await app.inject({ method: 'GET', url: '/health' });
@@ -135,6 +146,7 @@ describe('buildServer', () => {
       env: { ...testEnv, NODE_ENV: 'production' },
       prisma: fakePrisma(async () => [{ 1: 1 }]),
       authService,
+      authCleanupService,
     });
 
     const response = await app.inject({
@@ -154,6 +166,7 @@ describe('buildServer', () => {
       env: testEnv,
       prisma: fakePrisma(async () => [{ 1: 1 }]),
       authService,
+      authCleanupService,
     });
 
     const response = await app.inject({
@@ -173,6 +186,7 @@ describe('buildServer', () => {
       env: testEnv,
       prisma: fakePrisma(async () => [{ 1: 1 }]),
       authService,
+      authCleanupService,
     });
 
     // SavingsFund.movements -> SavingsMovement.fund is a cycle, so nesting

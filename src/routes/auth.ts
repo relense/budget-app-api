@@ -89,13 +89,13 @@ export async function registerAuthRoutes(
 
       // Piggybacked here rather than only on the interval sweep (see
       // authCleanupService's doc comment / PLAN.md's "Row cleanup" note) so
-      // cleanup still happens promptly during real traffic. Never let a
-      // cleanup failure fail the actual OTP request.
-      try {
-        await authCleanupService.cleanupExpiredAuthRecords();
-      } catch (error) {
+      // cleanup still happens promptly during real traffic. Deliberately
+      // not awaited — this is a rate-limited hot path and a batch-delete
+      // backlog must never add latency to the response. Errors are logged,
+      // never allowed to become an unhandled rejection.
+      authCleanupService.cleanupExpiredAuthRecords().catch((error: unknown) => {
         app.log.error(error, 'Auth row cleanup failed');
-      }
+      });
 
       return reply.status(200).send({ message: 'If that email is valid, a code has been sent.' });
     },

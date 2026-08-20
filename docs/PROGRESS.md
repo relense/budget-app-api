@@ -1544,13 +1544,36 @@ than the original `PLAN.md` bullet implied:
 Built: `authCleanupService` (`cleanupExpiredAuthRecords()`, TDD against a
 new in-memory batch loop, extending `tests/services/auth/testFakePrisma.ts`
 with `findMany`/`deleteMany`), wired into `registerAuthRoutes` (new
-required `authCleanupService` dep) and `index.ts`'s interval. 484 Jest
-tests total (was 475). Not yet through `pr-reviewer`/`test-auditor`.
+required `authCleanupService` dep) and `index.ts`'s interval.
+
+`pr-reviewer` round 1 found one real bug and several worthwhile
+simplifications, all fixed: the request-otp piggyback was `await`ing
+cleanup before responding — not actually the non-blocking design agreed on,
+and it would add unbounded latency to a hot, rate-limited auth endpoint
+under any real backlog (fixed to fire-and-forget with `.catch()`, matching
+the interval's pattern); the four near-identical batch-delete call sites
+collapsed into two small `cleanupOtpCodes`/`cleanupRefreshTokens` helpers;
+`authCleanupService` was being constructed twice (once in `server.ts`, once
+in `index.ts`) — now built once in `index.ts` and threaded into
+`buildServer` the same way `authService` already is; added a regression
+test for a row matching both delete conditions at once (e.g. expired *and*
+used), proving the sequential-pass design can't double-count. The reviewer
+also flagged that `used`/`revoked` could be partial indexes instead of
+plain ones for less bloat at real scale — surfaced to the user, who chose
+to keep them plain: Prisma's schema DSL can't express a partial index's
+`WHERE` clause, so a partial index would mean hand-editing generated
+migration SQL, and since `schema.prisma` would still declare a plain index,
+any *future* unrelated `prisma migrate dev` run would see that as drift and
+silently regenerate the plain index — reverting the optimization with
+nothing flagging it as intentional. Not worth that ongoing footgun for a
+scale concern the reviewer itself called non-blocking.
+
+485 Jest tests total (was 475, +10 across both review rounds). Not yet
+through `test-auditor`.
 
 Next actions, in order:
-1. Run `pr-reviewer` then `test-auditor` on `chore/auth-row-cleanup`, same
-   two-stage pattern as every prior branch, then hand back for human
-   review.
+1. Run `test-auditor` on `chore/auth-row-cleanup`, same two-stage pattern
+   as every prior branch, then hand back for human review.
 2. Remaining Production Readiness items after that: CI, GDPR export/delete
    (`otp_codes`/`refresh_tokens` row cleanup is now done). Then Phase 2
    (mobile app), which needs design references (mockups + Excel structure
