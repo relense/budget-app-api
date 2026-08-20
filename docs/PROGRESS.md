@@ -1826,6 +1826,10 @@ Not started.
 
 - Prisma 7's client generator requires a driver adapter — added
   `@prisma/adapter-pg` (PLAN.md assumed the classic bare-`DATABASE_URL` setup).
+- `package.json` gained a `packageManager` field (`pnpm@11.22.0`) during the
+  CI pipeline step — `pnpm/action-setup` in GitHub Actions needs a version
+  to resolve and errors out with neither this field nor an explicit
+  `version` input; also pins local Corepack resolution as a side benefit.
 - `prisma init` auto-vendors AI-agent skill docs into `.claude/`, `.windsurf/`,
   `.agents/` — removed, unrelated to the app.
 - ID strategy for every table (not specified in PLAN.md): UUID v4, stored as
