@@ -270,6 +270,14 @@ Not services (no `userId`-scoped business logic), but worth knowing exist:
 
 ---
 
+## Dev scripts
+
+| Command | Does |
+|---|---|
+| `npm run seed` (`prisma/seed.ts`) | Populates a dedicated `seed@example.com` account with realistic categories, a "Fixed Bills" category of recurring bills, and income categories — no transactions, savings funds, or bank balance checkpoint (out of scope, see `PLAN.md`'s Build Order step 8). Idempotent: deletes and recreates that one account's data every run. Goes through the real service layer, not raw inserts. Never run against anything but a local/dev database. |
+
+---
+
 ## API Endpoints
 
 ### REST — Fastify (`src/routes/auth.ts`, `src/server.ts`)
