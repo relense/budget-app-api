@@ -1797,15 +1797,36 @@ right before the final `user.delete`) and confirmed it fails loudly with
 `P2003` and the whole transaction rolls back — the stray row, the original
 category, and the user all still exactly as they were.
 
+`pr-reviewer` found two comments left describing the pre-fix state
+(`accountService.deleteAccount`'s doc comment, `seed.ts`'s cleanup
+comment) — both said "no real FK" where one now exists; fixed, and
+re-verified `npm run seed` runs and re-runs cleanly against real Postgres
+with the new constraints in place. `test-auditor` independently
+re-verified the branch's real-Postgres claims itself (queried
+`pg_constraint` directly, reproduced the P2003 rejection, reran the seed
+script) rather than just trusting the write-up — all matched. Confirmed
+this branch follows the repo's own established precedent for pure
+schema/constraint changes (a throwaway verification script, not a
+permanent Jest test, since nothing here changed application code for a
+fake to model) rather than a gap.
+
 Remaining Production Readiness items: none. Next: Phase 2 (mobile app),
 which needs design references (mockups + Excel structure — now partly in
 hand) before any screen work begins, per CLAUDE.md.
 
-Small tracked follow-up, not blocking, carried over from step 6: add
-logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
-(recurring-expenses step) once this service layer has a logger dependency
-to hang it on (none exists yet — `src/lib/shutdown.ts` is the only
-existing precedent, at the app-startup level, not per-service).
+Small tracked follow-ups, not blocking:
+- Carried over from step 6: add logging on the
+  `onNewBudgetMonth`/`seedNewMonth` swallow path (recurring-expenses step)
+  once this service layer has a logger dependency to hang it on (none
+  exists yet — `src/lib/shutdown.ts` is the only existing precedent, at
+  the app-startup level, not per-service).
+- Surfaced by `test-auditor` on the FK retrofit branch, repo-wide not
+  specific to it: CI's `prisma migrate deploy` step proves every migration
+  *applies* cleanly but never asserts the resulting constraints are
+  actually *correct* (right table, right `onDelete` behavior) — a
+  `pg_constraint`/`information_schema.table_constraints` assertion step
+  after `migrate deploy` would close that for every future migration, not
+  just this one.
 
 ## Phase 1 — Backend
 
