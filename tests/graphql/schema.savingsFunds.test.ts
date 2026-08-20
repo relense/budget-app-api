@@ -42,6 +42,7 @@ function buildContext(userId: string | null): GraphQLContext {
       updateSavingsMovement: jest.fn(async () => movement),
       deleteSavingsMovement: jest.fn(async () => undefined),
     } as never,
+    bankBalanceService: {} as never,
     loaders: {} as never,
   };
 }

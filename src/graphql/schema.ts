@@ -76,6 +76,15 @@ function formatNullableDate(date: Date | null): string | null {
   return date ? formatDate(date) : null;
 }
 
+/**
+ * Full ISO 8601 timestamp, not a bare YYYY-MM-DD — the one place in this
+ * schema that needs time-of-day, since BankBalance.checkpointSetAt anchors
+ * "everything after this instant", not a calendar date.
+ */
+function formatTimestamp(date: Date): string {
+  return date.toISOString();
+}
+
 export const schema = createSchema<GraphQLContext>({
   typeDefs: /* GraphQL */ `
     enum BudgetType {
@@ -190,6 +199,23 @@ export const schema = createSchema<GraphQLContext>({
       fund: SavingsFund!
     }
 
+    """
+    A running total independent of any one month, unrelated to Savings
+    Funds (deliberately not netted together — see docs/PLAN.md's "Bank
+    balance" note). Computed at read time: checkpointAmountCents plus the
+    net of every Transaction created after checkpointSetAt. Editing the
+    checkpoint (setBankBalanceCheckpoint) overwrites both fields in place —
+    no history is kept, and everything before the new checkpointSetAt stops
+    counting toward amountCents. checkpointSetAt is a full ISO 8601
+    timestamp, not a bare date like every other date field in this schema —
+    it anchors an instant, not a calendar day.
+    """
+    type BankBalance {
+      amountCents: Int!
+      checkpointAmountCents: Int!
+      checkpointSetAt: String!
+    }
+
     input CategoryInput {
       name: String!
       icon: String!
@@ -261,6 +287,7 @@ export const schema = createSchema<GraphQLContext>({
       transactions(month: String!, categoryId: ID): [Transaction!]!
       recurringExpenses(month: String!): [RecurringExpense!]!
       savingsFunds: [SavingsFund!]!
+      bankBalance: BankBalance!
     }
 
     type Mutation {
@@ -295,6 +322,8 @@ export const schema = createSchema<GraphQLContext>({
       createSavingsMovement(input: CreateSavingsMovementInput!): SavingsMovement!
       updateSavingsMovement(id: ID!, input: UpdateSavingsMovementInput!): SavingsMovement!
       deleteSavingsMovement(id: ID!): Boolean!
+
+      setBankBalanceCheckpoint(amountCents: Int!): BankBalance!
     }
   `,
   resolvers: {
@@ -331,6 +360,10 @@ export const schema = createSchema<GraphQLContext>({
       savingsFunds: async (_parent, _args: unknown, context) => {
         const userId = requireUserId(context.userId);
         return context.savingsFundService.listCatalog(userId);
+      },
+      bankBalance: async (_parent, _args: unknown, context) => {
+        const userId = requireUserId(context.userId);
+        return context.bankBalanceService.getBankBalance(userId);
       },
     },
     Mutation: {
@@ -630,6 +663,14 @@ export const schema = createSchema<GraphQLContext>({
           toGraphQLError(error);
         }
       },
+      setBankBalanceCheckpoint: async (_parent, args: { amountCents: number }, context) => {
+        const userId = requireUserId(context.userId);
+        try {
+          return await context.bankBalanceService.setBankBalanceCheckpoint(userId, args.amountCents);
+        } catch (error) {
+          toGraphQLError(error);
+        }
+      },
     },
     Category: {
       budgetType: (parent: { budgetType: 'need' | 'want' | 'savings' | null }) =>
@@ -723,6 +764,9 @@ export const schema = createSchema<GraphQLContext>({
         }
         return fund;
       },
+    },
+    BankBalance: {
+      checkpointSetAt: (parent: { checkpointSetAt: Date }) => formatTimestamp(parent.checkpointSetAt),
     },
   },
 });

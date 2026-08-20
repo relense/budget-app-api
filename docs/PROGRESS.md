@@ -1145,13 +1145,62 @@ Built on `feature/category-month-actuals`:
   378).
 
 Next actions, in order:
-1. Run `pr-reviewer` on `feature/category-month-actuals`, go back and
-   forth until approved, then `test-auditor` until clean, then open the
-   PR and hand back for human review — same two-stage pattern as PRs
-   #14/#15.
-2. After that merges: grill and build the bank-balance checkpoint feature
-   as its own step/PR (see the "bank balance" note above for what's
-   already decided).
+PR #16 (`feature/category-month-actuals` → `develop`) went through both
+review stages and merged: `pr-reviewer` round 1 found one real, if narrow,
+gap — the new `category.findMany` lookup inside `listByMonth` (added to
+resolve the `direction` filter) wasn't scoped by `userId`, even though it
+was provably safe (every `categoryId` on a `categoryMonth` row is already
+guaranteed user-owned via `assertOwnedCategory`, confirmed by an existing
+cross-user test). Fixed as defense-in-depth, matching this file's own
+`resolveBudgetForActivation` precedent, plus a doc comment and an explicit
+empty-result test the reviewer also flagged as missing. Round 2: approved.
+`test-auditor` came back "tests trustworthy" with one optional note — no
+test proved the `actualAmountCents` DataLoader batches multiple
+`CategoryMonth` parents into a single call rather than one per parent —
+closed with a two-parent test asserting both sums and a single batched
+`listByCategoryMonthIds` call. 386 Jest tests total by the time it merged.
+
+### Bank balance — grilled and built on `feature/bank-balance`
+
+Two short rounds of grilling closed every open question from the pause
+point: hard-delete-style "no history, silently overwritten" for checkpoint
+edits (matching every other entity); a `BankBalance` GraphQL type
+(`amountCents`/`checkpointAmountCents`/`checkpointSetAt`) plus
+`Query.bankBalance`/`Mutation.setBankBalanceCheckpoint(amountCents)`; the
+checkpoint anchors on `Transaction.createdAt` (real insertion time), not
+the transaction's own `date`, so a backfilled transaction entered after
+the checkpoint still counts even if it's dated earlier; negative allowed,
+the one exception to every other money field in this schema; and a
+brand-new user with no checkpoint set at all just gets `0 +` every
+transaction they've ever logged (`bankBalanceCheckpointCents`/
+`bankBalanceCheckpointSetAt` default to `0`/account-creation time on the
+`User` row — no separate "not set" state anywhere).
+
+Built: `bankBalanceService` (`getBankBalance`, `setBankBalanceCheckpoint`),
+a new `@@index([userId, createdAt])` on `transactions` (a different axis
+than the existing `(userId, date)` index — this feature's query pattern is
+"every transaction entered after an instant," not "every transaction in a
+month"), full GraphQL wiring, and its own `tests/services/bankBalance/`
+fake Prisma (deliberately decoupled from the categories domain's fake —
+`bankBalanceService` only ever reads flat `{ userId, amountCents,
+direction, createdAt }` rows, no category/categoryMonth chain needed to
+seed a test transaction). 402 Jest tests total (was 386). Verified against
+real Postgres via a throwaway smoke script (deleted, not committed):
+default-zero balance, checkpoint set, a real income + expense transaction
+pair summed correctly, a negative checkpoint accepted, and a reset
+correctly excluding transactions entered before the new checkpoint.
+
+Next actions, in order:
+1. Run `pr-reviewer` on `feature/bank-balance`, go back and forth until
+   approved, then `test-auditor` until clean, then open the PR and hand
+   back for human review — same two-stage pattern as PRs #14/#15/#16.
+2. After that merges: Build Order step 8 (seed script) and step 9 (basic
+   tests, likely already substantially covered — worth an audit pass
+   rather than starting fresh) are what's left before Phase 1 (backend) is
+   done, plus the Production Readiness items `PLAN.md` still flags as
+   outstanding (rate limiting, introspection/depth limits are done —
+   confirm; `otp_codes`/`refresh_tokens` row cleanup, CI, GDPR export/
+   delete are not).
 3. Small tracked follow-up, not blocking, carried over from step 6: add
    logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
    (recurring-expenses step) once this service layer has a logger
