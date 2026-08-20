@@ -1626,12 +1626,15 @@ runs back to back), `permissions: contents: read` at the workflow level
 `timeout-minutes: 15` on the job (so a hung step can't silently burn a
 large chunk of Actions minutes).
 
+Pushed as PR #24. The workflow itself was confirmed green on GitHub's
+actual runners (run 32370649072, 55s, every step passed) — the one thing
+that couldn't be verified locally before this.
+
 Next actions, in order:
-1. Push `chore/ci-pipeline`, open the PR, and confirm the workflow
-   actually passes on GitHub's runners (the one thing that can't be
-   verified locally). Once it's run successfully at least once, enable
-   required status checks on `develop`/`main` via `gh api` (a check can't
-   be required before GitHub has seen it pass).
+1. Once PR #24 merges, enable required status checks for the `ci` job on
+   `develop`/`main` via `gh api` (a check can't be required before GitHub
+   has seen it pass at least once on that branch — do it right after
+   merge).
 2. Remaining Production Readiness item: GDPR export/delete. Then Phase 2
    (mobile app), which needs design references (mockups + Excel structure
    — now partly in hand) before any screen work begins, per CLAUDE.md.
