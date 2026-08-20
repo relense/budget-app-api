@@ -861,4 +861,45 @@ describe('row locking', () => {
     }
     expect(sawCategoryLock).toBe(true);
   });
+
+  it('locks the NEW target category on a reassigning update, not the old one', async () => {
+    // test-auditor gap: the test above only ever re-locks the same
+    // category on update, so it can't tell "locked the new target" apart
+    // from "accidentally locked the old one" — updateRecurringExpense
+    // (recurringExpenseService.ts) has both existing.categoryId (old) and
+    // input.categoryId (new) in scope at the call site, so this is a real
+    // regression a same-category test can't catch.
+    const { prisma, categoryService, categoryMonthService, recurringExpenseService, housing } = await setup();
+    const transport = await categoryService.createCategory('user-1', {
+      name: 'Transport',
+      icon: 'car',
+      color: '#0000FF',
+      budgetType: 'want',
+      direction: 'expense',
+    });
+    await categoryMonthService.addCategoryToMonth('user-1', transport.id, '2026-08', 20000);
+    const rent = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+
+    const queryRawSpy = jest.fn(prisma.$queryRaw);
+    prisma.$queryRaw = queryRawSpy as typeof prisma.$queryRaw;
+
+    await recurringExpenseService.updateRecurringExpense('user-1', rent.id, {
+      name: 'Rent',
+      amountCents: 80000,
+      categoryId: transport.id,
+      budgetType: 'need',
+      dueDay: 1,
+    });
+
+    const categoryLockIds = queryRawSpy.mock.calls
+      .filter((call) => (call[0] as TemplateStringsArray).join('').includes('categories'))
+      .map((call) => call[1] as string);
+    expect(categoryLockIds).toContain(transport.id);
+    expect(categoryLockIds).not.toContain(housing.id);
+  });
 });
