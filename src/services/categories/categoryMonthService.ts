@@ -278,12 +278,19 @@ export function createCategoryMonthService({
     return categoryMonth;
   }
 
-  async function listByMonth(userId: string, month: string) {
+  async function listByMonth(userId: string, month: string, direction?: 'expense' | 'income') {
     assertValidMonth(month);
 
     const monthId = await budgetMonthService.findBudgetMonthId(userId, month);
     if (!monthId) return [];
-    return prisma.categoryMonth.findMany({ where: { userId, monthId } });
+    const categoryMonths = await prisma.categoryMonth.findMany({ where: { userId, monthId } });
+    if (!direction) return categoryMonths;
+
+    const categories = await prisma.category.findMany({
+      where: { id: { in: categoryMonths.map((cm) => cm.categoryId) } },
+    });
+    const directionByCategoryId = new Map(categories.map((c) => [c.id, c.direction]));
+    return categoryMonths.filter((cm) => directionByCategoryId.get(cm.categoryId) === direction);
   }
 
   /** Batch lookup for DataLoader use — trusts the caller to have already scoped the ids to one user. */

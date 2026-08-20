@@ -80,6 +80,26 @@ describe('listByMonth', () => {
       reason: 'invalid_month',
     });
   });
+
+  it('filters by direction, resolved through each row\'s own category', async () => {
+    const { categoryService, categoryMonthService, categoryA } = await setup();
+    const salary = await categoryService.createCategory('user-1', {
+      name: 'Salary',
+      icon: 'cash',
+      color: '#00FF00',
+      direction: 'income',
+    });
+    const expenseCM = await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 10000);
+    const incomeCM = await categoryMonthService.addCategoryToMonth('user-1', salary.id, '2026-08', 450000);
+
+    const incomeOnly = await categoryMonthService.listByMonth('user-1', '2026-08', 'income');
+    const expenseOnly = await categoryMonthService.listByMonth('user-1', '2026-08', 'expense');
+    const unfiltered = await categoryMonthService.listByMonth('user-1', '2026-08');
+
+    expect(incomeOnly.map((cm) => cm.id)).toEqual([incomeCM.id]);
+    expect(expenseOnly.map((cm) => cm.id)).toEqual([expenseCM.id]);
+    expect(unfiltered.map((cm) => cm.id).sort()).toEqual([expenseCM.id, incomeCM.id].sort());
+  });
 });
 
 describe('findManyByIds', () => {

@@ -16,6 +16,7 @@ function buildContext(userId: string | null): GraphQLContext {
     categoryService: {} as never,
     categoryMonthService: {
       addCategoryToMonth: jest.fn(async () => categoryMonth),
+      listByMonth: jest.fn(async () => [categoryMonth]),
     } as never,
     budgetMonthService: {} as never,
     transactionService: {} as never,
@@ -29,6 +30,37 @@ function buildContext(userId: string | null): GraphQLContext {
 async function run(source: string, contextValue: GraphQLContext) {
   return graphql({ schema, source, contextValue });
 }
+
+describe('Query.categoryMonths', () => {
+  const query = 'query($direction: Direction) { categoryMonths(month: "2026-08", direction: $direction) { id } }';
+
+  it('calls listByMonth without a direction when none is given', async () => {
+    const context = buildContext('user-1');
+
+    const result = await run('{ categoryMonths(month: "2026-08") { id } }', context);
+
+    expect(result.errors).toBeUndefined();
+    expect(context.categoryMonthService.listByMonth).toHaveBeenCalledWith('user-1', '2026-08', undefined);
+  });
+
+  it('maps the direction argument through to listByMonth as a db-cased value', async () => {
+    const context = buildContext('user-1');
+
+    const result = await graphql({ schema, source: query, contextValue: context, variableValues: { direction: 'INCOME' } });
+
+    expect(result.errors).toBeUndefined();
+    expect(context.categoryMonthService.listByMonth).toHaveBeenCalledWith('user-1', '2026-08', 'income');
+  });
+
+  it('rejects an unauthenticated request without calling the service', async () => {
+    const context = buildContext(null);
+
+    const result = await run('{ categoryMonths(month: "2026-08") { id } }', context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+    expect(context.categoryMonthService.listByMonth).not.toHaveBeenCalled();
+  });
+});
 
 describe('Mutation.addCategoryToMonth', () => {
   it('passes the given monthlyBudgetCents through to the service', async () => {
