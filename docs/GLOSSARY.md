@@ -24,8 +24,8 @@ A named savings goal (e.g. "Emergency Fund", "Wedding"). Has a target amount, a 
 **Savings Movement**
 A single deposit or withdrawal into/out of a Savings Fund. Same relationship to Fund as Transaction has to Category: the fund is the running total, the movement is the individual event that changed it.
 
-**Income Source**
-A recurring or expected source of income for a given month (e.g. salary, freelance extra), tracked as expected vs. actual amount per month.
+~~**Income Source**~~ — *superseded, see below*
+A recurring or expected source of income for a given month (e.g. salary, freelance extra), tracked as expected vs. actual amount per month. Originally sketched as its own transversal-plus-per-month table (`income_sources`), mirroring the original Recurring Expense Template/Instance split. Dropped for the identical reason during step 7's kickoff grill, before any code existed for it: `direction` already lives on `Category`, not just on `Transaction` — so an income-direction Category, activated into a month via the existing `addCategoryToMonth`, already gives "one planned number this month, satisfied by N actual Transactions" for free. Income today is just a `Category` with `direction: income` (e.g. "Salary", "Freelance") plus its normal `CategoryMonth`/`Transaction` rows — `monthlyBudgetCents` doubles as "expected amount", and the new **`actualAmountCents`** field (below) sums that month's actual Transactions. See `PLAN.md`'s Data Model section and `PROGRESS.md` for the full reasoning.
 
 ## Fields and enums
 
@@ -43,6 +43,9 @@ True once `currentAmountCents` has reached `targetAmountCents`; always `false` i
 
 **paidThisMonth** (boolean, on Recurring Expense — computed, not stored)
 `SUM(amountCents)` across every Transaction linked to this row `>= amountCents` — fully covered, not "any payment logged." Split payments (e.g. rent paid in two installments) are allowed and expected; the sum accounts for all of them. Not a raw DB column — see "Notes for Claude Code" in the project plan for why (avoids a scheduled monthly reset job).
+
+**actualAmountCents** (Int, on CategoryMonth — computed, not stored)
+`SUM(amountCents)` across every Transaction linked to this CategoryMonth. Direction-agnostic — the same field is "spent so far" for an expense category and "received so far" for an income category (see the now-superseded Income Source entry above), read against `monthlyBudgetCents` as the planned/expected number either way. Same "never let a derived value drift out of sync" reasoning as `paidThisMonth`/`achieved` below.
 
 **recurringCommittedCents** (Int, on CategoryMonth — computed, not stored)
 `SUM(amountCents)` across every Recurring Expense active under that category for that month (e.g. Housing → Rent + Electricity + Gas). Exists so a category's manually-set `monthlyBudgetCents` never needs hand-calculating against its recurring expenses — see the phase-2 UX note under "Notes for Claude Code" in the project plan.

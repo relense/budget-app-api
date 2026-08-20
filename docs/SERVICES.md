@@ -89,12 +89,23 @@ exists here. Owns the month's budget. Deps: `prisma`, `budgetMonthService`,
 
 | Function | Does |
 |---|---|
-| `listByMonth(userId, month)` | Every active category for that month. |
+| `listByMonth(userId, month, direction?)` | Every active category for that month; `direction?` optionally filters to `'expense'` or `'income'`, resolved through each row's own `Category.direction` (a second, small `category.findMany` lookup by id — not pushed into the `categoryMonth` query itself). Powers `Query.categoryMonths`' `direction` arg — see "Income" note below. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
 | `addCategoryToMonth(userId, categoryId, month, monthlyBudgetCents?)` | Explicit activation; errors if already active that month (`category_month_already_active`). `monthlyBudgetCents` is optional — inherits the category's most recent (by real calendar month, not insertion order) `category_month`'s budget when omitted, or throws `category_month_budget_required` if this category has never been active anywhere yet. Rejects a genuinely new activation more than one month past the derived current month (`category_month_beyond_planning_horizon`) — see below. When this call is the one that creates the target month's `BudgetMonth` row for the first time, also fires `onNewBudgetMonth` (an injected dep, wired to `recurringExpenseService.seedNewMonth` in `server.ts`) after the transaction commits. |
 | `ensureActiveForCategory(userId, categoryId, month, monthlyBudgetCents?)` | Idempotent — returns the existing row if already active (no planning-horizon check in that case — pre-provisioned activations are never retroactively rejected). Same budget-inheritance rule as `addCategoryToMonth` when it actually creates one. |
 | `removeCategoryFromMonth(userId, categoryMonthId)` | Hard delete, blocked while any transaction references it that month (`category_month_has_transactions`) or any `recurring_expenses` row references it (`category_month_has_recurring_expenses` — recurring expenses have no `categoryMonthId` FK, so this checks by matching `categoryId`+`monthId`). |
 | `updateCategoryMonthBudget(userId, categoryMonthId, monthlyBudgetCents)` | This month's budget only. |
+
+**Income has no dedicated table or service** — `PLAN.md`'s original
+`income_sources` sketch (step 7) was dropped before any code existed for
+it, superseded by reusing this exact machinery: an income-direction
+`Category` (e.g. "Salary"), activated into a month via `addCategoryToMonth`
+same as any expense category (`monthlyBudgetCents` doubling as "expected
+amount"), with each paycheck logged as a normal `Transaction`. The
+`GraphQL.CategoryMonth.actualAmountCents` field (`SUM` of that
+`CategoryMonth`'s transactions, computed at read time — see below) is
+direction-agnostic: "spent so far" for expense, "received so far" for
+income. See `PLAN.md`'s Data Model section for the full reasoning.
 
 Also exports **`ensureActiveForCategoryOnClient(client, userId, categoryId, month, monthlyBudgetCents?, now?)`**
 standalone — lets a caller with its own open transaction (e.g.
@@ -270,7 +281,7 @@ Introspection and query-depth (max 10) are limited in production.
 | `ping` | — | `String!` (no auth required) |
 | `currentMonth` | — | `BudgetMonth!` |
 | `categories` | — | `[Category!]!` |
-| `categoryMonths` | `month: String!` | `[CategoryMonth!]!` |
+| `categoryMonths` | `month: String!, direction: Direction` | `[CategoryMonth!]!` |
 | `transactions` | `month: String!, categoryId: ID` | `[Transaction!]!` |
 | `recurringExpenses` | `month: String!` | `[RecurringExpense!]!` |
 | `savingsFunds` | — | `[SavingsFund!]!` |
@@ -301,11 +312,12 @@ Introspection and query-depth (max 10) are limited in production.
 | `updateSavingsMovement` | `id: ID!, input: UpdateSavingsMovementInput!` | `SavingsMovement!` |
 | `deleteSavingsMovement` | `id: ID!` | `Boolean!` |
 
-**Types**: `Category`, `CategoryMonth` (+ computed `recurringCommittedCents`),
-`Transaction` (+ nullable `recurringExpense`), `RecurringExpense` (+ computed
-`paidThisMonth`), `SavingsFund` (+ computed `currentAmountCents`/`achieved`),
-`SavingsMovement` (+ `fund` back-reference, mirroring `Transaction.categoryMonth`).
-Enums: `BudgetType` (`NEED`\|`WANT`\|`SAVINGS`), `Direction`
+**Types**: `Category`, `CategoryMonth` (+ computed `actualAmountCents`,
+`recurringCommittedCents`), `Transaction` (+ nullable `recurringExpense`),
+`RecurringExpense` (+ computed `paidThisMonth`), `SavingsFund` (+ computed
+`currentAmountCents`/`achieved`), `SavingsMovement` (+ `fund` back-reference,
+mirroring `Transaction.categoryMonth`). Enums: `BudgetType`
+(`NEED`\|`WANT`\|`SAVINGS`), `Direction`
 (`EXPENSE`\|`INCOME`), `MovementType` (`DEPOSIT`\|`WITHDRAW`) — DB stores
 lowercase, GraphQL exposes upper-case, mapped in `enumMapping.ts`.
 

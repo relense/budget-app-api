@@ -1102,20 +1102,56 @@ stay honest, not each month in isolation. Decided so far:
 Session paused here at the user's request ("continue tomorrow") —
 no code written for either piece above.
 
+### Step 7, resumed and built: `CategoryMonth.actualAmountCents` + `categoryMonths(direction)`
+
+Closed the two remaining open questions from the pause point in two
+quick confirms: the new computed field is named `actualAmountCents`
+(mirrors the "expected vs actual" language from the original income
+sources sketch), and `addCategoryToMonth`/`updateCategoryMonthBudget`
+need no changes at all — both are already direction-agnostic, only
+setting `monthlyBudgetCents` on a row regardless of what direction its
+category has.
+
+Built on `feature/category-month-actuals`:
+- `categoryMonthService.listByMonth(userId, month, direction?)` — the
+  `categoryMonth` query itself still just filters by `userId`/`monthId`
+  (no relational-filter query shape); when `direction` is given, a
+  second small `category.findMany({ where: { id: { in: [...] } } })`
+  resolves each row's category and filters in application code. Kept
+  this simple over pushing `category: { direction }` into the Prisma
+  `where` clause specifically to avoid teaching the fake Prisma test
+  double a new relational-filter shape — the result set per month is
+  small (bounded like a month's transactions), so the extra query is
+  cheap.
+- `GraphQL.CategoryMonth.actualAmountCents` — reuses the *existing*
+  `transactionsByCategoryMonthId` DataLoader (the same one
+  `CategoryMonth.transactions` already used) and sums in the resolver —
+  no new DataLoader, no new Prisma query at all.
+- `GraphQL.Query.categoryMonths` gained an optional `direction` arg,
+  mapped through `directionToDb` same as every other direction-facing
+  resolver.
+- Verified the direction filter + the sum against real Postgres via a
+  throwaway `scripts/smoke-category-month-actuals.ts` (deleted after
+  use, never committed) — an income-direction "Salary" CategoryMonth and
+  an expense-direction "Groceries" one, each with real Transactions,
+  confirmed `listByMonth(..., 'income')`/`listByMonth(..., 'expense')`
+  return exactly the right row and the summed cents match.
+- `docs/PLAN.md`/`GLOSSARY.md`/`SERVICES.md` updated: `income_sources`
+  (Data Model section, the illustrative `IncomeSource`
+  type/input/query/mutations, Build Order step 7, the soft-delete
+  history paragraph, the audit-trail Out-of-Scope note) all marked
+  superseded — kept side by side, not deleted, same convention as the
+  recurring-expense template/instance section. 384 Jest tests total (was
+  378).
+
 Next actions, in order:
-1. Finish grilling any remaining Income-sources details not yet nailed
-   (the new computed field's exact name; confirm whether
-   `addCategoryToMonth`/`updateCategoryMonthBudget` need any change vs.
-   being used as-is for income categories) — then TDD-build on a new
-   branch (`feature/category-month-actuals` or similar — "income sources"
-   is no longer an accurate branch name since there's no such entity
-   anymore), update `PLAN.md`/`GLOSSARY.md`/`SERVICES.md` (mark
-   `income_sources` superseded, document the real design), open the PR,
-   go through `pr-reviewer` to approval and `test-auditor` to closure
-   before handing back for human review — same two-stage pattern as PRs
+1. Run `pr-reviewer` on `feature/category-month-actuals`, go back and
+   forth until approved, then `test-auditor` until clean, then open the
+   PR and hand back for human review — same two-stage pattern as PRs
    #14/#15.
 2. After that merges: grill and build the bank-balance checkpoint feature
-   as its own step/PR.
+   as its own step/PR (see the "bank balance" note above for what's
+   already decided).
 3. Small tracked follow-up, not blocking, carried over from step 6: add
    logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
    (recurring-expenses step) once this service layer has a logger
@@ -1247,10 +1283,13 @@ Next actions, in order:
       (2 rounds) and `test-auditor` (2 rounds) both closed clean. Merged into
       `develop` via PR #15. See "Where we left off" above for the full
       design/build/review narrative.
-- [ ] **7. Income sources** — **reconsidered before any code was written; the
-      dedicated `income_sources` table described in `PLAN.md` is dropped.**
-      See "Where we left off" below for the full pivot and what's replacing
-      it.
+- [ ] **7. "Income sources"** — **reconsidered before any code was written;
+      the dedicated `income_sources` table described in `PLAN.md` is
+      dropped**, replaced by `CategoryMonth.actualAmountCents` (computed) +
+      an optional `direction` arg on `categoryMonths` against ordinary
+      income-direction Categories. Built on `feature/category-month-actuals`,
+      not yet through `pr-reviewer`/`test-auditor`/merge. See "Where we left
+      off" above for the full pivot and build.
 - [ ] **8. Seed script** — real categories/funds from the Excel tracker.
 - [ ] **9. Basic tests** — auth boundary tests (user A can't read user B's
       data), one DataLoader batching check.
