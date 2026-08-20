@@ -1697,11 +1697,58 @@ seeded a full account (every table) plus a second user's data, ran
 `deleteAccount`, confirmed zero orphaned rows and zero cross-user
 contamination — passed clean, no FK violations.
 
+`pr-reviewer` round 1 found one real bug and a genuine open design
+question. Bug, fixed: `deleteAccount`'s final `tx.user.delete` didn't catch
+P2025 — a double-submit `DELETE /account` (or a client retry) would have
+the losing request's user row already gone by its own delete, surfacing a
+raw 500 instead of `account_not_found` the way every other race of this
+shape in this codebase is handled (same pattern as
+`savingsMovementService`'s P2025 catch) — verified against real Postgres.
+Also fixed while in there: `exportUserData`'s seven reads now run inside
+one `RepeatableRead` transaction for a consistent snapshot (were a bare
+`Promise.all` outside any transaction — a concurrent write could've
+returned a mix of pre/post-write state across tables); extracted a shared
+`findAccount` helper (was duplicated find-or-throw); added a modest per-IP
+rate limit to both routes.
+
+The open question: the reviewer flagged that `Category`/`BudgetMonth`/
+`SavingsFund` — the three tables with no other FK dependency — can be
+created with nothing but a bare `userId`, so a row created for this user at
+the exact moment `deleteAccount` runs (or right after) can become
+permanently orphaned, nothing left to ever delete it. Digging into *why*
+before deciding what to do about it: checked the actual migration SQL, not
+just `schema.prisma`, and confirmed `docs/PLAN.md`'s Data Model section has
+always labeled every `user_id` column `(fk)` — this was never a considered
+tradeoff. Only `refresh_tokens` ever got a real database-level constraint;
+the rest silently never did, because Prisma only generates one when a
+named `@relation` is declared, and app-level `WHERE userId = ...`
+filtering already made every query behave correctly without it — invisible
+until `deleteAccount` became the first thing that ever needed to delete
+*by* `userId` across these tables. User's call after hearing that: don't
+band-aid it (an advisory lock) or leave it purely as a documented
+limitation — **scope "retrofit the missing `User` FKs" as its own next
+task**, since a real fix has to reconcile with the *intentional* `Restrict`
+relations already between the domain tables (e.g. `CategoryMonth →
+Category`, deliberately `Restrict` so a normal single-item `deleteCategory`
+can't silently cascade away linked data) — not a small fix, not something
+to fold into this branch. Documented in `PLAN.md`'s GDPR note as a known,
+understood gap in the meantime.
+
 Remaining Production Readiness items: none — CI, row cleanup, and GDPR
 export/delete are all built. A privacy policy is still needed before real
-signups, but that's a product/legal task, not code. Next: Phase 2 (mobile
-app), which needs design references (mockups + Excel structure — now
-partly in hand) before any screen work begins, per CLAUDE.md.
+signups, but that's a product/legal task, not code.
+
+Next actions, in order:
+1. `pr-reviewer` then `test-auditor` on `feature/account-export-delete`,
+   hand back for human review.
+2. **Retrofit missing `User` FK relations** (queued above) — needs its own
+   design pass: which tables get `onDelete: Cascade` vs keep `Restrict`,
+   how that interacts with the existing domain-to-domain `Restrict` rules,
+   whether `deleteAccount` can then simplify back toward relying on
+   cascade or should keep its explicit ordering regardless.
+3. Then Phase 2 (mobile app), which needs design references (mockups +
+   Excel structure — now partly in hand) before any screen work begins,
+   per CLAUDE.md.
 
 Small tracked follow-up, not blocking, carried over from step 6: add
 logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
