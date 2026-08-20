@@ -31,6 +31,15 @@ describe('isValidCalendarDate', () => {
     expect(isValidCalendarDate('2026-08-00')).toBe(false);
   });
 
+  it('rejects a 4-digit year below 100 (Date.UTC would otherwise treat it as 1900+year)', () => {
+    expect(isValidCalendarDate('0099-01-01')).toBe(false);
+    expect(isValidCalendarDate('0000-01-01')).toBe(false);
+  });
+
+  it('accepts a year of exactly 100', () => {
+    expect(isValidCalendarDate('0100-01-01')).toBe(true);
+  });
+
   it('rejects malformed shapes', () => {
     expect(isValidCalendarDate('2026/08/15')).toBe(false);
     expect(isValidCalendarDate('26-08-15')).toBe(false);

@@ -19,6 +19,13 @@ export function isValidCalendarDate(date: string): boolean {
   const month = Number(monthStr);
   const day = Number(dayStr);
   if (month < 1 || month > 12) return false;
+  // Date.UTC treats a 0-99 year as 1900+year (a JS spec quirk carried over
+  // from two-digit years) — that would make the round-trip below never
+  // match a genuinely 4-digit "0000"-"0099" input, rejecting an
+  // otherwise-well-formed date. Not a real-world concern for this app's
+  // domain (no budget month is ever year 0-99), but explicit here so it
+  // reads as intentional over-rejection, not an overlooked bug.
+  if (year < 100) return false;
 
   const parsed = new Date(Date.UTC(year, month - 1, day));
   return (

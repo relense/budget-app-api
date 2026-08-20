@@ -96,25 +96,24 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
     assertValidBudgetType(input.direction, input.budgetType);
 
     if (input.direction !== existing.direction) {
-      const categoryMonths = await prisma.categoryMonth.findMany({ where: { categoryId: id } });
-      const categoryMonthIds = categoryMonths.map((categoryMonth) => categoryMonth.id);
-      const referencingTransaction =
-        categoryMonthIds.length > 0
-          ? await prisma.transaction.findFirst({
-              where: { categoryMonthId: { in: categoryMonthIds } },
-            })
-          : null;
-
+      // The two checks below are independent reads — run them concurrently.
       // A RecurringExpense derives every future Transaction's direction
       // from its category (see markRecurringPaid) — checked only at the
       // recurring expense's own create/update time, never re-checked
-      // afterward. Without this, a brand-new (never-paid) recurring
-      // expense has zero Transactions yet, so the check above alone
-      // wouldn't block flipping its category's direction out from under
-      // it, silently mislabeling the next payment.
-      const referencingRecurringExpense = await prisma.recurringExpense.findFirst({
-        where: { categoryId: id },
-      });
+      // afterward. Without the second check, a brand-new (never-paid)
+      // recurring expense has zero Transactions yet, so the first check
+      // alone wouldn't block flipping its category's direction out from
+      // under it, silently mislabeling the next payment.
+      const [referencingTransaction, referencingRecurringExpense] = await Promise.all([
+        (async () => {
+          const categoryMonths = await prisma.categoryMonth.findMany({ where: { categoryId: id } });
+          const categoryMonthIds = categoryMonths.map((categoryMonth) => categoryMonth.id);
+          return categoryMonthIds.length > 0
+            ? prisma.transaction.findFirst({ where: { categoryMonthId: { in: categoryMonthIds } } })
+            : null;
+        })(),
+        prisma.recurringExpense.findFirst({ where: { categoryId: id } }),
+      ]);
 
       if (referencingTransaction || referencingRecurringExpense) {
         throw new CategoryServiceError('direction_change_blocked');
