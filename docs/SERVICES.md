@@ -274,6 +274,16 @@ they've ever logged — no separate "not set yet" state anywhere in the API.
 Verified against real Postgres (default balance, checkpoint set, real
 transaction sum, negative checkpoint, reset excluding prior transactions).
 
+### `accountService` — `src/services/account/accountService.ts`
+
+GDPR export/right-to-erasure (`PLAN.md`'s "GDPR export/delete" note). Deps:
+`prisma`.
+
+| Function | Does |
+|---|---|
+| `exportUserData(userId)` | Returns account info (email, `createdAt`, bank balance checkpoint) plus every domain row the user owns — categories, budget months, category-months, transactions, recurring expenses, savings funds/movements. Throws `AccountServiceError('account_not_found')` if the user doesn't exist. |
+| `deleteAccount(userId)` | Hard-deletes everything for that user in one transaction: none of the domain tables have a real FK back to `User` (`userId` is application-scoped only — only `RefreshToken` has an actual `@relation`), so this can't rely on cascade. Deletes in dependency order instead — savings movements, transactions, savings funds, recurring expenses, category-months, categories, budget months, then `otp_codes` matching the account's email (keyed by email, not `userId`, so outside the normal chain) — before finally deleting the `User` row itself (which cascades the last refresh tokens). Verified against real Postgres, not just the fake, given how many `Restrict` FKs the ordering has to walk through correctly. |
+
 ---
 
 ## Supporting libs — `src/lib/`
@@ -283,7 +293,7 @@ Not services (no `userId`-scoped business logic), but worth knowing exist:
 | File | Exports |
 |---|---|
 | `prisma.ts` | `createPrismaClient(databaseUrl)` — Prisma 7 client via `@prisma/adapter-pg`. |
-| `jwt.ts` | `signAccessToken`/`verifyAccessToken` — jose, HS256. |
+| `jwt.ts` | `signAccessToken`/`verifyAccessToken` — jose, HS256. `resolveBearerUserId(request, secret)` — extracts + verifies the bearer token from a Fastify request's Authorization header, returns `userId` or `null`; shared by every authenticated REST route that isn't itself part of the OTP/token-issuing flow (`logout-all`, `account` export/delete). |
 | `otp.ts` | `generateOtpCode`/`hashOtpCode`/`verifyOtpCode`/`OTP_CODE_REGEX` — argon2. |
 | `refreshToken.ts` | `generateRefreshToken`/`hashRefreshToken` — sha256 (already high-entropy, unlike OTP codes). |
 | `email.ts` | `EmailService` interface + `createConsoleEmailService` (logs instead of sending — real provider deferred per `PLAN.md`). |
@@ -305,7 +315,7 @@ Not services (no `userId`-scoped business logic), but worth knowing exist:
 
 ## API Endpoints
 
-### REST — Fastify (`src/routes/auth.ts`, `src/server.ts`)
+### REST — Fastify (`src/routes/auth.ts`, `src/routes/account.ts`, `src/server.ts`)
 
 All bodies are Zod-validated; a validation failure returns `400 { error: "validation_error", issues }`.
 
@@ -316,6 +326,8 @@ All bodies are Zod-validated; a validation failure returns `400 { error: "valida
 | `POST /auth/refresh` | `{ refreshToken }` | `200 { accessToken, refreshToken }` | Mandatory rotation — old token is revoked, reusing it fails. `401 { error: "refresh_token_invalid" }` on failure. |
 | `POST /auth/logout` | `{ refreshToken }` | `204` | Revokes one refresh token. |
 | `POST /auth/logout-all` | — (Bearer access token) | `204` | Revokes every refresh token for the authenticated user. `401` if the access token is missing/invalid. |
+| `GET /account/export` | — (Bearer access token) | `200` — full JSON export | GDPR export (see `accountService` above). `401` if unauthenticated, `404 { error: "account_not_found" }` if the account no longer exists. |
+| `DELETE /account` | `{ confirm: true }` (Bearer access token) | `204` | GDPR right-to-erasure (see `accountService` above) — permanent, no undo. `confirm: true` is required in the body as a deliberate extra guard beyond just a valid token, given this is the single most destructive action in the app. `401` if unauthenticated, `400` if `confirm` isn't `true`, `404 { error: "account_not_found" }` if the account no longer exists. |
 | `GET /health` | — | `200 { status: "ok" }` | Real DB check (`SELECT 1`); `503` on failure. |
 
 ### GraphQL — `POST/GET /graphql` (`src/graphql/schema.ts`)
