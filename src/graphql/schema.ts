@@ -272,8 +272,12 @@ const typeDefs = /* GraphQL */ `
 
 // Typed against the generated Resolvers (see codegen.ts) rather than
 // hand-rolled per-field arg interfaces — args/return types are inferred
-// straight from these declared types, so a schema change that isn't
-// matched here becomes a compile error instead of a silent runtime drift.
+// straight from these declared types, so a resolver that's drifted from
+// the schema (wrong field name, mismatched arg/return type) is now a
+// compile error. Every field here is still technically optional to
+// codegen (GraphQL allows a default property-access resolver), so a
+// brand-new schema field with *no* resolver at all still typechecks —
+// that failure mode still only surfaces at request time.
 const queryResolvers: QueryResolvers<GraphQLContext> = {
   ping: () => 'pong',
   currentMonth: async (_parent, _args, context) => {

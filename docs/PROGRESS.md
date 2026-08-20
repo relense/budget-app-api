@@ -1896,6 +1896,20 @@ server (real Postgres, the seeded account, a full OTP login) exercising
 `categoryMonths` query (loader-based nested resolvers + computed
 `actualAmountCents`) — all returned correct data.
 
+`pr-reviewer` approved with one real doc-accuracy finding, no code
+changes needed: the "a schema change unmatched by a resolver is a compile
+error, not a silent drift" framing overstates what this actually catches
+— the reviewer proved it by adding a brand-new `Query` field with zero
+resolver and regenerating; it typechecked clean anyway, since every
+generated resolver field is optional (GraphQL allows a default
+property-access resolver, so codegen can't assume every field needs an
+explicit one). The real safety net is narrower and still genuinely
+useful: a resolver that *exists* but has drifted (wrong field name,
+mismatched arg/return type) is caught; a *forgotten* resolver for a new
+field is not, and still only surfaces at request time same as before.
+Corrected the wording in `PLAN.md`, `SERVICES.md`, and the code comment in
+`schema.ts` to say exactly that instead of overclaiming.
+
 ## Phase 1 — Backend
 
 - [x] **0. Ground truth** — `.claude/CLAUDE.md`, `docs/GLOSSARY.md`, `docs/PLAN.md`, `docs/SCALING.md` committed (originally flat at the repo root — moved into `.claude/`/`docs/` later, see "Where we left off").
