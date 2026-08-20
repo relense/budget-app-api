@@ -2135,3 +2135,9 @@ Not started.
   excluding ambiguous characters (0/O, 1/I/L), verified case-insensitively.
   Confirmed with the user; charset/case/length were all explicit choices,
   not defaults.
+- Local dev `PORT` is `4400`, not the `4000` default in `.env.example` — port
+  4000 collided with another local project, and port 5000 turned out to be
+  taken by macOS's AirPlay Receiver (Control Center squats on it by
+  default). Relevant for Phase 2 (mobile app): point the API client at
+  `http://localhost:4400` (or `http://10.0.2.2:4400` from the Android
+  emulator) for local development.
