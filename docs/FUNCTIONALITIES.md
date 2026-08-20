@@ -69,8 +69,51 @@ section for the reasoning).
 
 ## 6. Savings funds
 
-Not built yet — backlog item.
+Named savings goals, separate from monthly spending categories (e.g.
+"Emergency Fund", "Wedding") — money that accumulates over time rather than
+resetting each month.
 
-## 7. Income sources
+- Create a fund: name, starting balance, optionally a target amount, a
+  start/end date, and a monthly savings target.
+- Log a deposit or withdrawal against it (a "movement") — a withdrawal is
+  blocked if it would leave the fund negative, even under concurrent
+  requests.
+- Edit or delete a movement — the balance is re-checked against the edit or
+  removal the same way, so you can never end up negative by editing history
+  either.
+- Delete a fund (only once it has no movements left).
+- See the fund's current balance and whether it's hit its target — both
+  calculated live from its movements, not stored numbers that could drift.
 
-Expected vs. actual salary/income per month. Not built yet — backlog item.
+## 7. Income
+
+There's no separate "income source" feature — income is just a category
+like any other, tagged as income instead of expense (e.g. "Salary",
+"Freelance"). Add it to a month like any category, with the expected amount
+as its budget; each paycheck you log is a normal transaction against it.
+
+- Every category-for-a-month now also shows how much has actually come in
+  (or, for expense categories, actually been spent) — the "actual" number
+  next to the planned one, calculated live from its transactions.
+- Ask for just the income side (or just the expense side) of a month
+  separately, e.g. for a dedicated "Income this month" view.
+
+## 8. Bank balance
+
+A single running total of your money, separate from any one month and
+separate from Savings Funds (moving money into a fund doesn't change this
+number — it's still yours, just tracked in two places, same as keeping a
+spreadsheet column for "in the bank" and another for "invested").
+
+- Tell the app how much you have right now (e.g. "I have 30k") — it doesn't
+  matter when in the month you do this, or whether you've used the app
+  before. If you don't set anything, it just assumes 0 to start.
+- From that point on, the balance updates automatically as you log income
+  and expense transactions — no need to touch it again unless the real
+  number needs correcting (e.g. you double-checked your actual bank
+  balance and want to reset the anchor).
+- Correcting it doesn't rewrite history — it just means "start counting
+  from here," so old transactions logged before the correction stop
+  affecting the number.
+- Unlike everywhere else in the app, this number is allowed to go negative
+  — a real bank account can be overdrawn.
