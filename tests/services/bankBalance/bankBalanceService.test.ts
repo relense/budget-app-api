@@ -179,4 +179,24 @@ describe('setBankBalanceCheckpoint', () => {
 
     expect(balance.amountCents).toBe(500000);
   });
+
+  it('rejects for a userId with no matching user row', async () => {
+    // No pre-check here (see the code comment on setBankBalanceCheckpoint)
+    // — the update itself fails on a missing row. Proving it still
+    // rejects rather than silently succeeding or creating a row.
+    const { bankBalanceService } = setup();
+
+    await expect(bankBalanceService.setBankBalanceCheckpoint('missing-user', 1000)).rejects.toThrow();
+  });
+
+  it("never touches another user's checkpoint", async () => {
+    const { prisma, bankBalanceService } = setup();
+    seedUser(prisma, { id: 'user-1', bankBalanceCheckpointCents: 1000 });
+    seedUser(prisma, { id: 'user-2', bankBalanceCheckpointCents: 2000 });
+
+    await bankBalanceService.setBankBalanceCheckpoint('user-1', 999999);
+    const user2Balance = await bankBalanceService.getBankBalance('user-2');
+
+    expect(user2Balance.checkpointAmountCents).toBe(2000);
+  });
 });
