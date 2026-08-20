@@ -209,6 +209,23 @@ describe('update', () => {
     expect(updated.direction).toBe('income');
   });
 
+  it('rejects a real-looking but nonexistent calendar date on update', async () => {
+    const { transactionService, expenseCategoryMonth } = await setup();
+    const transaction = await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 2500,
+      date: '2026-08-15',
+    });
+
+    await expect(
+      transactionService.update('user-1', transaction.id, {
+        categoryMonthId: expenseCategoryMonth.id,
+        amountCents: 2500,
+        date: '2026-08-32',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
+  });
+
   it('rejects updating a transaction that currently sits in a locked month', async () => {
     const { prisma, transactionService, expenseCategoryMonth } = await setup();
     const transaction = await transactionService.create('user-1', {

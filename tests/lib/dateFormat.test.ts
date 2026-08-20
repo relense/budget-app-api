@@ -22,6 +22,10 @@ describe('isValidCalendarDate', () => {
     expect(isValidCalendarDate('2026-04-31')).toBe(false);
   });
 
+  it('rejects day 32 even for a 31-day month', () => {
+    expect(isValidCalendarDate('2026-01-32')).toBe(false);
+  });
+
   it('rejects month 00 and month 13', () => {
     expect(isValidCalendarDate('2026-00-15')).toBe(false);
     expect(isValidCalendarDate('2026-13-15')).toBe(false);

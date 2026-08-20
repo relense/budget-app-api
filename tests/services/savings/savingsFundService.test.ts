@@ -184,6 +184,18 @@ describe('updateSavingsFund', () => {
     ).rejects.toMatchObject({ reason: 'invalid_date' });
   });
 
+  it('rejects a real-looking but nonexistent calendar startDate on update', async () => {
+    const { savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 0,
+    });
+
+    await expect(
+      savingsFundService.updateSavingsFund('user-1', fund.id, { name: 'X', startDate: '2026-04-31' }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
+  });
+
   it('rejects an endDate before startDate on update', async () => {
     const { savingsFundService } = setup();
     const fund = await savingsFundService.createSavingsFund('user-1', {

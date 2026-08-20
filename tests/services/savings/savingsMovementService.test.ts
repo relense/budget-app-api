@@ -203,6 +203,28 @@ describe('updateSavingsMovement', () => {
     expect(await savingsMovementService.computeCurrentAmountCents(fund.id, 10000)).toBe(17000);
   });
 
+  it('rejects a real-looking but nonexistent calendar date on update', async () => {
+    const { savingsMovementService, savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 10000,
+    });
+    const movement = await savingsMovementService.createSavingsMovement('user-1', {
+      fundId: fund.id,
+      amountCents: 5000,
+      type: 'deposit',
+      date: '2026-08-01',
+    });
+
+    await expect(
+      savingsMovementService.updateSavingsMovement('user-1', movement.id, {
+        amountCents: 5000,
+        type: 'deposit',
+        date: '2026-02-30',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
+  });
+
   it('allows an edit that shrinks the balance to exactly zero', async () => {
     const { savingsMovementService, savingsFundService } = setup();
     const fund = await savingsFundService.createSavingsFund('user-1', {
