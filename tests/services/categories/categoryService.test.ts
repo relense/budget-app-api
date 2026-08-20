@@ -470,7 +470,10 @@ describe('row locking', () => {
     });
 
     expect(queryRawSpy).toHaveBeenCalledTimes(1);
-    const [strings] = queryRawSpy.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
-    expect(strings.join('')).toContain('FOR UPDATE');
+    const [strings, lockedId] = queryRawSpy.mock.calls[0] as [TemplateStringsArray, string];
+    const sql = strings.join('');
+    expect(sql).toContain('FOR UPDATE');
+    expect(sql).toContain('categories');
+    expect(lockedId).toBe(category.id);
   });
 });

@@ -849,9 +849,16 @@ describe('row locking', () => {
     });
     expect(queryRawSpy.mock.calls.length).toBeGreaterThan(callsAfterCreate);
 
+    let sawCategoryLock = false;
     for (const call of queryRawSpy.mock.calls) {
-      const [strings] = call as [TemplateStringsArray, ...unknown[]];
-      expect(strings.join('')).toContain('FOR UPDATE');
+      const [strings, lockedId] = call as [TemplateStringsArray, string];
+      const sql = strings.join('');
+      expect(sql).toContain('FOR UPDATE');
+      if (sql.includes('categories')) {
+        sawCategoryLock = true;
+        expect(lockedId).toBe(housing.id);
+      }
     }
+    expect(sawCategoryLock).toBe(true);
   });
 });

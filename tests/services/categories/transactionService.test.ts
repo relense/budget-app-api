@@ -615,7 +615,7 @@ describe('list', () => {
 
 describe('row locking', () => {
   it('locks the category row (via $queryRaw ... FOR UPDATE), not just the budget month, on create and update', async () => {
-    const { prisma, transactionService, expenseCategoryMonth } = await setup();
+    const { prisma, transactionService, expenseCategory, expenseCategoryMonth } = await setup();
     const queryRawSpy = jest.fn(prisma.$queryRaw);
     prisma.$queryRaw = queryRawSpy as typeof prisma.$queryRaw;
 
@@ -634,9 +634,16 @@ describe('row locking', () => {
     });
     expect(queryRawSpy.mock.calls.length).toBeGreaterThan(callsAfterCreate);
 
+    let sawCategoryLock = false;
     for (const call of queryRawSpy.mock.calls) {
-      const [strings] = call as [TemplateStringsArray, ...unknown[]];
-      expect(strings.join('')).toContain('FOR UPDATE');
+      const [strings, lockedId] = call as [TemplateStringsArray, string];
+      const sql = strings.join('');
+      expect(sql).toContain('FOR UPDATE');
+      if (sql.includes('categories')) {
+        sawCategoryLock = true;
+        expect(lockedId).toBe(expenseCategory.id);
+      }
     }
+    expect(sawCategoryLock).toBe(true);
   });
 });
