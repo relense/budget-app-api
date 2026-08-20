@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { createAuthCleanupService } from '../../../src/services/auth/authCleanupService.js';
 import { createFakePrisma, type FakeOtpCode, type FakeRefreshToken } from './testFakePrisma.js';
 
@@ -140,5 +140,42 @@ describe('cleanupExpiredAuthRecords', () => {
 
     expect(prisma.otpCodes).toHaveLength(0);
     expect(result.otpCodesDeleted).toBe(5);
+  });
+
+  it('terminates correctly when the eligible count is an exact multiple of batchSize', async () => {
+    const { prisma, cleanupService } = setup(2);
+    const findManySpy = jest.spyOn(prisma.otpCode, 'findMany');
+    for (let i = 0; i < 4; i += 1) {
+      prisma.otpCodes.push(
+        otpCode({ id: `expired-${i}`, expiresAt: new Date('2025-12-31T23:00:00.000Z') }),
+      );
+    }
+
+    const result = await cleanupService.cleanupExpiredAuthRecords();
+
+    expect(prisma.otpCodes).toHaveLength(0);
+    expect(result.otpCodesDeleted).toBe(4);
+    // A full batch (length === batchSize) must trigger one more round-trip
+    // to confirm nothing's left, rather than assuming it was the last page:
+    // 3 calls to drain the 4 expired rows (2, 2, 0), plus 1 more for the
+    // separate "used" pass finding nothing.
+    expect(findManySpy).toHaveBeenCalledTimes(4);
+  });
+
+  it('terminates correctly with batchSize 1', async () => {
+    const { prisma, cleanupService } = setup(1);
+    const findManySpy = jest.spyOn(prisma.otpCode, 'findMany');
+    prisma.otpCodes.push(
+      otpCode({ id: 'expired-a', expiresAt: new Date('2025-12-31T23:00:00.000Z') }),
+      otpCode({ id: 'expired-b', expiresAt: new Date('2025-12-31T23:00:00.000Z') }),
+    );
+
+    const result = await cleanupService.cleanupExpiredAuthRecords();
+
+    expect(prisma.otpCodes).toHaveLength(0);
+    expect(result.otpCodesDeleted).toBe(2);
+    // 3 calls to drain the 2 rows one at a time (1, 1, 0), plus 1 more for
+    // the separate "used" pass finding nothing.
+    expect(findManySpy).toHaveBeenCalledTimes(4);
   });
 });

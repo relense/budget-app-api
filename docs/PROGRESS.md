@@ -1568,12 +1568,27 @@ silently regenerate the plain index — reverting the optimization with
 nothing flagging it as intentional. Not worth that ongoing footgun for a
 scale concern the reviewer itself called non-blocking.
 
-485 Jest tests total (was 475, +10 across both review rounds). Not yet
-through `test-auditor`.
+`test-auditor` then found two real gaps of its own, both closed: the two
+existing request-otp cleanup tests only proved `cleanupExpiredAuthRecords`
+was *called*, never that the response doesn't wait for it — a regression
+back to `await`ing it (the exact bug round 1's `pr-reviewer` fix already
+covered) would have slipped past both silently. Fixed with a test using a
+deliberately never-resolved cleanup promise: if the route awaited it, the
+`app.inject()` call would hang until Jest's timeout, since the promise is
+only resolved *after* asserting the response already came back. Also
+found the batch-loop's trickiest boundary — an eligible-row count that's an
+exact multiple of `batchSize`, which forces one extra round-trip returning
+an empty page before the loop can know it's done — was never exercised (the
+one multi-batch test used 5 rows over batches of 2, which always hits the
+`batch.length < batchSize` short-circuit and never that boundary). Added
+two tests spying on `findMany` call counts: 4 rows/batchSize 2, and 2
+rows/batchSize 1.
+
+488 Jest tests total (was 475 before this branch, +13 across both review
+rounds). Both `pr-reviewer` and `test-auditor` closed clean.
 
 Next actions, in order:
-1. Run `test-auditor` on `chore/auth-row-cleanup`, same two-stage pattern
-   as every prior branch, then hand back for human review.
+1. Hand `chore/auth-row-cleanup` back for human review — PR into `develop`.
 2. Remaining Production Readiness items after that: CI, GDPR export/delete
    (`otp_codes`/`refresh_tokens` row cleanup is now done). Then Phase 2
    (mobile app), which needs design references (mockups + Excel structure

@@ -194,6 +194,32 @@ describe('POST /auth/request-otp', () => {
     await app.close();
   });
 
+  it('responds before cleanup finishes (fire-and-forget, not awaited)', async () => {
+    const authService = fakeAuthService();
+    const authCleanupService = fakeAuthCleanupService();
+    let resolveCleanup!: () => void;
+    authCleanupService.cleanupExpiredAuthRecords.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCleanup = () => resolve({ otpCodesDeleted: 0, refreshTokensDeleted: 0 });
+        }),
+    );
+    const app = await buildTestApp(authService, authCleanupService);
+
+    // If the route awaited cleanup, this would hang until timeout since
+    // resolveCleanup is never called before the assertion below.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/request-otp',
+      payload: { email: 'user@example.com' },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    resolveCleanup();
+    await app.close();
+  });
+
   it('still returns 200 if row cleanup throws', async () => {
     const authService = fakeAuthService();
     const authCleanupService = fakeAuthCleanupService();
