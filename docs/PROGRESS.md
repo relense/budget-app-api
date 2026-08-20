@@ -1190,17 +1190,73 @@ default-zero balance, checkpoint set, a real income + expense transaction
 pair summed correctly, a negative checkpoint accepted, and a reset
 correctly excluding transactions entered before the new checkpoint.
 
+PR #17 merged. With both #16 and #17 in, the user asked for step 9 (basic
+tests) next over step 8 (seed script needs their real Excel data, not yet
+provided). Ran `test-auditor` scoped narrowly to step 9's own two asks
+from `PLAN.md` — "auth boundary tests (user A can't read user B's data)
+and one DataLoader batching check" — rather than a general audit of the
+already-405-test suite. Real gaps came back, on a fresh `chore/basic-tests-audit`
+branch off `develop`:
+
+- **Cross-user isolation**: every *write* path already had a "throws
+  X_not_found for another user's row" test, but several *list/read*
+  functions only looked safe by inspection (`where: { userId, ... }` with
+  nothing adversarial exercising it) —
+  `categoryMonthService.listByMonth`, `transactionService.list`,
+  `recurringExpenseService.listByMonth`. Also
+  `categoryMonthService.updateCategoryMonthBudget` (a write) had no
+  cross-user test at all, unlike every sibling write in the same file.
+  All four fixed with a two-user fixture proving the leak doesn't happen.
+- **Zero GraphQL-layer coverage for 8 mutations**: `createCategory`,
+  `updateCategory`, `deleteCategory`, `removeCategoryFromMonth`,
+  `updateCategoryMonthBudget`, `createTransaction`, `updateTransaction`,
+  `deleteTransaction` had no test anywhere under `tests/graphql/` at
+  all — not even the `UNAUTHENTICATED`-rejection + userId-forwarding
+  pattern every sibling mutation family already had. The implementation
+  was correct (confirmed by reading it), just unguarded against
+  regression. Closed by extending `schema.categories.test.ts` and adding
+  a new `schema.transactions.test.ts`. Also closed four smaller instances
+  of the same pattern in `schema.savingsFunds.test.ts`
+  (`updateSavingsFund`/`deleteSavingsFund`/`createSavingsMovement`/
+  `updateSavingsMovement` were missing just the `UNAUTHENTICATED` case
+  their siblings had).
+- **DataLoader batching**: only 3 of this app's 10 DataLoaders had a test
+  actually proving N concurrent `.load()` calls collapse into one
+  underlying service call — the other 7 either had no direct test or only
+  ever exercised a single id (which proves correctness, not batching).
+  Notably `recurringCommittedCentsByCategoryMonthId` and
+  `currentAmountCentsBySavingsFundId` — the two loaders whose own doc
+  comments in `src/graphql/loaders.ts` explicitly claim "this loader
+  still collapses N field resolutions into one batch tick" as their whole
+  reason to exist as a loader — had zero proof of that claim. Added
+  batching tests for all 7 in `tests/graphql/loaders.test.ts`.
+
+Not fixed, deliberately: the audit also flagged that every DataLoader
+batch-backing `findManyByIds`/`listByFundIds` function filters only by
+`id: { in: ids } }`, trusting the caller to have already scoped those ids
+to one user (documented in-code) — safe today by construction (no
+resolver lets a client hand an arbitrary foreign-key id straight to a
+loader), but nothing end-to-end proves that invariant. Flagged as a
+"worth having a tripwire test for" note, not a bug — no code changes, no
+test added, since it's testing an architectural invariant already
+documented rather than a concrete gap. Revisit if this pattern ever
+starts feeling load-bearing rather than incidental.
+
+47 new tests (405 → 452). `npm run typecheck`/`lint`/`build` all clean.
+No new Prisma queries or migrations in this branch — pure test-layer
+additions — so no real-Postgres smoke verification was needed this time.
+
 Next actions, in order:
-1. Run `pr-reviewer` on `feature/bank-balance`, go back and forth until
+1. Run `pr-reviewer` on `chore/basic-tests-audit`, go back and forth until
    approved, then `test-auditor` until clean, then open the PR and hand
-   back for human review — same two-stage pattern as PRs #14/#15/#16.
-2. After that merges: Build Order step 8 (seed script) and step 9 (basic
-   tests, likely already substantially covered — worth an audit pass
-   rather than starting fresh) are what's left before Phase 1 (backend) is
-   done, plus the Production Readiness items `PLAN.md` still flags as
-   outstanding (rate limiting, introspection/depth limits are done —
-   confirm; `otp_codes`/`refresh_tokens` row cleanup, CI, GDPR export/
-   delete are not).
+   back for human review — same two-stage pattern as PRs #14-#17.
+2. After that merges: Build Order step 8 (seed script) is the only Build
+   Order step left before Phase 1 (backend) is done — needs the user's
+   real categories/funds from the Excel tracker first, not yet provided.
+   Also still outstanding: the Production Readiness items `PLAN.md` flags
+   (rate limiting, introspection/depth limits are done — confirmed;
+   `otp_codes`/`refresh_tokens` row cleanup, CI, GDPR export/delete are
+   not).
 3. Small tracked follow-up, not blocking, carried over from step 6: add
    logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
    (recurring-expenses step) once this service layer has a logger
@@ -1332,16 +1388,39 @@ Next actions, in order:
       (2 rounds) and `test-auditor` (2 rounds) both closed clean. Merged into
       `develop` via PR #15. See "Where we left off" above for the full
       design/build/review narrative.
-- [ ] **7. "Income sources"** — **reconsidered before any code was written;
+- [x] **7. "Income sources"** — **reconsidered before any code was written;
       the dedicated `income_sources` table described in `PLAN.md` is
       dropped**, replaced by `CategoryMonth.actualAmountCents` (computed) +
       an optional `direction` arg on `categoryMonths` against ordinary
-      income-direction Categories. Built on `feature/category-month-actuals`,
-      not yet through `pr-reviewer`/`test-auditor`/merge. See "Where we left
-      off" above for the full pivot and build.
+      income-direction Categories. `pr-reviewer` (2 rounds) and
+      `test-auditor` both closed clean. Merged into `develop` via PR #16.
+      Immediately followed by the **bank balance** checkpoint feature
+      (grilled and built as its own step, not a numbered Build Order item
+      — see the Data Model section's "Bank balance" note in `PLAN.md`):
+      `Query.bankBalance`/`Mutation.setBankBalanceCheckpoint`, anchored on
+      `Transaction.createdAt` not `date`, the one money field in this
+      schema allowed to go negative. `pr-reviewer` (2 rounds) and
+      `test-auditor` both closed clean. Merged into `develop` via PR #17.
+      See "Where we left off" above for the full pivot and both builds.
 - [ ] **8. Seed script** — real categories/funds from the Excel tracker.
-- [ ] **9. Basic tests** — auth boundary tests (user A can't read user B's
-      data), one DataLoader batching check.
+- [x] **9. Basic tests** — audited on `chore/basic-tests-audit`: a
+      `test-auditor` pass scoped specifically to this step's own two asks
+      (not the general suite) found real gaps — several list/read
+      functions (`categoryMonthService.listByMonth`,
+      `transactionService.list`, `recurringExpenseService.listByMonth`)
+      and `updateCategoryMonthBudget` had no cross-user isolation test
+      despite looking safe by inspection; 8 GraphQL mutations
+      (`createCategory`/`updateCategory`/`deleteCategory`/
+      `removeCategoryFromMonth`/`updateCategoryMonthBudget`/
+      `createTransaction`/`updateTransaction`/`deleteTransaction`) had
+      zero tests at the GraphQL layer at all, unlike every sibling
+      mutation family; and 7 of this app's 10 DataLoaders had no test
+      actually proving they batch (only single-id or null-fallback
+      coverage) — notably the two loaders whose own doc comments claim
+      batching as their whole reason to exist
+      (`recurringCommittedCentsByCategoryMonthId`,
+      `currentAmountCentsBySavingsFundId`). All closed: 47 new tests (405
+      → 452).
 
 ## Phase 2 — Mobile app
 
