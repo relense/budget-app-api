@@ -1,3 +1,11 @@
+/** Mimics the shape of Prisma's PrismaClientKnownRequestError for P2025 (record not found). */
+export class FakeRecordNotFoundError extends Error {
+  readonly code = 'P2025';
+  constructor() {
+    super('Record not found');
+  }
+}
+
 export interface FakeUser {
   id: string;
   email: string;
@@ -106,7 +114,10 @@ interface FakePrismaClient extends FakeDelegates {
   savingsFunds: FakeSavingsFund[];
   savingsMovements: FakeSavingsMovement[];
   otpCodes: FakeOtpCode[];
-  $transaction<T>(callback: (tx: FakeDelegates) => Promise<T>): Promise<T>;
+  $transaction<T>(
+    callback: (tx: FakeDelegates) => Promise<T>,
+    options?: { isolationLevel?: string },
+  ): Promise<T>;
 }
 
 function byUserId<T extends { userId: string }>(rows: T[], userId: string): T[] {
@@ -148,7 +159,7 @@ export function createFakePrisma(): FakePrismaClient {
       },
       async delete({ where }) {
         const index = users.findIndex((u) => u.id === where.id);
-        if (index === -1) throw new Error('not found');
+        if (index === -1) throw new FakeRecordNotFoundError();
         const [row] = users.splice(index, 1);
         return row!;
       },

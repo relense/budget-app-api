@@ -1,4 +1,5 @@
 import type { PrismaClient } from '../../lib/prisma.js';
+import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 
 export type AccountServiceErrorReason = 'account_not_found';
 
@@ -26,44 +27,58 @@ export interface AccountServiceDeps {
 }
 
 export function createAccountService({ prisma }: AccountServiceDeps) {
-  async function exportUserData(userId: string) {
-    const user = await prisma.user.findUnique({ where: { id: userId } });
+  async function findAccount(client: Pick<PrismaClient, 'user'>, userId: string) {
+    const user = await client.user.findUnique({ where: { id: userId } });
     if (!user) throw new AccountServiceError('account_not_found');
+    return user;
+  }
 
-    const [
-      categories,
-      budgetMonths,
-      categoryMonths,
-      transactions,
-      recurringExpenses,
-      savingsFunds,
-      savingsMovements,
-    ] = await Promise.all([
-      prisma.category.findMany({ where: { userId } }),
-      prisma.budgetMonth.findMany({ where: { userId } }),
-      prisma.categoryMonth.findMany({ where: { userId } }),
-      prisma.transaction.findMany({ where: { userId } }),
-      prisma.recurringExpense.findMany({ where: { userId } }),
-      prisma.savingsFund.findMany({ where: { userId } }),
-      prisma.savingsMovement.findMany({ where: { userId } }),
-    ]);
+  // RepeatableRead so every findMany below sees the same snapshot — plain
+  // READ COMMITTED (Postgres's default) would let a concurrent write (e.g.
+  // deleteAccount, or an ordinary create) interleave between these reads,
+  // returning a mix of pre- and post-write state across tables.
+  async function exportUserData(userId: string) {
+    return prisma.$transaction(
+      async (tx) => {
+        const user = await findAccount(tx, userId);
 
-    return {
-      account: {
-        id: user.id,
-        email: user.email,
-        createdAt: user.createdAt,
-        bankBalanceCheckpointCents: user.bankBalanceCheckpointCents,
-        bankBalanceCheckpointSetAt: user.bankBalanceCheckpointSetAt,
+        const [
+          categories,
+          budgetMonths,
+          categoryMonths,
+          transactions,
+          recurringExpenses,
+          savingsFunds,
+          savingsMovements,
+        ] = await Promise.all([
+          tx.category.findMany({ where: { userId } }),
+          tx.budgetMonth.findMany({ where: { userId } }),
+          tx.categoryMonth.findMany({ where: { userId } }),
+          tx.transaction.findMany({ where: { userId } }),
+          tx.recurringExpense.findMany({ where: { userId } }),
+          tx.savingsFund.findMany({ where: { userId } }),
+          tx.savingsMovement.findMany({ where: { userId } }),
+        ]);
+
+        return {
+          account: {
+            id: user.id,
+            email: user.email,
+            createdAt: user.createdAt,
+            bankBalanceCheckpointCents: user.bankBalanceCheckpointCents,
+            bankBalanceCheckpointSetAt: user.bankBalanceCheckpointSetAt,
+          },
+          categories,
+          budgetMonths,
+          categoryMonths,
+          transactions,
+          recurringExpenses,
+          savingsFunds,
+          savingsMovements,
+        };
       },
-      categories,
-      budgetMonths,
-      categoryMonths,
-      transactions,
-      recurringExpenses,
-      savingsFunds,
-      savingsMovements,
-    };
+      { isolationLevel: 'RepeatableRead' },
+    );
   }
 
   // Deletion order matters: none of these tables have a real FK back to
@@ -75,8 +90,7 @@ export function createAccountService({ prisma }: AccountServiceDeps) {
   // email, not userId, so they're cleaned up separately. The user row goes
   // last (its only real FK relation, refresh_tokens, cascades on delete).
   async function deleteAccount(userId: string): Promise<void> {
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new AccountServiceError('account_not_found');
+    const user = await findAccount(prisma, userId);
 
     await prisma.$transaction(async (tx) => {
       await tx.savingsMovement.deleteMany({ where: { userId } });
@@ -87,7 +101,23 @@ export function createAccountService({ prisma }: AccountServiceDeps) {
       await tx.category.deleteMany({ where: { userId } });
       await tx.budgetMonth.deleteMany({ where: { userId } });
       await tx.otpCode.deleteMany({ where: { email: user.email } });
-      await tx.user.delete({ where: { id: userId } });
+
+      // Two concurrent DELETE /account calls for the same user (double
+      // submit, or a client retry after a timed-out-but-succeeded first
+      // request) both pass the findAccount check above; whichever loses
+      // the race hits this delete after the row's already gone. Mapped to
+      // the same typed error findAccount would have thrown, rather than
+      // letting Prisma's raw P2025 through — same "pre-check plus DB-level
+      // backstop" pattern this codebase already uses elsewhere (e.g.
+      // savingsMovementService's update/delete P2025 catch).
+      try {
+        await tx.user.delete({ where: { id: userId } });
+      } catch (error) {
+        if (hasPrismaErrorCode(error, 'P2025')) {
+          throw new AccountServiceError('account_not_found');
+        }
+        throw error;
+      }
     });
   }
 

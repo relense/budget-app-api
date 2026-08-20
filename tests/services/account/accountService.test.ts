@@ -1,6 +1,6 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { AccountServiceError, createAccountService } from '../../../src/services/account/accountService.js';
-import { createFakePrisma } from './testFakePrisma.js';
+import { createFakePrisma, FakeRecordNotFoundError } from './testFakePrisma.js';
 
 const USER_A = 'user-a';
 const USER_B = 'user-b';
@@ -131,5 +131,24 @@ describe('deleteAccount', () => {
     });
     expect(prisma.users).toHaveLength(2);
     expect(prisma.categories).toHaveLength(1);
+  });
+
+  it('maps a concurrent-delete race (P2025 on the final user.delete) to account_not_found, not a raw error', async () => {
+    const { prisma, accountService } = setup();
+    // Simulates a second, concurrent DELETE /account winning the race: the
+    // pre-check (user.findUnique) still finds the user, but by the time
+    // this transaction's own user.delete runs, someone else already
+    // removed the row.
+    jest.spyOn(prisma.user, 'delete').mockRejectedValueOnce(new FakeRecordNotFoundError());
+
+    let caught: unknown;
+    try {
+      await accountService.deleteAccount(USER_A);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AccountServiceError);
+    expect(caught).toMatchObject({ reason: 'account_not_found' });
   });
 });

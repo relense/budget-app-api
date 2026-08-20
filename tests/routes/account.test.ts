@@ -1,5 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { signAccessToken } from '../../src/lib/jwt.js';
 import { registerAccountRoutes } from '../../src/routes/account.js';
 import { AccountServiceError } from '../../src/services/account/accountService.js';
@@ -31,6 +32,7 @@ function fakeAccountService() {
 function buildTestApp(accountService: ReturnType<typeof fakeAccountService>) {
   const app = fastify({ logger: false });
   return app
+    .register(rateLimit, { global: false })
     .register(async (instance) => {
       await registerAccountRoutes(instance, { accountService, jwtSecret: JWT_SECRET });
     })
@@ -82,6 +84,30 @@ describe('GET /account/export', () => {
     });
 
     expect(response.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it('rate-limits after 5 requests for the same IP within the window', async () => {
+    const accountService = fakeAccountService();
+    const app = await buildTestApp(accountService);
+    const accessToken = await signAccessToken({ userId: 'user-1' }, JWT_SECRET);
+
+    for (let i = 0; i < 5; i++) {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/account/export',
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const limited = await app.inject({
+      method: 'GET',
+      url: '/account/export',
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(limited.statusCode).toBe(429);
 
     await app.close();
   });
@@ -172,6 +198,32 @@ describe('DELETE /account', () => {
     });
 
     expect(response.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it('rate-limits after 5 requests for the same IP within the window', async () => {
+    const accountService = fakeAccountService();
+    const app = await buildTestApp(accountService);
+    const accessToken = await signAccessToken({ userId: 'user-1' }, JWT_SECRET);
+
+    for (let i = 0; i < 5; i++) {
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/account',
+        headers: { authorization: `Bearer ${accessToken}` },
+        payload: { confirm: true },
+      });
+      expect(response.statusCode).toBe(204);
+    }
+
+    const limited = await app.inject({
+      method: 'DELETE',
+      url: '/account',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { confirm: true },
+    });
+    expect(limited.statusCode).toBe(429);
 
     await app.close();
   });
