@@ -169,6 +169,15 @@ describe('Mutation.updateSavingsFund', () => {
 
     expect(result.errors?.[0]?.extensions?.code).toBe('FUND_NOT_FOUND');
   });
+
+  it('rejects an unauthenticated request without calling the service', async () => {
+    const context = buildContext(null);
+
+    const result = await run(mutation, context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+    expect(context.savingsFundService.updateSavingsFund).not.toHaveBeenCalled();
+  });
 });
 
 describe('Mutation.deleteSavingsFund', () => {
@@ -193,6 +202,15 @@ describe('Mutation.deleteSavingsFund', () => {
     const result = await run(mutation, context);
 
     expect(result.errors?.[0]?.extensions?.code).toBe('FUND_HAS_MOVEMENTS');
+  });
+
+  it('rejects an unauthenticated request without calling the service', async () => {
+    const context = buildContext(null);
+
+    const result = await run(mutation, context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+    expect(context.savingsFundService.deleteSavingsFund).not.toHaveBeenCalled();
   });
 });
 
@@ -232,6 +250,15 @@ describe('Mutation.createSavingsMovement', () => {
 
     expect(result.errors?.[0]?.extensions?.code).toBe('INSUFFICIENT_FUNDS');
   });
+
+  it('rejects an unauthenticated request without calling the service', async () => {
+    const context = buildContext(null);
+
+    const result = await run(mutation, context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+    expect(context.savingsMovementService.createSavingsMovement).not.toHaveBeenCalled();
+  });
 });
 
 describe('Mutation.updateSavingsMovement', () => {
@@ -266,6 +293,15 @@ describe('Mutation.updateSavingsMovement', () => {
     const result = await run(mutation, context);
 
     expect(result.errors?.[0]?.extensions?.code).toBe('MOVEMENT_NOT_FOUND');
+  });
+
+  it('rejects an unauthenticated request without calling the service', async () => {
+    const context = buildContext(null);
+
+    const result = await run(mutation, context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+    expect(context.savingsMovementService.updateSavingsMovement).not.toHaveBeenCalled();
   });
 });
 

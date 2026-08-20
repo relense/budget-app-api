@@ -81,6 +81,16 @@ describe('listByMonth', () => {
     });
   });
 
+  it('never returns another user\'s categoryMonth rows for the same month string', async () => {
+    const { categoryMonthService, categoryA, otherUsersCategory } = await setup();
+    const mine = await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 10000);
+    await categoryMonthService.addCategoryToMonth('user-2', otherUsersCategory.id, '2026-08', 99999);
+
+    const result = await categoryMonthService.listByMonth('user-1', '2026-08');
+
+    expect(result.map((cm) => cm.id)).toEqual([mine.id]);
+  });
+
   it('filters by direction, resolved through each row\'s own category', async () => {
     const { categoryService, categoryMonthService, categoryA } = await setup();
     const salary = await categoryService.createCategory('user-1', {
@@ -898,6 +908,20 @@ describe('updateCategoryMonthBudget', () => {
     );
 
     expect(updated.monthlyBudgetCents).toBe(12000);
+  });
+
+  it('throws category_month_not_found for another user\'s categoryMonth', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      10000,
+    );
+
+    await expect(
+      categoryMonthService.updateCategoryMonthBudget('user-2', categoryMonth.id, 12000),
+    ).rejects.toMatchObject({ reason: 'category_month_not_found' });
   });
 
   it('throws month_locked when the month is locked', async () => {

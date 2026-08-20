@@ -776,6 +776,28 @@ describe('sumCommittedCentsForCategoryMonth', () => {
   });
 });
 
+describe('listByMonth', () => {
+  it('never returns another user\'s recurring expenses for the same month string', async () => {
+    const { recurringExpenseService, housing, otherUsersCategory } = await setup();
+    const mine = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+    await recurringExpenseService.createRecurringExpense(
+      'user-2',
+      { name: 'Rent', amountCents: 999999, categoryId: otherUsersCategory.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      999999,
+    );
+
+    const result = await recurringExpenseService.listByMonth('user-1', '2026-08');
+
+    expect(result.map((r) => r.id)).toEqual([mine.id]);
+  });
+});
+
 describe('findManyByIds', () => {
   it('batches multiple ids into a single lookup and returns the matching rows', async () => {
     const { recurringExpenseService, housing } = await setup();

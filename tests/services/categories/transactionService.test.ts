@@ -493,6 +493,38 @@ describe('list', () => {
     });
   });
 
+  it('never returns another user\'s transactions for the same month string', async () => {
+    const { transactionService, categoryService, categoryMonthService, expenseCategoryMonth } = await setup();
+    await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 100,
+      date: '2026-08-05',
+    });
+    const otherUsersCategory = await categoryService.createCategory('user-2', {
+      name: 'Other',
+      icon: 'x',
+      color: '#000000',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    const otherUsersCategoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-2',
+      otherUsersCategory.id,
+      '2026-08',
+      99999,
+    );
+    await transactionService.create('user-2', {
+      categoryMonthId: otherUsersCategoryMonth.id,
+      amountCents: 999999,
+      date: '2026-08-05',
+    });
+
+    const result = await transactionService.list('user-1', '2026-08');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.amountCents).toBe(100);
+  });
+
   it('returns transactions for the month, ordered date DESC then createdAt DESC', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();
     const first = await transactionService.create('user-1', {
