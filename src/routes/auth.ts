@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { verifyAccessToken } from '../lib/jwt.js';
 import { OTP_CODE_REGEX } from '../lib/otp.js';
+import type { AuthCleanupService } from '../services/auth/authCleanupService.js';
 import {
   type AuthService,
   OtpVerificationError,
@@ -58,12 +59,13 @@ export interface RegisterAuthRoutesOptions {
     AuthService,
     'requestOtp' | 'verifyOtp' | 'refreshSession' | 'logout' | 'logoutAll'
   >;
+  authCleanupService: Pick<AuthCleanupService, 'cleanupExpiredAuthRecords'>;
   jwtSecret: string;
 }
 
 export async function registerAuthRoutes(
   app: FastifyInstance,
-  { authService, jwtSecret }: RegisterAuthRoutesOptions,
+  { authService, authCleanupService, jwtSecret }: RegisterAuthRoutesOptions,
 ): Promise<void> {
   app.post(
     '/auth/request-otp',
@@ -84,6 +86,17 @@ export async function registerAuthRoutes(
       }
 
       await authService.requestOtp(parsed.data.email);
+
+      // Piggybacked here rather than only on the interval sweep (see
+      // authCleanupService's doc comment / PLAN.md's "Row cleanup" note) so
+      // cleanup still happens promptly during real traffic. Never let a
+      // cleanup failure fail the actual OTP request.
+      try {
+        await authCleanupService.cleanupExpiredAuthRecords();
+      } catch (error) {
+        app.log.error(error, 'Auth row cleanup failed');
+      }
+
       return reply.status(200).send({ message: 'If that email is valid, a code has been sent.' });
     },
   );

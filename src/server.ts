@@ -11,6 +11,7 @@ import type { Env } from './lib/env.js';
 import { verifyAccessToken } from './lib/jwt.js';
 import type { PrismaClient } from './lib/prisma.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { createAuthCleanupService } from './services/auth/authCleanupService.js';
 import type { AuthService } from './services/auth/authService.js';
 import { createBankBalanceService } from './services/bankBalance/bankBalanceService.js';
 import { createBudgetMonthService } from './services/budgetMonths/budgetMonthService.js';
@@ -46,6 +47,8 @@ export interface BuildServerOptions {
     | 'savingsFund'
     | 'savingsMovement'
     | 'user'
+    | 'otpCode'
+    | 'refreshToken'
   >;
   authService: Pick<
     AuthService,
@@ -67,7 +70,8 @@ export async function buildServer({
   });
   await app.register(rateLimit, { global: false });
 
-  await registerAuthRoutes(app, { authService, jwtSecret: env.JWT_SECRET });
+  const authCleanupService = createAuthCleanupService({ prisma });
+  await registerAuthRoutes(app, { authService, authCleanupService, jwtSecret: env.JWT_SECRET });
 
   const budgetMonthService = createBudgetMonthService({ prisma });
   const categoryService = createCategoryService({ prisma });
