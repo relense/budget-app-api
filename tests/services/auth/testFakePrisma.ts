@@ -57,6 +57,12 @@ interface FakeDelegates {
         failedAttempts?: number | { increment: number };
       };
     }): Promise<FakeOtpCode>;
+    findMany(args: {
+      where: { expiresAt: { lt: Date } } | { used: true };
+      select: { id: true };
+      take: number;
+    }): Promise<Array<{ id: string }>>;
+    deleteMany(args: { where: { id: { in: string[] } } }): Promise<{ count: number }>;
   };
   user: {
     create(args: { data: { email: string } }): Promise<FakeUser>;
@@ -82,6 +88,12 @@ interface FakeDelegates {
       where: Partial<Pick<FakeRefreshToken, 'id' | 'tokenHash' | 'userId' | 'revoked'>>;
       data: Partial<Pick<FakeRefreshToken, 'revoked'>>;
     }): Promise<{ count: number }>;
+    findMany(args: {
+      where: { expiresAt: { lt: Date } } | { revoked: true };
+      select: { id: true };
+      take: number;
+    }): Promise<Array<{ id: string }>>;
+    deleteMany(args: { where: { id: { in: string[] } } }): Promise<{ count: number }>;
   };
 }
 
@@ -140,6 +152,21 @@ export function createFakePrisma(): FakePrismaClient {
         }
         return row;
       },
+      async findMany({ where, take }) {
+        const matches =
+          'used' in where
+            ? otpCodes.filter((row) => row.used === true)
+            : otpCodes.filter((row) => row.expiresAt.getTime() < where.expiresAt.lt.getTime());
+        return matches.slice(0, take).map((row) => ({ id: row.id }));
+      },
+      async deleteMany({ where }) {
+        const ids = new Set(where.id.in);
+        const before = otpCodes.length;
+        for (let i = otpCodes.length - 1; i >= 0; i -= 1) {
+          if (ids.has(otpCodes[i]!.id)) otpCodes.splice(i, 1);
+        }
+        return { count: before - otpCodes.length };
+      },
     },
     user: {
       async create({ data }) {
@@ -196,6 +223,23 @@ export function createFakePrisma(): FakePrismaClient {
         });
         matches.forEach((row) => Object.assign(row, data));
         return { count: matches.length };
+      },
+      async findMany({ where, take }) {
+        const matches =
+          'revoked' in where
+            ? refreshTokens.filter((row) => row.revoked === true)
+            : refreshTokens.filter(
+                (row) => row.expiresAt.getTime() < where.expiresAt.lt.getTime(),
+              );
+        return matches.slice(0, take).map((row) => ({ id: row.id }));
+      },
+      async deleteMany({ where }) {
+        const ids = new Set(where.id.in);
+        const before = refreshTokens.length;
+        for (let i = refreshTokens.length - 1; i >= 0; i -= 1) {
+          if (ids.has(refreshTokens[i]!.id)) refreshTokens.splice(i, 1);
+        }
+        return { count: before - refreshTokens.length };
       },
     },
     async $transaction(callback) {
