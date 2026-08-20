@@ -30,7 +30,14 @@ model User {
   bankBalanceCheckpointCents Int      @default(0) @map("bank_balance_checkpoint_cents")
   bankBalanceCheckpointSetAt DateTime @default(now()) @map("bank_balance_checkpoint_set_at")
 
-  refreshTokens RefreshToken[]
+  refreshTokens     RefreshToken[]
+  categories        Category[]
+  budgetMonths      BudgetMonth[]
+  categoryMonths    CategoryMonth[]
+  transactions      Transaction[]
+  recurringExpenses RecurringExpense[]
+  savingsFunds      SavingsFund[]
+  savingsMovements  SavingsMovement[]
 
   @@map("users")
 }
@@ -113,6 +120,18 @@ model BudgetMonth {
 
   createdAt DateTime @default(now()) @map("created_at")
 
+  // Restrict, not Cascade: deleteAccount does its own explicit,
+  // dependency-ordered delete (see accountService.ts) rather than relying
+  // on cascade, which would have to cascade straight through the
+  // intentional Restrict relations between the domain tables themselves
+  // (e.g. CategoryMonth -> BudgetMonth below) — this is a DB-level
+  // backstop confirming that ordering is actually correct, not the
+  // deletion mechanism itself. See docs/PLAN.md's GDPR note for the full
+  // reasoning (this was a real gap: every user_id here was always meant
+  // to be a real FK per PLAN.md's Data Model section, but only
+  // refresh_tokens ever got one until now).
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
   categoryMonths    CategoryMonth[]
   recurringExpenses RecurringExpense[]
 
@@ -137,6 +156,9 @@ model Category {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
   categoryMonths    CategoryMonth[]
   recurringExpenses RecurringExpense[]
 
@@ -157,6 +179,8 @@ model CategoryMonth {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
   category     Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   budgetMonth  BudgetMonth   @relation(fields: [monthId], references: [id], onDelete: Restrict)
   transactions Transaction[]
@@ -182,6 +206,8 @@ model Transaction {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user             User              @relation(fields: [userId], references: [id], onDelete: Restrict)
   categoryMonth    CategoryMonth     @relation(fields: [categoryMonthId], references: [id], onDelete: Restrict)
   recurringExpense RecurringExpense? @relation(fields: [recurringExpenseId], references: [id], onDelete: Restrict)
 
@@ -223,6 +249,8 @@ model RecurringExpense {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
   budgetMonth  BudgetMonth   @relation(fields: [monthId], references: [id], onDelete: Restrict)
   category     Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   transactions Transaction[]
@@ -256,6 +284,9 @@ model SavingsFund {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
   movements SavingsMovement[]
 
   @@index([userId])
@@ -281,6 +312,8 @@ model SavingsMovement {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user User        @relation(fields: [userId], references: [id], onDelete: Restrict)
   fund SavingsFund @relation(fields: [fundId], references: [id], onDelete: Restrict)
 
   // (fundId, userId), not (userId, date) as docs/PLAN.md's general indexing
