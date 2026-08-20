@@ -106,7 +106,7 @@ interface FakeDelegates {
     }): Promise<FakeCategory>;
     findUnique(args: { where: { id: string } }): Promise<FakeCategory | null>;
     findMany(args: {
-      where: { userId: string } | { id: { in: string[] } };
+      where: { userId: string } | { id: { in: string[] } } | { userId: string; id: { in: string[] } };
     }): Promise<FakeCategory[]>;
     update(args: {
       where: { id: string };
@@ -291,10 +291,11 @@ export function createFakePrisma(): FakePrismaClient {
         return categories.find((c) => c.id === where.id) ?? null;
       },
       async findMany({ where }) {
-        if ('id' in where) {
-          return categories.filter((c) => where.id.in.includes(c.id));
-        }
-        return categories.filter((c) => c.userId === where.userId);
+        return categories.filter((c) => {
+          if ('userId' in where && c.userId !== where.userId) return false;
+          if ('id' in where && !where.id.in.includes(c.id)) return false;
+          return true;
+        });
       },
       async update({ where, data }) {
         const row = categories.find((c) => c.id === where.id);

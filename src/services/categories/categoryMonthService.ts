@@ -278,6 +278,17 @@ export function createCategoryMonthService({
     return categoryMonth;
   }
 
+  /**
+   * direction, when given, filters to categoryMonths whose own Category has
+   * that direction — resolved via a second, small `category.findMany`
+   * rather than a relation filter pushed into the categoryMonth query
+   * itself, since the result set here is bounded the same way a month's
+   * transactions are. Scoped by `userId` even though every categoryId on a
+   * categoryMonth row is already guaranteed to belong to this user
+   * (ensureActiveForCategoryOnClient calls assertOwnedCategory before any
+   * categoryMonth row is ever created) — defense-in-depth, same reasoning
+   * as resolveBudgetForActivation's redundant userId filter above.
+   */
   async function listByMonth(userId: string, month: string, direction?: 'expense' | 'income') {
     assertValidMonth(month);
 
@@ -287,7 +298,7 @@ export function createCategoryMonthService({
     if (!direction) return categoryMonths;
 
     const categories = await prisma.category.findMany({
-      where: { id: { in: categoryMonths.map((cm) => cm.categoryId) } },
+      where: { userId, id: { in: categoryMonths.map((cm) => cm.categoryId) } },
     });
     const directionByCategoryId = new Map(categories.map((c) => [c.id, c.direction]));
     return categoryMonths.filter((cm) => directionByCategoryId.get(cm.categoryId) === direction);

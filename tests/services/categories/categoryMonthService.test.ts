@@ -100,6 +100,15 @@ describe('listByMonth', () => {
     expect(expenseOnly.map((cm) => cm.id)).toEqual([expenseCM.id]);
     expect(unfiltered.map((cm) => cm.id).sort()).toEqual([expenseCM.id, incomeCM.id].sort());
   });
+
+  it('returns an empty array when no active category matches the given direction', async () => {
+    const { categoryMonthService, categoryA } = await setup();
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 10000);
+
+    const incomeOnly = await categoryMonthService.listByMonth('user-1', '2026-08', 'income');
+
+    expect(incomeOnly).toEqual([]);
+  });
 });
 
 describe('findManyByIds', () => {
