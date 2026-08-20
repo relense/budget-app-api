@@ -1928,6 +1928,27 @@ default property-access resolver, so a naive "every field needs an
 explicit resolver" check there would false-positive on fields that are
 correctly unresolved by design. 515 Jest tests total (was 513).
 
+### `codebase-auditor` subagent added, and its first finding fixed (2026-08-20)
+
+Added `.claude/agents/codebase-auditor.md` — a whole-tree audit agent,
+distinct from `pr-reviewer` (diff-scoped) and `test-auditor`
+(test-quality-scoped): checks multi-tenancy, money handling, cross-service
+consistency, locking, doc drift, dead code, and production hardening across
+the full `src/` and `prisma/` trees rather than just a PR's diff.
+
+Its first run flagged a stale comment in `budgetMonthService.ts`'s
+`deleteBudgetMonth`: the comment still claimed the P2003 catch was what
+"actually guarantees" the recurring-expense-instance-only edge case, but
+`categoryMonthService.removeCategoryFromMonth`'s own
+`category_month_has_recurring_expenses` check already covers that instance
+before its `category_month` can be removed out from under it — the P2003
+catch is the narrower remaining backstop (a `category_month` row removed
+independently of that check while a `recurring_expenses` row for the same
+month/category still exists, since `recurring_expenses` has no FK to
+`category_month`, only to `budget_months` and `categories` directly).
+Fixed on `fix/budget-month-delete-comment-drift` — comment-only change, no
+behavior or API-surface impact, so `SERVICES.md` needed no update.
+
 ## Phase 1 — Backend
 
 - [x] **0. Ground truth** — `.claude/CLAUDE.md`, `docs/GLOSSARY.md`, `docs/PLAN.md`, `docs/SCALING.md` committed (originally flat at the repo root — moved into `.claude/`/`docs/` later, see "Where we left off").
@@ -2135,3 +2156,9 @@ Not started.
   excluding ambiguous characters (0/O, 1/I/L), verified case-insensitively.
   Confirmed with the user; charset/case/length were all explicit choices,
   not defaults.
+- Local dev `PORT` is `4400`, not the `4000` default in `.env.example` — port
+  4000 collided with another local project, and port 5000 turned out to be
+  taken by macOS's AirPlay Receiver (Control Center squats on it by
+  default). Relevant for Phase 2 (mobile app): point the API client at
+  `http://localhost:4400` (or `http://10.0.2.2:4400` from the Android
+  emulator) for local development.
