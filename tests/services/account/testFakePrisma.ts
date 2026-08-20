@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 export interface FakeUser {
   id: string;
   email: string;

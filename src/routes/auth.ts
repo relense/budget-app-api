@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { verifyAccessToken } from '../lib/jwt.js';
+import { resolveBearerUserId } from '../lib/jwt.js';
 import { OTP_CODE_REGEX } from '../lib/otp.js';
 import type { AuthCleanupService } from '../services/auth/authCleanupService.js';
 import {
@@ -164,15 +164,13 @@ export async function registerAuthRoutes(
   });
 
   app.post('/auth/logout-all', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : null;
-    const payload = token ? await verifyAccessToken(token, jwtSecret) : null;
+    const userId = await resolveBearerUserId(request, jwtSecret);
 
-    if (!payload) {
+    if (!userId) {
       return reply.status(401).send({ error: 'unauthorized' });
     }
 
-    await authService.logoutAll(payload.userId);
+    await authService.logoutAll(userId);
     return reply.status(204).send();
   });
 }

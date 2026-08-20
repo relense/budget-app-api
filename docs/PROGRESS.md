@@ -1654,9 +1654,54 @@ pnpm/action-setup v6 — confirmed via each action's `action.yml` that all
 three now declare `using: node24`), verified with a real CI run before
 merging.
 
-Remaining Production Readiness item: GDPR export/delete. Then Phase 2
-(mobile app), which needs design references (mockups + Excel structure —
-now partly in hand) before any screen work begins, per CLAUDE.md.
+### GDPR export/delete (2026-08-20)
+
+Grilled before coding, on a fresh `feature/account-export-delete` branch.
+User picked REST over GraphQL for this — a genuine question, not just a
+confirmation: they'd never used GraphQL professionally and asked why this
+app splits REST/GraphQL at all. Explained the actual reasoning (`/auth/*`
+has to be REST since those routes *produce* the access token GraphQL's own
+context builder depends on to resolve `userId`; everything post-auth went
+GraphQL because `PLAN.md` made that call early for one API shape serving
+both a future mobile app and website) — account export/delete is the same
+"account lifecycle" category as `logout-all`, which already set the REST
+precedent. Also confirmed: export = all domain data as a single synchronous
+JSON response (no file storage/email infra — explicitly flagged in
+`PLAN.md` as something to revisit if a real export ever gets too large for
+that), and `DELETE /account` requires an explicit `{ confirm: true }` in
+the body as a backend-level guard, given it's the single most destructive
+action in the app.
+
+**Real architectural finding, surfaced while designing this, not assumed**:
+none of `BudgetMonth`/`Category`/`CategoryMonth`/`Transaction`/
+`RecurringExpense`/`SavingsFund`/`SavingsMovement` has an actual FK
+relation back to `User` in the schema — `userId` is an application-scoped
+column only, enforced by every query filtering on it, never by the
+database. Only `RefreshToken` has a real `@relation` (`onDelete: Cascade`).
+So `deleteAccount` can't just delete the `User` row and let cascade handle
+the rest — it would silently orphan every table instead. Built as an
+explicit, dependency-ordered multi-table delete inside one transaction
+(movements → transactions → funds/recurring-expenses/category-months →
+categories/budget-months → `otp_codes` by email → the `User` row itself),
+respecting the `Restrict` FKs between the domain tables.
+
+Built `accountService` (`exportUserData`, `deleteAccount`), TDD against a
+new `tests/services/account/testFakePrisma.ts` covering every table this
+touches. Routes: `GET /account/export`, `DELETE /account` — extracted a
+small shared `resolveBearerUserId(request, secret)` helper into `lib/jwt.ts`
+along the way (this is the third route needing "verify the bearer token,
+401 if not," after `logout-all` — refactored that one to use it too, no
+behavior change). Given how many `Restrict` FKs the delete-ordering has to
+walk through correctly, verified against real Postgres, not just the fake:
+seeded a full account (every table) plus a second user's data, ran
+`deleteAccount`, confirmed zero orphaned rows and zero cross-user
+contamination — passed clean, no FK violations.
+
+Remaining Production Readiness items: none — CI, row cleanup, and GDPR
+export/delete are all built. A privacy policy is still needed before real
+signups, but that's a product/legal task, not code. Next: Phase 2 (mobile
+app), which needs design references (mockups + Excel structure — now
+partly in hand) before any screen work begins, per CLAUDE.md.
 
 Small tracked follow-up, not blocking, carried over from step 6: add
 logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
