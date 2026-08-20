@@ -220,10 +220,13 @@ export function createBudgetMonthService({ prisma, now = () => new Date() }: Bud
    * recurring-expense instance always has a category_month for the same
    * month/category created atomically alongside it (see
    * ensureActiveForCategoryOnClient), so this pre-check covers the common
-   * case; the P2003 catch below is what actually guarantees the
-   * recurring-expense-instance-only edge case too (category_month removed
-   * after the fact, instance left behind — removeCategoryFromMonth doesn't
-   * check for a referencing instance), not the pre-check alone. Locked
+   * case, and categoryMonthService.removeCategoryFromMonth's own
+   * category_month_has_recurring_expenses check covers the same instance
+   * before its category_month can be removed out from under it. The P2003
+   * catch below is the remaining backstop: a category_month row somehow
+   * removed independently of that check while a recurring_expenses row for
+   * the same month/category still exists (recurring_expenses has no FK to
+   * category_month, only to budget_months and categories directly). Locked
    * months are permanent record, never deletable. Runs inside a
    * transaction taking lockBudgetMonthRow, same reasoning as lockMonth —
    * closes the race against a concurrent lockMonth for this same row.

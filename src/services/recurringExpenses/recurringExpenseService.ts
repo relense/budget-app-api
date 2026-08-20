@@ -4,7 +4,7 @@ import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 import { withSavepoint } from '../../lib/prismaSavepoint.js';
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
 import { lockBudgetMonthRow } from '../budgetMonths/budgetMonthService.js';
-import { assertOwnedCategory } from '../categories/categoryService.js';
+import { assertOwnedCategory, lockCategoryRow } from '../categories/categoryService.js';
 import type { BudgetType } from '../categories/categoryService.js';
 import { ensureActiveForCategoryOnClient } from '../categories/categoryMonthService.js';
 import type { TransactionService } from '../categories/transactionService.js';
@@ -79,22 +79,32 @@ function assertValidBudgetType(budgetType: BudgetType): asserts budgetType is Re
   }
 }
 
-/**
- * Read-only. Validates a RecurringExpenseInput's own fields plus its
- * category (owned, expense-direction — an income category has no meaning
- * here, since markRecurringPaid derives the resulting transaction's
- * direction from it). Run before any write so an invalid input can't leave
- * a partial category-activation behind.
- */
-async function assertValidInput(
-  client: Pick<PrismaClient, 'category'>,
-  userId: string,
-  input: RecurringExpenseInput,
-): Promise<void> {
+/** Pure, no DB — the input's own fields, independent of any category state. */
+function assertValidRecurringExpenseFields(
+  input: Pick<RecurringExpenseInput, 'amountCents' | 'dueDay' | 'budgetType'>,
+): void {
   assertValidAmount(input.amountCents);
   assertValidDueDay(input.dueDay);
   assertValidBudgetType(input.budgetType);
-  const category = await assertOwnedCategory(client, userId, input.categoryId);
+}
+
+/**
+ * DB-dependent: owned, expense-direction category (an income category has
+ * no meaning here, since markRecurringPaid derives the resulting
+ * transaction's direction from it). Takes lockCategoryRow first, so this is
+ * serialized against a concurrent updateCategory changing this category's
+ * direction underneath it — must be called with a transactional client,
+ * inside the same transaction as the write it's guarding, not as a
+ * fire-and-forget pre-check (see lockCategoryRow's doc comment and
+ * docs/PROGRESS.md's whole-codebase audit note).
+ */
+async function assertValidCategoryForRecurringExpense(
+  client: Pick<PrismaClient, 'category' | '$queryRaw'>,
+  userId: string,
+  categoryId: string,
+): Promise<void> {
+  await lockCategoryRow(client, categoryId);
+  const category = await assertOwnedCategory(client, userId, categoryId);
   if (category.direction !== 'expense') {
     throw new RecurringExpenseServiceError('invalid_category_direction');
   }
@@ -216,13 +226,15 @@ export function createRecurringExpenseService({
     month: string,
     categoryMonthlyBudgetCents?: number,
   ) {
-    await assertValidInput(prisma, userId, input);
+    assertValidRecurringExpenseFields(input);
 
     let monthWasCreated = false;
     let monthId = '';
     let created;
     try {
       created = await prisma.$transaction(async (tx) => {
+        await assertValidCategoryForRecurringExpense(tx, userId, input.categoryId);
+
         const { categoryMonth, monthWasCreated: wasCreated } = await ensureActiveForCategoryOnClient(
           tx,
           userId,
@@ -285,10 +297,11 @@ export function createRecurringExpenseService({
     // wrong-user request surfaces recurring_expense_not_found rather than
     // leaking whether some other user's category id happens to be valid.
     const existing = await findOwnedRecurringExpense(prisma, userId, id);
-    await assertValidInput(prisma, userId, input);
+    assertValidRecurringExpenseFields(input);
 
     try {
       return await prisma.$transaction(async (tx) => {
+        await assertValidCategoryForRecurringExpense(tx, userId, input.categoryId);
         await assertMonthNotLockedOnClient(tx, existing.monthId);
         const budgetMonth = await tx.budgetMonth.findUnique({ where: { id: existing.monthId } });
         if (!budgetMonth) {

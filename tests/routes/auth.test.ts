@@ -34,12 +34,26 @@ function fakeAuthService() {
   };
 }
 
-function buildTestApp(authService: ReturnType<typeof fakeAuthService>) {
+function fakeAuthCleanupService() {
+  return {
+    cleanupExpiredAuthRecords: jest.fn(
+      async (): Promise<{ otpCodesDeleted: number; refreshTokensDeleted: number }> => ({
+        otpCodesDeleted: 0,
+        refreshTokensDeleted: 0,
+      }),
+    ),
+  };
+}
+
+function buildTestApp(
+  authService: ReturnType<typeof fakeAuthService>,
+  authCleanupService: ReturnType<typeof fakeAuthCleanupService> = fakeAuthCleanupService(),
+) {
   const app = fastify({ logger: false });
   return app
     .register(rateLimit, { global: false })
     .register(async (instance) => {
-      await registerAuthRoutes(instance, { authService, jwtSecret: JWT_SECRET });
+      await registerAuthRoutes(instance, { authService, authCleanupService, jwtSecret: JWT_SECRET });
     })
     .ready()
     .then(() => app);
@@ -158,6 +172,66 @@ describe('POST /auth/request-otp', () => {
       url: '/auth/request-otp',
       payload: { email: 'someone-else@example.com' },
     });
+    expect(response.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it('runs auth row cleanup after successfully sending a code', async () => {
+    const authService = fakeAuthService();
+    const authCleanupService = fakeAuthCleanupService();
+    const app = await buildTestApp(authService, authCleanupService);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/request-otp',
+      payload: { email: 'user@example.com' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(authCleanupService.cleanupExpiredAuthRecords).toHaveBeenCalledTimes(1);
+
+    await app.close();
+  });
+
+  it('responds before cleanup finishes (fire-and-forget, not awaited)', async () => {
+    const authService = fakeAuthService();
+    const authCleanupService = fakeAuthCleanupService();
+    let resolveCleanup!: () => void;
+    authCleanupService.cleanupExpiredAuthRecords.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCleanup = () => resolve({ otpCodesDeleted: 0, refreshTokensDeleted: 0 });
+        }),
+    );
+    const app = await buildTestApp(authService, authCleanupService);
+
+    // If the route awaited cleanup, this would hang until timeout since
+    // resolveCleanup is never called before the assertion below.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/request-otp',
+      payload: { email: 'user@example.com' },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    resolveCleanup();
+    await app.close();
+  });
+
+  it('still returns 200 if row cleanup throws', async () => {
+    const authService = fakeAuthService();
+    const authCleanupService = fakeAuthCleanupService();
+    authCleanupService.cleanupExpiredAuthRecords.mockRejectedValueOnce(new Error('db blip'));
+    const app = await buildTestApp(authService, authCleanupService);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/request-otp',
+      payload: { email: 'user@example.com' },
+    });
+
     expect(response.statusCode).toBe(200);
 
     await app.close();

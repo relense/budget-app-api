@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
 import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
 import { createCategoryService } from '../../../src/services/categories/categoryService.js';
@@ -134,6 +134,24 @@ describe('create', () => {
     ).rejects.toMatchObject({ reason: 'invalid_date' });
   });
 
+  it('rejects a real-looking but nonexistent calendar date, instead of silently rolling it into the next month', async () => {
+    // "2026-08-32" isn't a real date — new Date() would silently roll it
+    // to 2026-09-01. Before this was fixed, the date_month_mismatch check
+    // compared the raw string's month prefix ("2026-08") against the
+    // categoryMonth's month, which matched — so this used to pass
+    // validation entirely and get stored as a September transaction still
+    // linked to an August CategoryMonth.
+    const { transactionService, expenseCategoryMonth } = await setup();
+
+    await expect(
+      transactionService.create('user-1', {
+        categoryMonthId: expenseCategoryMonth.id,
+        amountCents: 100,
+        date: '2026-08-32',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
+  });
+
   it('rejects a date whose month does not match the categoryMonth', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();
 
@@ -189,6 +207,23 @@ describe('update', () => {
 
     expect(updated.categoryMonthId).toBe(incomeCategoryMonth.id);
     expect(updated.direction).toBe('income');
+  });
+
+  it('rejects a real-looking but nonexistent calendar date on update', async () => {
+    const { transactionService, expenseCategoryMonth } = await setup();
+    const transaction = await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 2500,
+      date: '2026-08-15',
+    });
+
+    await expect(
+      transactionService.update('user-1', transaction.id, {
+        categoryMonthId: expenseCategoryMonth.id,
+        amountCents: 2500,
+        date: '2026-08-32',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
   });
 
   it('rejects updating a transaction that currently sits in a locked month', async () => {
@@ -575,5 +610,40 @@ describe('list', () => {
 
     expect(result).toEqual([]);
     expect(prisma.budgetMonths.some((bm) => bm.month === '2030-01')).toBe(false);
+  });
+});
+
+describe('row locking', () => {
+  it('locks the category row (via $queryRaw ... FOR UPDATE), not just the budget month, on create and update', async () => {
+    const { prisma, transactionService, expenseCategory, expenseCategoryMonth } = await setup();
+    const queryRawSpy = jest.fn(prisma.$queryRaw);
+    prisma.$queryRaw = queryRawSpy as typeof prisma.$queryRaw;
+
+    const transaction = await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 100,
+      date: '2026-08-05',
+    });
+    const callsAfterCreate = queryRawSpy.mock.calls.length;
+    expect(callsAfterCreate).toBeGreaterThanOrEqual(2); // budget month lock + category lock
+
+    await transactionService.update('user-1', transaction.id, {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 200,
+      date: '2026-08-06',
+    });
+    expect(queryRawSpy.mock.calls.length).toBeGreaterThan(callsAfterCreate);
+
+    let sawCategoryLock = false;
+    for (const call of queryRawSpy.mock.calls) {
+      const [strings, lockedId] = call as [TemplateStringsArray, string];
+      const sql = strings.join('');
+      expect(sql).toContain('FOR UPDATE');
+      if (sql.includes('categories')) {
+        sawCategoryLock = true;
+        expect(lockedId).toBe(expenseCategory.id);
+      }
+    }
+    expect(sawCategoryLock).toBe(true);
   });
 });

@@ -442,25 +442,6 @@ export function createCategoryMonthService({
     return created;
   }
 
-  /**
-   * Idempotent, unlike addCategoryToMonth: returns the existing category_month
-   * if the category is already active that month, only creates one (and only
-   * then requires an explicit budget — never derived from anything) if it
-   * isn't. For callers (recurring expenses) where "already active" is a
-   * success case, not an error — see docs/PLAN.md's step 4 design notes.
-   */
-  async function ensureActiveForCategory(
-    userId: string,
-    categoryId: string,
-    month: string,
-    monthlyBudgetCents?: number,
-  ) {
-    const { categoryMonth } = await prisma.$transaction((tx) =>
-      ensureActiveForCategoryOnClient(tx, userId, categoryId, month, monthlyBudgetCents, now),
-    );
-    return categoryMonth;
-  }
-
   async function removeCategoryFromMonth(userId: string, categoryMonthId: string): Promise<void> {
     const categoryMonth = await findOwnedCategoryMonth(userId, categoryMonthId);
 
@@ -531,7 +512,6 @@ export function createCategoryMonthService({
     listByMonth,
     findManyByIds,
     addCategoryToMonth,
-    ensureActiveForCategory,
     removeCategoryFromMonth,
     updateCategoryMonthBudget,
   };

@@ -1312,24 +1312,621 @@ back to prove idempotency, then confirmed via direct SQL — exactly one
 `seed@example.com` user, 16 categories (13 expense + Fixed Bills + 2
 income), 14 recurring bills, no duplicates.
 
-Next actions, in order:
-1. Run `pr-reviewer` on `feature/seed-script`, go back and forth until
-   approved, then `test-auditor` until clean, then open the PR and hand
-   back for human review — same two-stage pattern as PRs #14-#18.
-2. After that merges: Build Order step 8 was the last item — Phase 1
-   (backend) is then functionally complete. What's left is the
-   Production Readiness items `PLAN.md` flags (rate limiting,
-   introspection/depth limits are done — confirmed; `otp_codes`/
-   `refresh_tokens` row cleanup, CI, GDPR export/delete are not), then
-   Phase 2 (mobile app), which needs design references (mockups + Excel
-   structure — now partly in hand) before any screen work begins, per
-   CLAUDE.md.
-3. Small tracked follow-up, not blocking, carried over from step 6: add
-   logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
-   (recurring-expenses step) once this service layer has a logger
-   dependency to hang it on (none exists yet — `src/lib/shutdown.ts` is
-   the only existing precedent, at the app-startup level, not
-   per-service).
+### PR #19 merged — whole-codebase audit before Production Readiness
+
+The user explicitly wanted something no single `pr-reviewer` pass had ever
+done: a review of the *entire* codebase for inconsistencies, not just one
+PR's diff. Ran this as a fresh, self-contained `general-purpose` subagent
+(not `pr-reviewer`, which is wired to review a diff, not audit a tree) —
+given `.claude/CLAUDE.md`/`GLOSSARY.md`/`PLAN.md`/`SERVICES.md`/
+`FUNCTIONALITIES.md`/`PROGRESS.md` for context, then the full `src/`,
+`prisma/`, `tests/` trees, with explicit instructions not to re-litigate
+documented, intentional design decisions (e.g. the recurring-expenses
+flat redesign, the income pivot) as if they were bugs. Confirmed baseline
+clean (453 tests, typecheck/lint/build) before hunting.
+
+Found two real, previously-uncaught bugs — both genuine gaps against
+already-documented intended behavior, not new design questions, so fixed
+directly rather than re-grilled:
+
+- **Invalid calendar dates silently rolled over instead of being
+  rejected.** `DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/` (duplicated across
+  `transactionService`/`savingsMovementService`/`savingsFundService`)
+  only checked shape — `new Date('2026-02-30')` silently becomes
+  `2026-03-02` in JS, no error. Worse, `transactionService`'s
+  `date_month_mismatch` guard compared `date.slice(0, 7)` against the
+  target CategoryMonth's month **before** any `Date` conversion, so
+  `"2026-02-30"` for a February CategoryMonth passed that check too
+  (string prefix matched), then got persisted as a March transaction
+  still linked to a February CategoryMonth — exactly the "silently
+  truncated or shifted value" `PLAN.md`'s Dates convention exists to
+  prevent, via a path the regex-only check never covered. Fixed with a
+  new shared `src/lib/dateFormat.ts` (`isValidCalendarDate`) that
+  round-trips the parsed Y/M/D back through `Date.UTC` and rejects
+  anything that doesn't match exactly (Feb 30, Apr 31, month 13, etc.) —
+  consolidates what was three separate regex constants into one
+  correctly-validating helper, wired into all three services.
+- **`updateCategory` could flip a category with an active (never-paid)
+  recurring expense from expense to income.** The direction-change guard
+  only checked for referencing `Transaction` rows, never
+  `RecurringExpense` rows — `recurringExpenseService` only enforces
+  "category must be expense-direction" at the recurring expense's own
+  create/update time, never re-checked afterward. A brand-new recurring
+  expense has zero transactions, so nothing blocked the switch; the next
+  `markRecurringPaid` would then derive the resulting Transaction's
+  `direction` from the now-income category, silently mislabeling it. This
+  crosses a boundary introduced in a later PR (recurring expenses, #4)
+  than the original direction-guard (categories, #3) — exactly the class
+  of gap no single-PR review would catch. Fixed by adding a
+  `recurringExpense.findFirst({ where: { categoryId } })` check alongside
+  the existing transaction check, reusing the same `direction_change_blocked`
+  error reason (no interface change).
+
+Both verified against real Postgres with throwaway smoke scripts (deleted,
+not committed) reproducing the exact failure mode, in addition to new
+regression tests.
+
+Also fixed, all flagged by the same audit:
+- **Doc drift**: `SERVICES.md` was missing the `date_month_mismatch` rule
+  entirely; it also implied query-depth limiting was production-only when
+  it's actually always on (`server.ts`'s ternary only prod-gates
+  introspection lockdown, not `depthLimit`) — the docs understated a
+  protection that was already there, not a real gap, but still wrong.
+- **Index comment inaccuracy, and the index itself corrected**:
+  `SavingsMovement`'s `@@index([userId, fundId])` comment claimed it
+  served `computeNetMovementCents`/`listByFundIds`, but neither query
+  filters by `userId` — both filter by `fundId` alone. Reordered to
+  `@@index([fundId, userId])` (new migration
+  `20260820090446_fix_savings_movement_index_order`) so the leading
+  column actually matches the real query pattern; `userId` still trails
+  for any future userId-scoped lookup. `PLAN.md`'s Indexes bullet
+  repeated the same inaccurate rationale, fixed too.
+- **Dead code removed**: `categoryMonthService`'s bound
+  `ensureActiveForCategory` method had zero production callers —
+  `recurringExpenseService` calls the standalone
+  `ensureActiveForCategoryOnClient` directly instead, and always did;
+  the bound wrapper's own doc comment even claimed it was "for callers
+  (recurring expenses)," which was never true. Removed the method; its
+  test suite (11 real behavioral tests — idempotency, budget inheritance
+  by real calendar month not insertion order, planning-horizon
+  exemptions) was rewritten to call `ensureActiveForCategoryOnClient`
+  directly via the same single-transaction shape production code
+  actually uses, so coverage of the still-live logic wasn't lost, only
+  the coverage of the dead wrapper.
+- **`Transaction`'s `(userId, date)` index has no current serving
+  query** (`transactionService.list` filters by a `categoryMonthId` set
+  and sorts in application code, not a DB-level date-range `WHERE`) —
+  left in place per `PLAN.md`'s original forward-provisioning intent, but
+  documented as such directly on the index in `schema.prisma` rather than
+  silently unexplained.
+- **New test proving the query-depth limit actually rejects** an
+  over-deep query (`tests/server.test.ts`) — previously only introspection
+  lockdown had this kind of end-to-end proof; depth-limiting was
+  correctly wired but unverified by any test.
+- **Stale `PROGRESS.md` line**: step 8's checklist entry still said "not
+  yet through pr-reviewer/test-auditor/merge" after PR #19 had already
+  merged — corrected.
+
+466 Jest tests total (was 453). PR #21 opened, went through two rounds of
+`pr-reviewer` (round 1 found a minor `isValidCalendarDate` edge case —
+years 0000-0099 hit a JS `Date.UTC` two-digit-year quirk — and a cosmetic
+sequential-vs-`Promise.all` nitpick in `updateCategory`, both fixed; round
+2 approved) and `test-auditor` (found the create-path-only asymmetry in
+the new date-validation tests — `updateSavingsMovement`/`updateSavingsFund`/
+`transactionService.update` never got the same nonexistent-calendar-date
+regression coverage as their `create` siblings, since `assertValidDate`/
+`assertValidDateFormat` are the same shared functions called from both;
+closed). 472 tests by the end of that cycle.
+
+### Round 2 of the whole-codebase audit — a real concurrency bug found and fixed
+
+With PR #21 approved but not yet merged, the user asked for a second full
+audit pass — not a re-check of round 1's fixes, but a fresh look for
+whatever round 1 didn't cover. Ran the same `general-purpose` subagent
+pattern, explicitly pointed at areas round 1's report hadn't dwelt on
+(the auth/OTP/JWT flow, `recurringExpenseService`'s edge cases,
+`budgetMonthService`'s locking, `bankBalanceService`, cross-service
+consistency, `prisma/seed.ts` post-fix, and a field-for-field check of
+`PLAN.md`'s illustrative schema against the real one). Auth, recurring
+expenses, budget months, bank balance, seed script, and the schema
+comparison all came back clean — confirmed solid, not just unchecked.
+
+One real finding: **`updateCategory`'s direction-change guard (round 1's
+own fix) has a TOCTOU race that every analogous check elsewhere in this
+codebase closes, and it didn't.** The check-then-write (read referencing
+`Transaction`/`RecurringExpense` rows, then later call `category.update`)
+ran as unlocked, separate statements — a concurrent `createRecurringExpense`/
+`updateRecurringExpense`/`transactionService.create`/`update` landing in
+that gap could either let a direction flip through despite a reference
+now existing, or create a new reference against a direction that's about
+to change underneath it. Every other place in this codebase with this
+exact shape of problem closes it with a `SELECT ... FOR UPDATE` row lock
+inside a transaction (`lockBudgetMonthRow`, `lockSavingsFundRow`);
+`updateCategory` had neither, and `direction` is a plain column, not
+FK-constrained, so there's no DB-level backstop possible the way
+`deleteCategory` gets one for free from `RecurringExpense.category`'s
+`onDelete: Restrict`.
+
+Closing this completely meant it wasn't a one-file fix — asked the user
+whether to do the full multi-service fix, a narrower partial fix, or
+accept the risk as a documented known gap; user chose the full fix. Added
+**`lockCategoryRow`** (`SELECT ... FOR UPDATE` on `categories`, same
+pattern as its two siblings) to `categoryService.ts`, and threaded it
+through every read site that derives a lasting decision from a category's
+`direction`:
+- `categoryService.updateCategory` — the writer: locks first, *then*
+  reads `existing.direction` and the referencing checks, inside one
+  transaction (previously `assertOwnedCategory` ran pre-transaction;
+  moved inside so the read is against the locked, current row, not a
+  stale pre-lock snapshot).
+- `transactionService.loadCategoryMonthForWrite` (shared by `create` and
+  `update`) — locks the category row (via `categoryMonth.categoryId`)
+  right before deriving the new/updated Transaction's `direction`.
+- `recurringExpenseService` — split the old `assertValidInput` into a
+  pure/sync half (`assertValidRecurringExpenseFields`: amount/dueDay/
+  budgetType, no DB, stays as a fast pre-check) and a new DB-dependent
+  half (`assertValidCategoryForRecurringExpense`: locks, then checks
+  ownership + expense-direction) that now runs *inside* each
+  transaction — previously the whole thing ran as an unlocked pre-check
+  before the transaction even opened, in both `createRecurringExpense`
+  and `updateRecurringExpense`.
+- `addCategoryToMonth`/`ensureActiveForCategoryOnClient` deliberately
+  **not** touched — a `CategoryMonth` activation never reads or stores
+  `direction`, so it isn't part of this race at all; narrowed the fix to
+  exactly the call sites that matter instead of locking everywhere
+  category-adjacent.
+
+Verified two ways, matching this codebase's established two-tier pattern
+for concurrency fixes:
+1. A genuine real-Postgres race — a throwaway smoke script (deleted, not
+   committed) firing `updateCategory` (flip to income) and
+   `createRecurringExpense` at the exact same category, truly
+   concurrently, 10 times via `Promise.allSettled`, then asserting the
+   final state was never "category is income AND a recurring expense
+   references it" simultaneously. 10/10 runs clean — both orderings were
+   actually observed (sometimes the update won, sometimes the create
+   won), and in every case exactly one operation succeeded while the
+   other correctly failed with its typed error, never leaving
+   inconsistent state.
+2. Permanent Jest coverage (fake Prisma, which can't simulate real
+   locking but can prove the *code path* is right): three new `describe('row
+   locking')` blocks (`categoryService.test.ts`, `transactionService.test.ts`,
+   `recurringExpenseService.test.ts`), each spying on `$queryRaw` and
+   asserting it's called with `FOR UPDATE` on every relevant write path —
+   same style as `savingsMovementService.test.ts`'s existing one.
+
+Also fixed while in there: `SERVICES.md`/`PLAN.md` both still described
+`updateCategory`'s guard as `Transaction`-only after round 1's own fix
+added the `RecurringExpense` check — round 1's fix commit updated the
+code, tests, and `PROGRESS.md` but missed this one-line description in
+both docs. A live example of exactly the kind of drift these audits
+exist to catch.
+
+475 Jest tests total (was 472). `npm run typecheck`/`lint`/`build` all
+clean. All on `fix/codebase-audit-findings`, not yet through a fresh
+`pr-reviewer` round for this latest commit or merge.
+
+`fix/codebase-audit-findings` went through `pr-reviewer`/`test-auditor` as
+planned and merged into `develop` via PR #22. Phase 1 (backend) is
+functionally complete as of that merge — every numbered Build Order step
+(0–9) is done.
+
+### Row cleanup (2026-08-20) — first Production Readiness item picked up
+
+Grilled before coding, on a fresh `chore/auth-row-cleanup` branch: the user
+was specifically thinking ahead to 1M/10M-user scale, not just "does it
+work today." Two things came out of that grill that shaped the design more
+than the original `PLAN.md` bullet implied:
+- **No hosting platform is chosen yet**, so there's no external cron to
+  hang this on — ruled out anything needing one. Both trigger mechanisms
+  ended up in-process: an hourly `setInterval` in `index.ts` (cleared on
+  `SIGTERM`/`SIGINT` alongside the existing shutdown handler) as a
+  backstop, plus a piggybacked cleanup call on every `POST
+  /auth/request-otp` (failures logged, never fail the actual request) so
+  cleanup stays prompt during real traffic without waiting for the hourly
+  tick.
+- **Revoked ≠ expired, and that gap matters more at scale, not less**:
+  `refresh_tokens` rotate on every refresh (mandatory, see `PLAN.md`), so
+  an expiry-only sweep would let a large number of already-useless revoked
+  rows pile up for their entire TTL before ever getting cleaned — at 1M
+  active users refreshing frequently, that's a real bloat source, not a
+  hypothetical one. Confirmed with the user: no reason to keep a
+  revoked/used row around at all, so both tables delete on either
+  condition (`expiresAt < now()` OR `used`/`revoked`), not expiry alone.
+- Two scale-specific implementation choices, both explained to the user
+  before writing code: **dedicated indexes** (`otp_codes.expiresAt`/`used`,
+  `refresh_tokens.expiresAt`/`revoked` — otherwise the cleanup query itself
+  degrades to a full table scan as these tables grow) and **batched
+  deletes** (1000 rows/call, looped, rather than one unbounded `DELETE`
+  that could hold locks on these hot-path tables for a long single
+  transaction if a large backlog ever built up).
+
+Built: `authCleanupService` (`cleanupExpiredAuthRecords()`, TDD against a
+new in-memory batch loop, extending `tests/services/auth/testFakePrisma.ts`
+with `findMany`/`deleteMany`), wired into `registerAuthRoutes` (new
+required `authCleanupService` dep) and `index.ts`'s interval.
+
+`pr-reviewer` round 1 found one real bug and several worthwhile
+simplifications, all fixed: the request-otp piggyback was `await`ing
+cleanup before responding — not actually the non-blocking design agreed on,
+and it would add unbounded latency to a hot, rate-limited auth endpoint
+under any real backlog (fixed to fire-and-forget with `.catch()`, matching
+the interval's pattern); the four near-identical batch-delete call sites
+collapsed into two small `cleanupOtpCodes`/`cleanupRefreshTokens` helpers;
+`authCleanupService` was being constructed twice (once in `server.ts`, once
+in `index.ts`) — now built once in `index.ts` and threaded into
+`buildServer` the same way `authService` already is; added a regression
+test for a row matching both delete conditions at once (e.g. expired *and*
+used), proving the sequential-pass design can't double-count. The reviewer
+also flagged that `used`/`revoked` could be partial indexes instead of
+plain ones for less bloat at real scale — surfaced to the user, who chose
+to keep them plain: Prisma's schema DSL can't express a partial index's
+`WHERE` clause, so a partial index would mean hand-editing generated
+migration SQL, and since `schema.prisma` would still declare a plain index,
+any *future* unrelated `prisma migrate dev` run would see that as drift and
+silently regenerate the plain index — reverting the optimization with
+nothing flagging it as intentional. Not worth that ongoing footgun for a
+scale concern the reviewer itself called non-blocking.
+
+`test-auditor` then found two real gaps of its own, both closed: the two
+existing request-otp cleanup tests only proved `cleanupExpiredAuthRecords`
+was *called*, never that the response doesn't wait for it — a regression
+back to `await`ing it (the exact bug round 1's `pr-reviewer` fix already
+covered) would have slipped past both silently. Fixed with a test using a
+deliberately never-resolved cleanup promise: if the route awaited it, the
+`app.inject()` call would hang until Jest's timeout, since the promise is
+only resolved *after* asserting the response already came back. Also
+found the batch-loop's trickiest boundary — an eligible-row count that's an
+exact multiple of `batchSize`, which forces one extra round-trip returning
+an empty page before the loop can know it's done — was never exercised (the
+one multi-batch test used 5 rows over batches of 2, which always hits the
+`batch.length < batchSize` short-circuit and never that boundary). Added
+two tests spying on `findMany` call counts: 4 rows/batchSize 2, and 2
+rows/batchSize 1.
+
+488 Jest tests total (was 475 before this branch, +13 across both review
+rounds). Both `pr-reviewer` and `test-auditor` closed clean.
+
+`chore/auth-row-cleanup` merged into `develop` via PR #23.
+
+### CI pipeline (2026-08-20)
+
+Grilled before coding, on a fresh `chore/ci-pipeline` branch: confirmed
+with the user this should run on both PRs and direct pushes to
+`develop`/`main` (the latter as a safety net, even though CLAUDE.md's
+branch workflow means it shouldn't normally happen), that "run tests +
+Prisma migrations" from `PLAN.md`'s bullet should include an actual
+ephemeral-Postgres `prisma migrate deploy` (not just the Jest suite, which
+only needs in-memory fakes — confirmed no test file touches a real DB), and
+that the resulting check should be a required, merge-blocking status check
+on `develop`/`main` once it exists.
+
+Built `.github/workflows/ci.yml` — one job, `postgres:17-alpine` service
+container matching `docker-compose.yml`'s credentials, `pnpm`
+install/lint/typecheck/build/test, then `prisma migrate deploy` against the
+service container. Verified locally before pushing: spun up a throwaway
+Postgres container and confirmed all 9 existing migrations replay cleanly
+from empty (`prisma migrate deploy`) — this is exactly what CI will do, so
+worth proving outside CI first rather than debugging it via failed runs.
+
+`pr-reviewer` round 1 found one real, verified blocker: `pnpm/action-setup@v4`
+has no `version` input and the repo's `package.json` had no
+`packageManager` field either — the action throws immediately with no
+version to resolve, so the workflow as first committed would have failed
+on step 1 of every run, before lint/typecheck/build/test/migration-replay
+ever got to execute. The "verified locally" note above only ever covered
+the Postgres/migration-replay piece, since the pnpm-setup failure mode is
+GitHub-Actions-specific and can't be reproduced locally. Fixed by adding
+`"packageManager": "pnpm@11.22.0"` to `package.json` (also pins local
+Corepack resolution as a side benefit). Also picked up three cheap
+hardening suggestions from the same round: a `concurrency` group
+(cancels a superseded run instead of queueting two full Postgres-backed
+runs back to back), `permissions: contents: read` at the workflow level
+(least-privilege — this job never needs to write anything), and
+`timeout-minutes: 15` on the job (so a hung step can't silently burn a
+large chunk of Actions minutes).
+
+Merged into `develop` via PR #24. Confirmed working on GitHub twice over:
+the PR run (32370649072) and the `push`-triggered run the merge itself
+fired (32371064691, 1m3s) both passed clean.
+
+Enabling the required-status-check on `develop`/`main` turned out to be
+outside Claude Code's reach here: `gh api .../branches/develop/protection`
+403'd — the fine-grained PAT this session is authenticated with has no
+"Administration" repo permission, which branch protection reads/writes
+need. User will do this step manually in GitHub's UI (Settings → Branches
+→ require status checks → select `ci`) rather than widen the token's
+scope for a one-time config change.
+
+Two small PRs followed, both docs-only/mechanical, used to smoke-test the
+pipeline end to end with the user (PR #25 recording the merge/handoff
+above, PR #26 a trivial docs edit specifically to watch a full PR run
+happen live) — both confirmed green.
+
+That surfaced a real, if non-blocking, finding: every run carried a
+"Node.js 20 is deprecated" annotation for `actions/checkout@v4`,
+`pnpm/action-setup@v4`, and `actions/setup-node@v4` — each pinned to a
+major version whose own runtime is still Node 20, which GitHub is
+deprecating as an Actions runtime and silently substituting Node 24 for in
+the meantime (not a failure yet, but the fallback won't last forever).
+Fixed by bumping to the current majors (checkout v7, setup-node v7,
+pnpm/action-setup v6 — confirmed via each action's `action.yml` that all
+three now declare `using: node24`), verified with a real CI run before
+merging.
+
+### GDPR export/delete (2026-08-20)
+
+Grilled before coding, on a fresh `feature/account-export-delete` branch.
+User picked REST over GraphQL for this — a genuine question, not just a
+confirmation: they'd never used GraphQL professionally and asked why this
+app splits REST/GraphQL at all. Explained the actual reasoning (`/auth/*`
+has to be REST since those routes *produce* the access token GraphQL's own
+context builder depends on to resolve `userId`; everything post-auth went
+GraphQL because `PLAN.md` made that call early for one API shape serving
+both a future mobile app and website) — account export/delete is the same
+"account lifecycle" category as `logout-all`, which already set the REST
+precedent. Also confirmed: export = all domain data as a single synchronous
+JSON response (no file storage/email infra — explicitly flagged in
+`PLAN.md` as something to revisit if a real export ever gets too large for
+that), and `DELETE /account` requires an explicit `{ confirm: true }` in
+the body as a backend-level guard, given it's the single most destructive
+action in the app.
+
+**Real architectural finding, surfaced while designing this, not assumed**:
+none of `BudgetMonth`/`Category`/`CategoryMonth`/`Transaction`/
+`RecurringExpense`/`SavingsFund`/`SavingsMovement` has an actual FK
+relation back to `User` in the schema — `userId` is an application-scoped
+column only, enforced by every query filtering on it, never by the
+database. Only `RefreshToken` has a real `@relation` (`onDelete: Cascade`).
+So `deleteAccount` can't just delete the `User` row and let cascade handle
+the rest — it would silently orphan every table instead. Built as an
+explicit, dependency-ordered multi-table delete inside one transaction
+(movements → transactions → funds/recurring-expenses/category-months →
+categories/budget-months → `otp_codes` by email → the `User` row itself),
+respecting the `Restrict` FKs between the domain tables.
+
+Built `accountService` (`exportUserData`, `deleteAccount`), TDD against a
+new `tests/services/account/testFakePrisma.ts` covering every table this
+touches. Routes: `GET /account/export`, `DELETE /account` — extracted a
+small shared `resolveBearerUserId(request, secret)` helper into `lib/jwt.ts`
+along the way (this is the third route needing "verify the bearer token,
+401 if not," after `logout-all` — refactored that one to use it too, no
+behavior change). Given how many `Restrict` FKs the delete-ordering has to
+walk through correctly, verified against real Postgres, not just the fake:
+seeded a full account (every table) plus a second user's data, ran
+`deleteAccount`, confirmed zero orphaned rows and zero cross-user
+contamination — passed clean, no FK violations.
+
+`pr-reviewer` round 1 found one real bug and a genuine open design
+question. Bug, fixed: `deleteAccount`'s final `tx.user.delete` didn't catch
+P2025 — a double-submit `DELETE /account` (or a client retry) would have
+the losing request's user row already gone by its own delete, surfacing a
+raw 500 instead of `account_not_found` the way every other race of this
+shape in this codebase is handled (same pattern as
+`savingsMovementService`'s P2025 catch) — verified against real Postgres.
+Also fixed while in there: `exportUserData`'s seven reads now run inside
+one `RepeatableRead` transaction for a consistent snapshot (were a bare
+`Promise.all` outside any transaction — a concurrent write could've
+returned a mix of pre/post-write state across tables); extracted a shared
+`findAccount` helper (was duplicated find-or-throw); added a modest per-IP
+rate limit to both routes.
+
+The open question: the reviewer flagged that `Category`/`BudgetMonth`/
+`SavingsFund` — the three tables with no other FK dependency — can be
+created with nothing but a bare `userId`, so a row created for this user at
+the exact moment `deleteAccount` runs (or right after) can become
+permanently orphaned, nothing left to ever delete it. Digging into *why*
+before deciding what to do about it: checked the actual migration SQL, not
+just `schema.prisma`, and confirmed `docs/PLAN.md`'s Data Model section has
+always labeled every `user_id` column `(fk)` — this was never a considered
+tradeoff. Only `refresh_tokens` ever got a real database-level constraint;
+the rest silently never did, because Prisma only generates one when a
+named `@relation` is declared, and app-level `WHERE userId = ...`
+filtering already made every query behave correctly without it — invisible
+until `deleteAccount` became the first thing that ever needed to delete
+*by* `userId` across these tables. User's call after hearing that: don't
+band-aid it (an advisory lock) or leave it purely as a documented
+limitation — **scope "retrofit the missing `User` FKs" as its own next
+task**, since a real fix has to reconcile with the *intentional* `Restrict`
+relations already between the domain tables (e.g. `CategoryMonth →
+Category`, deliberately `Restrict` so a normal single-item `deleteCategory`
+can't silently cascade away linked data) — not a small fix, not something
+to fold into this branch. Documented in `PLAN.md`'s GDPR note as a known,
+understood gap in the meantime.
+
+Remaining Production Readiness items: none — CI, row cleanup, and GDPR
+export/delete are all built. A privacy policy is still needed before real
+signups, but that's a product/legal task, not code.
+
+`feature/account-export-delete` went through `pr-reviewer`/`test-auditor`
+as planned and merged into `develop` via PR #28.
+
+### Retrofit missing `User` FK relations (2026-08-20)
+
+The queued follow-up, on a fresh `fix/missing-user-fk-relations` branch.
+Design question going in: `onDelete: Cascade` vs `Restrict` for the seven
+new relations. Traced through why `Cascade` doesn't actually work here —
+`deleteAccount` already does its own explicit, dependency-ordered delete;
+cascading straight from `User` would have to cascade through the
+*intentional* `Restrict` relations already between the domain tables
+(`CategoryMonth → Category`, etc.), which would silently weaken the real
+product safety guards those give the normal single-item `deleteCategory`/
+`deleteSavingsFund` flows. Landed on `Restrict` everywhere — a pure DB-level
+backstop confirming `deleteAccount`'s ordering is correct, not a deletion
+mechanism, so no service code needed to change at all.
+
+User asked a genuinely good clarifying question mid-grill: what's the
+actual worst case if `deleteAccount`'s final `user.delete` ever hits the
+new constraint? Traced it through explicitly — since everything runs
+inside one `$transaction`, a `P2003` there rolls back the *whole*
+transaction, so nothing is actually deleted; the request just fails and a
+retry re-queries fresh and succeeds. Compared against today's status quo
+(the race succeeds silently and orphans the row forever) — a safe failure
+is already a large improvement over silent corruption, without needing
+anything further. Given that, explicitly chose **not** to add either a
+retry loop or an advisory lock (the only way to close the timing window
+outright, at the cost of touching `categoryService`/`budgetMonthService`/
+`savingsFundService`'s create paths too) — a safe failure was judged
+sufficient for how rare an exact-timing collision actually is.
+
+Local dev DB had pre-existing orphaned test rows (4 `categories`, 11
+`budget_months`, 1 `category_month`) that would've blocked the new
+constraints from applying. User approved a full `prisma migrate reset`.
+Prisma's own CLI has an AI-agent safety check for exactly this class of
+command — it refused to run even when the user typed it directly,
+demanding an explicit `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION` env var
+carrying the user's literal consent text. Followed that protocol: laid out
+the action, target (confirmed `localhost:5432`/`budget_app`, the local
+Docker container, not anything production — no production deployment
+exists yet), and irreversibility explicitly, got clear confirmation, reran
+with the consent var set to the user's exact message.
+
+Schema: added `user User @relation(fields: [userId], references: [id],
+onDelete: Restrict)` to all seven models, plus the corresponding
+back-relation arrays on `User`. One migration
+(`20260820142059_add_missing_user_fk_relations`), applied clean against
+the freshly-reset DB. Zero code changes needed anywhere in the service
+layer — every existing test (513) still passed unchanged. Verified against
+real Postgres with a throwaway script (not a permanent Jest test — this
+needs real FK enforcement the fake Prisma can't simulate): (1) a `Category`
+insert with a nonexistent `userId` is now correctly rejected with `P2003`
+— the original gap, now actually closed; (2) `deleteAccount` still
+completes cleanly end to end with the new constraints; (3) manually
+replayed the exact orphan-race (a stray `Category` created mid-transaction,
+right before the final `user.delete`) and confirmed it fails loudly with
+`P2003` and the whole transaction rolls back — the stray row, the original
+category, and the user all still exactly as they were.
+
+`pr-reviewer` found two comments left describing the pre-fix state
+(`accountService.deleteAccount`'s doc comment, `seed.ts`'s cleanup
+comment) — both said "no real FK" where one now exists; fixed, and
+re-verified `npm run seed` runs and re-runs cleanly against real Postgres
+with the new constraints in place. `test-auditor` independently
+re-verified the branch's real-Postgres claims itself (queried
+`pg_constraint` directly, reproduced the P2003 rejection, reran the seed
+script) rather than just trusting the write-up — all matched. Confirmed
+this branch follows the repo's own established precedent for pure
+schema/constraint changes (a throwaway verification script, not a
+permanent Jest test, since nothing here changed application code for a
+fake to model) rather than a gap.
+
+Remaining Production Readiness items: none. Next: Phase 2 (mobile app),
+which needs design references (mockups + Excel structure — now partly in
+hand) before any screen work begins, per CLAUDE.md.
+
+Small tracked follow-ups, not blocking:
+- Carried over from step 6: add logging on the
+  `onNewBudgetMonth`/`seedNewMonth` swallow path (recurring-expenses step)
+  once this service layer has a logger dependency to hang it on (none
+  exists yet — `src/lib/shutdown.ts` is the only existing precedent, at
+  the app-startup level, not per-service).
+- Surfaced by `test-auditor` on the FK retrofit branch, repo-wide not
+  specific to it: CI's `prisma migrate deploy` step proves every migration
+  *applies* cleanly but never asserts the resulting constraints are
+  actually *correct* (right table, right `onDelete` behavior) — a
+  `pg_constraint`/`information_schema.table_constraints` assertion step
+  after `migrate deploy` would close that for every future migration, not
+  just this one.
+
+### GraphQL Code Generator (2026-08-20)
+
+Backend was functionally complete; user asked what else was missing, given
+an honest audit against `PLAN.md`'s own checklists rather than memory —
+found error tracking (Sentry, never wired up despite being on the
+Production Readiness list), `graphql-codegen` (planned in the original
+stack section, never built), and no actual deployment anywhere. User
+picked `graphql-codegen` first, after asking what it even was — explained
+plainly (schema string and resolver types can silently drift apart with
+nothing catching it; codegen generates matching TS types from the schema
+so they mechanically can't).
+
+Checked how the schema is actually built before designing anything:
+`src/graphql/schema.ts` already exports a single `schema` const from
+`createSchema({...})`, so `codegen.ts` can point straight at the file with
+no restructuring — codegen's TS/JS schema loader finds the exported
+`GraphQLSchema` automatically. Output goes to `src/generated/graphql.ts`,
+gitignored, regenerated via `postinstall` alongside `prisma generate` —
+same convention as the Prisma client, so CI needed zero changes (already
+runs `pnpm install` first).
+
+Hit the real complexity immediately on typechecking: every resolver here
+returns Prisma-shaped rows (lowercase enums, `userId`/timestamps still
+present) and converts to GraphQL shape per-field in nested resolvers
+(`Category.budgetType`, `Transaction.date`, etc.), not before returning —
+but codegen's default `ResolversParentTypes` assumes parent objects
+already match the final GraphQL shape. Every root `Query`/`Mutation`
+resolver failed to typecheck against that assumption. Fixed with
+`mappers` config pointing each GraphQL object type at the actual
+domain-shaped type flowing through resolvers at runtime — Prisma model
+types for six of them (`Category`, `CategoryMonth`, `Transaction`,
+`RecurringExpense`, `SavingsFund`, `SavingsMovement`, all aliased on
+import since their names collide with the generated GraphQL types of the
+same name), and `bankBalanceService`'s own `BankBalance` interface for the
+one computed (non-table) type. `BudgetMonth` deliberately left unmapped —
+its GraphQL type is only `{ month, locked }` with no nested resolvers or
+enum/date conversion, and `findCurrentMonth` can synthesize a row that was
+never persisted, so the default plain generated type is the only accurate
+parent shape for it, not a narrower issue `mappers` needed to solve.
+
+Retyped `Query`/`Mutation` in `schema.ts` against the generated
+`QueryResolvers`/`MutationResolvers` (extracted into their own consts,
+`satisfies`-style — args/return types now inferred instead of hand-rolled
+inline). Deleted the seven now-redundant `*GraphQLInput` interfaces this
+replaced entirely (`CategoryGraphQLInput`, `TransactionGraphQLInput`,
+etc.) — including a small independent cleanup: `SavingsMovementGraphQLInput`
+had an awkward `& { fundId: string }` intersection hack to cover both
+create and update; the generated `CreateSavingsMovementInput`/
+`UpdateSavingsMovementInput` already split that correctly. Also swapped
+`enumMapping.ts`'s three hand-maintained `GraphQLBudgetType`/
+`GraphQLDirection`/`GraphQLMovementType` string-union types (which had to
+be kept in sync with the SDL's `enum` blocks by hand) for aliased imports
+of the generated equivalents — zero other changes needed in that file.
+Nested-type resolvers (`Category`, `CategoryMonth`, `Transaction`,
+`RecurringExpense`, `SavingsFund`, `SavingsMovement`, `BankBalance`) keep
+their existing narrow per-field inline typing, not retyped against the
+generated per-type `Resolvers` — a residual, known gap (a new field added
+to one of these GraphQL types wouldn't force a matching resolver to exist)
+flagged in `PLAN.md`, not closed by this pass.
+
+Pure type-level change, zero runtime behavior change — confirmed three
+ways: all 513 existing Jest tests passed unchanged, `npm run lint`/
+`typecheck`/`build` all clean, and a live smoke test against the real dev
+server (real Postgres, the seeded account, a full OTP login) exercising
+`{ ping }`, an authenticated `categories` query (enum conversion), and a
+`categoryMonths` query (loader-based nested resolvers + computed
+`actualAmountCents`) — all returned correct data.
+
+`pr-reviewer` approved with one real doc-accuracy finding, no code
+changes needed: the "a schema change unmatched by a resolver is a compile
+error, not a silent drift" framing overstates what this actually catches
+— the reviewer proved it by adding a brand-new `Query` field with zero
+resolver and regenerating; it typechecked clean anyway, since every
+generated resolver field is optional (GraphQL allows a default
+property-access resolver, so codegen can't assume every field needs an
+explicit one). The real safety net is narrower and still genuinely
+useful: a resolver that *exists* but has drifted (wrong field name,
+mismatched arg/return type) is caught; a *forgotten* resolver for a new
+field is not, and still only surfaces at request time same as before.
+Corrected the wording in `PLAN.md`, `SERVICES.md`, and the code comment in
+`schema.ts` to say exactly that instead of overclaiming.
+
+`test-auditor` came back clean (no new tests strictly needed — the diff
+is resolver-body-unchanged/type-only, and the existing `schema.*.test.ts`
+suite already exercises the exact enum-conversion/resolver paths touched,
+with real value assertions), but surfaced that the "new field, no
+resolver" gap `pr-reviewer` found has a genuinely cheap runtime fix: since
+it directly closed something documented as an open gap in this same
+branch, closed it rather than leaving it dangling. Exported
+`queryResolvers`/`mutationResolvers` from `schema.ts` and added a
+`describe('schema completeness')` block to `tests/graphql/schema.test.ts`
+asserting every `Query`/`Mutation` SDL field has a matching resolver key —
+verified it actually catches the exact regression `pr-reviewer`
+demonstrated (added an unresolved field, watched the new test fail with a
+clear diff, reverted). Doesn't extend to nested-type fields (`Category`,
+`CategoryMonth`, etc.) — most of those intentionally rely on GraphQL's
+default property-access resolver, so a naive "every field needs an
+explicit resolver" check there would false-positive on fields that are
+correctly unresolved by design. 515 Jest tests total (was 513).
 
 ## Phase 1 — Backend
 
@@ -1472,9 +2069,11 @@ Next actions, in order:
 - [x] **8. Seed script** — `prisma/seed.ts` (`npm run seed`), built from the
       user's real Excel tracker. Scoped to catalog + current month only, no
       transactions/funds/bank balance (explicitly grilled out). Seeds a
-      dedicated `seed@example.com` account, idempotent. Built on
-      `feature/seed-script`, not yet through `pr-reviewer`/`test-auditor`/
-      merge. See "Where we left off" above for the full grill and build.
+      dedicated `seed@example.com` account, idempotent. `pr-reviewer` (2
+      rounds — round 1 found two real bugs in the cleanup/idempotency
+      logic) and `test-auditor` both closed clean. Merged into `develop`
+      via PR #19. See "Where we left off" above for the full grill and
+      build.
 - [x] **9. Basic tests** — audited on `chore/basic-tests-audit`: a
       `test-auditor` pass scoped specifically to this step's own two asks
       (not the general suite) found real gaps — several list/read
@@ -1507,6 +2106,10 @@ Not started.
 
 - Prisma 7's client generator requires a driver adapter — added
   `@prisma/adapter-pg` (PLAN.md assumed the classic bare-`DATABASE_URL` setup).
+- `package.json` gained a `packageManager` field (`pnpm@11.22.0`) during the
+  CI pipeline step — `pnpm/action-setup` in GitHub Actions needs a version
+  to resolve and errors out with neither this field nor an explicit
+  `version` input; also pins local Corepack resolution as a side benefit.
 - `prisma init` auto-vendors AI-agent skill docs into `.claude/`, `.windsurf/`,
   `.agents/` — removed, unrelated to the app.
 - ID strategy for every table (not specified in PLAN.md): UUID v4, stored as

@@ -30,7 +30,14 @@ model User {
   bankBalanceCheckpointCents Int      @default(0) @map("bank_balance_checkpoint_cents")
   bankBalanceCheckpointSetAt DateTime @default(now()) @map("bank_balance_checkpoint_set_at")
 
-  refreshTokens RefreshToken[]
+  refreshTokens     RefreshToken[]
+  categories        Category[]
+  budgetMonths      BudgetMonth[]
+  categoryMonths    CategoryMonth[]
+  transactions      Transaction[]
+  recurringExpenses RecurringExpense[]
+  savingsFunds      SavingsFund[]
+  savingsMovements  SavingsMovement[]
 
   @@map("users")
 }
@@ -46,6 +53,11 @@ model OtpCode {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   @@index([email])
+  // Both serve authCleanupService's batched row-cleanup queries (expired
+  // codes, and used codes regardless of expiry) — see PLAN.md's "Row
+  // cleanup" note.
+  @@index([expiresAt])
+  @@index([used])
   @@map("otp_codes")
 }
 
@@ -63,6 +75,11 @@ model RefreshToken {
 
   @@index([tokenHash])
   @@index([userId])
+  // Both serve authCleanupService's batched row-cleanup queries (expired
+  // tokens, and revoked tokens regardless of expiry) — see PLAN.md's "Row
+  // cleanup" note.
+  @@index([expiresAt])
+  @@index([revoked])
   @@map("refresh_tokens")
 }
 
@@ -103,6 +120,18 @@ model BudgetMonth {
 
   createdAt DateTime @default(now()) @map("created_at")
 
+  // Restrict, not Cascade: deleteAccount does its own explicit,
+  // dependency-ordered delete (see accountService.ts) rather than relying
+  // on cascade, which would have to cascade straight through the
+  // intentional Restrict relations between the domain tables themselves
+  // (e.g. CategoryMonth -> BudgetMonth below) — this is a DB-level
+  // backstop confirming that ordering is actually correct, not the
+  // deletion mechanism itself. See docs/PLAN.md's GDPR note for the full
+  // reasoning (this was a real gap: every user_id here was always meant
+  // to be a real FK per PLAN.md's Data Model section, but only
+  // refresh_tokens ever got one until now).
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
   categoryMonths    CategoryMonth[]
   recurringExpenses RecurringExpense[]
 
@@ -127,6 +156,9 @@ model Category {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
   categoryMonths    CategoryMonth[]
   recurringExpenses RecurringExpense[]
 
@@ -147,6 +179,8 @@ model CategoryMonth {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
   category     Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   budgetMonth  BudgetMonth   @relation(fields: [monthId], references: [id], onDelete: Restrict)
   transactions Transaction[]
@@ -172,9 +206,18 @@ model Transaction {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user             User              @relation(fields: [userId], references: [id], onDelete: Restrict)
   categoryMonth    CategoryMonth     @relation(fields: [categoryMonthId], references: [id], onDelete: Restrict)
   recurringExpense RecurringExpense? @relation(fields: [recurringExpenseId], references: [id], onDelete: Restrict)
 
+  // Forward-provisioned, not currently served by any query — flagged during
+  // a whole-codebase audit (see docs/PROGRESS.md). transactionService.list
+  // filters by a categoryMonthId set (via @@index([categoryMonthId]) below)
+  // and sorts by date in application code, not a DB-level date-range WHERE.
+  // Kept per PLAN.md's original "you'll filter by user + month constantly"
+  // reasoning for a future cross-month history/search query; revisit if
+  // that never materializes.
   @@index([userId, date])
   @@index([userId, createdAt]) // serves bankBalanceService's "every transaction created after the checkpoint" query — a different axis than date, since a backfilled transaction's date and its real insertion time can diverge
   @@index([categoryMonthId])
@@ -206,6 +249,8 @@ model RecurringExpense {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
   budgetMonth  BudgetMonth   @relation(fields: [monthId], references: [id], onDelete: Restrict)
   category     Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   transactions Transaction[]
@@ -239,6 +284,9 @@ model SavingsFund {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
   movements SavingsMovement[]
 
   @@index([userId])
@@ -264,13 +312,17 @@ model SavingsMovement {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // See BudgetMonth.user above for why Restrict, not Cascade.
+  user User        @relation(fields: [userId], references: [id], onDelete: Restrict)
   fund SavingsFund @relation(fields: [fundId], references: [id], onDelete: Restrict)
 
-  // (userId, fundId), not (userId, date) as docs/PLAN.md's general indexing
+  // (fundId, userId), not (userId, date) as docs/PLAN.md's general indexing
   // note originally suggested — deliberate deviation, not an oversight: the
   // real query patterns (computeNetMovementCents/listByFundIds in
-  // savingsMovementService) filter by fund, not by a date range, so this
-  // index serves the actual code. See docs/PLAN.md's indexing bullet.
-  @@index([userId, fundId])
+  // savingsMovementService) filter by fundId alone, not userId and not by a
+  // date range — fundId leads so those queries actually range-scan the
+  // index instead of a full index scan. userId trails, still available for
+  // any future userId-scoped lookup. See docs/PLAN.md's indexing bullet.
+  @@index([fundId, userId])
   @@map("savings_movements")
 }

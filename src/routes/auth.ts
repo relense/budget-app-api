@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { verifyAccessToken } from '../lib/jwt.js';
+import { resolveBearerUserId } from '../lib/jwt.js';
 import { OTP_CODE_REGEX } from '../lib/otp.js';
+import type { AuthCleanupService } from '../services/auth/authCleanupService.js';
 import {
   type AuthService,
   OtpVerificationError,
@@ -58,12 +59,13 @@ export interface RegisterAuthRoutesOptions {
     AuthService,
     'requestOtp' | 'verifyOtp' | 'refreshSession' | 'logout' | 'logoutAll'
   >;
+  authCleanupService: Pick<AuthCleanupService, 'cleanupExpiredAuthRecords'>;
   jwtSecret: string;
 }
 
 export async function registerAuthRoutes(
   app: FastifyInstance,
-  { authService, jwtSecret }: RegisterAuthRoutesOptions,
+  { authService, authCleanupService, jwtSecret }: RegisterAuthRoutesOptions,
 ): Promise<void> {
   app.post(
     '/auth/request-otp',
@@ -84,6 +86,17 @@ export async function registerAuthRoutes(
       }
 
       await authService.requestOtp(parsed.data.email);
+
+      // Piggybacked here rather than only on the interval sweep (see
+      // authCleanupService's doc comment / PLAN.md's "Row cleanup" note) so
+      // cleanup still happens promptly during real traffic. Deliberately
+      // not awaited — this is a rate-limited hot path and a batch-delete
+      // backlog must never add latency to the response. Errors are logged,
+      // never allowed to become an unhandled rejection.
+      authCleanupService.cleanupExpiredAuthRecords().catch((error: unknown) => {
+        app.log.error(error, 'Auth row cleanup failed');
+      });
+
       return reply.status(200).send({ message: 'If that email is valid, a code has been sent.' });
     },
   );
@@ -151,15 +164,13 @@ export async function registerAuthRoutes(
   });
 
   app.post('/auth/logout-all', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : null;
-    const payload = token ? await verifyAccessToken(token, jwtSecret) : null;
+    const userId = await resolveBearerUserId(request, jwtSecret);
 
-    if (!payload) {
+    if (!userId) {
       return reply.status(401).send({ error: 'unauthorized' });
     }
 
-    await authService.logoutAll(payload.userId);
+    await authService.logoutAll(userId);
     return reply.status(204).send();
   });
 }
