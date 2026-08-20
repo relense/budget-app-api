@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
 import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
 import { createCategoryService } from '../../../src/services/categories/categoryService.js';
@@ -822,5 +822,36 @@ describe('findManyByIds', () => {
     const { recurringExpenseService } = await setup();
 
     expect(await recurringExpenseService.findManyByIds([])).toEqual([]);
+  });
+});
+
+describe('row locking', () => {
+  it('locks the category row (via $queryRaw ... FOR UPDATE) on createRecurringExpense and updateRecurringExpense', async () => {
+    const { prisma, recurringExpenseService, housing } = await setup();
+    const queryRawSpy = jest.fn(prisma.$queryRaw);
+    prisma.$queryRaw = queryRawSpy as typeof prisma.$queryRaw;
+
+    const rent = await recurringExpenseService.createRecurringExpense(
+      'user-1',
+      { name: 'Rent', amountCents: 80000, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+      '2026-08',
+      90000,
+    );
+    expect(queryRawSpy).toHaveBeenCalled();
+    const callsAfterCreate = queryRawSpy.mock.calls.length;
+
+    await recurringExpenseService.updateRecurringExpense('user-1', rent.id, {
+      name: 'Rent',
+      amountCents: 82000,
+      categoryId: housing.id,
+      budgetType: 'need',
+      dueDay: 1,
+    });
+    expect(queryRawSpy.mock.calls.length).toBeGreaterThan(callsAfterCreate);
+
+    for (const call of queryRawSpy.mock.calls) {
+      const [strings] = call as [TemplateStringsArray, ...unknown[]];
+      expect(strings.join('')).toContain('FOR UPDATE');
+    }
   });
 });

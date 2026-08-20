@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { createBudgetMonthService } from '../../../src/services/budgetMonths/budgetMonthService.js';
 import { createCategoryMonthService } from '../../../src/services/categories/categoryMonthService.js';
 import { createCategoryService } from '../../../src/services/categories/categoryService.js';
@@ -610,5 +610,33 @@ describe('list', () => {
 
     expect(result).toEqual([]);
     expect(prisma.budgetMonths.some((bm) => bm.month === '2030-01')).toBe(false);
+  });
+});
+
+describe('row locking', () => {
+  it('locks the category row (via $queryRaw ... FOR UPDATE), not just the budget month, on create and update', async () => {
+    const { prisma, transactionService, expenseCategoryMonth } = await setup();
+    const queryRawSpy = jest.fn(prisma.$queryRaw);
+    prisma.$queryRaw = queryRawSpy as typeof prisma.$queryRaw;
+
+    const transaction = await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 100,
+      date: '2026-08-05',
+    });
+    const callsAfterCreate = queryRawSpy.mock.calls.length;
+    expect(callsAfterCreate).toBeGreaterThanOrEqual(2); // budget month lock + category lock
+
+    await transactionService.update('user-1', transaction.id, {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 200,
+      date: '2026-08-06',
+    });
+    expect(queryRawSpy.mock.calls.length).toBeGreaterThan(callsAfterCreate);
+
+    for (const call of queryRawSpy.mock.calls) {
+      const [strings] = call as [TemplateStringsArray, ...unknown[]];
+      expect(strings.join('')).toContain('FOR UPDATE');
+    }
   });
 });
