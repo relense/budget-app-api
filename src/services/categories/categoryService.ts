@@ -26,7 +26,7 @@ export class CategoryServiceError extends Error {
 }
 
 export interface CategoryServiceDeps {
-  prisma: Pick<PrismaClient, 'category' | 'categoryMonth' | 'transaction'>;
+  prisma: Pick<PrismaClient, 'category' | 'categoryMonth' | 'transaction' | 'recurringExpense'>;
 }
 
 /**
@@ -105,7 +105,18 @@ export function createCategoryService({ prisma }: CategoryServiceDeps) {
             })
           : null;
 
-      if (referencingTransaction) {
+      // A RecurringExpense derives every future Transaction's direction
+      // from its category (see markRecurringPaid) — checked only at the
+      // recurring expense's own create/update time, never re-checked
+      // afterward. Without this, a brand-new (never-paid) recurring
+      // expense has zero Transactions yet, so the check above alone
+      // wouldn't block flipping its category's direction out from under
+      // it, silently mislabeling the next payment.
+      const referencingRecurringExpense = await prisma.recurringExpense.findFirst({
+        where: { categoryId: id },
+      });
+
+      if (referencingTransaction || referencingRecurringExpense) {
         throw new CategoryServiceError('direction_change_blocked');
       }
     }
