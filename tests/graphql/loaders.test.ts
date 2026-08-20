@@ -14,9 +14,95 @@ function buildDeps(overrides: Partial<GraphQLLoaderDeps> = {}): GraphQLLoaderDep
       findManyByIds: jest.fn(async () => []),
       sumCommittedCentsForCategoryMonth: jest.fn(async () => 0),
     },
+    savingsFundService: { findManyByIds: jest.fn(async () => []) },
+    savingsMovementService: {
+      listByFundIds: jest.fn(async () => []),
+      computeCurrentAmountCents: jest.fn(async () => 0),
+    },
     ...overrides,
   } as unknown as GraphQLLoaderDeps;
 }
+
+describe('categoryById', () => {
+  it('batches multiple loads into a single findManyByIds call and maps rows back by id', async () => {
+    const findManyByIds = jest.fn(async (ids: string[]) =>
+      ids.filter((id) => id === 'cat-1' || id === 'cat-2').map((id) => ({ id, name: id })),
+    );
+    const deps = buildDeps({ categoryService: { findManyByIds } as never });
+    const loaders = createGraphQLLoaders(deps);
+
+    const [a, b] = await Promise.all([
+      loaders.categoryById.load('cat-1'),
+      loaders.categoryById.load('cat-2'),
+    ]);
+
+    expect(findManyByIds).toHaveBeenCalledTimes(1);
+    expect(findManyByIds).toHaveBeenCalledWith(['cat-1', 'cat-2']);
+    expect(a).toMatchObject({ id: 'cat-1' });
+    expect(b).toMatchObject({ id: 'cat-2' });
+  });
+
+  it('resolves to null for an id with no matching row', async () => {
+    const deps = buildDeps({ categoryService: { findManyByIds: jest.fn(async () => []) } as never });
+    const loaders = createGraphQLLoaders(deps);
+
+    expect(await loaders.categoryById.load('missing')).toBeNull();
+  });
+});
+
+describe('categoryMonthById', () => {
+  it('batches multiple loads into a single findManyByIds call and maps rows back by id', async () => {
+    const findManyByIds = jest.fn(async (ids: string[]) =>
+      ids.filter((id) => id === 'cm-1' || id === 'cm-2').map((id) => ({ id })),
+    );
+    const deps = buildDeps({ categoryMonthService: { findManyByIds } as never });
+    const loaders = createGraphQLLoaders(deps);
+
+    const [a, b] = await Promise.all([
+      loaders.categoryMonthById.load('cm-1'),
+      loaders.categoryMonthById.load('cm-2'),
+    ]);
+
+    expect(findManyByIds).toHaveBeenCalledTimes(1);
+    expect(findManyByIds).toHaveBeenCalledWith(['cm-1', 'cm-2']);
+    expect(a).toMatchObject({ id: 'cm-1' });
+    expect(b).toMatchObject({ id: 'cm-2' });
+  });
+
+  it('resolves to null for an id with no matching row', async () => {
+    const deps = buildDeps({ categoryMonthService: { findManyByIds: jest.fn(async () => []) } as never });
+    const loaders = createGraphQLLoaders(deps);
+
+    expect(await loaders.categoryMonthById.load('missing')).toBeNull();
+  });
+});
+
+describe('budgetMonthById', () => {
+  it('batches multiple loads into a single findManyByIds call and maps rows back by id', async () => {
+    const findManyByIds = jest.fn(async (ids: string[]) =>
+      ids.filter((id) => id === 'bm-1' || id === 'bm-2').map((id) => ({ id, month: id })),
+    );
+    const deps = buildDeps({ budgetMonthService: { findManyByIds } as never });
+    const loaders = createGraphQLLoaders(deps);
+
+    const [a, b] = await Promise.all([
+      loaders.budgetMonthById.load('bm-1'),
+      loaders.budgetMonthById.load('bm-2'),
+    ]);
+
+    expect(findManyByIds).toHaveBeenCalledTimes(1);
+    expect(findManyByIds).toHaveBeenCalledWith(['bm-1', 'bm-2']);
+    expect(a).toMatchObject({ id: 'bm-1' });
+    expect(b).toMatchObject({ id: 'bm-2' });
+  });
+
+  it('resolves to null for an id with no matching row', async () => {
+    const deps = buildDeps({ budgetMonthService: { findManyByIds: jest.fn(async () => []) } as never });
+    const loaders = createGraphQLLoaders(deps);
+
+    expect(await loaders.budgetMonthById.load('missing')).toBeNull();
+  });
+});
 
 describe('recurringExpenseById', () => {
   it('batches multiple loads into a single findManyByIds call and maps rows back by id', async () => {
@@ -98,6 +184,31 @@ describe('recurringCommittedCentsByCategoryMonthId', () => {
     expect(result).toBe(0);
     expect(sumCommittedCentsForCategoryMonth).not.toHaveBeenCalled();
   });
+
+  it('batches multiple loads into a single categoryMonthService.findManyByIds call', async () => {
+    const categoryMonthFindManyByIds = jest.fn(async (ids: string[]) =>
+      ids
+        .filter((id) => id === 'cm-1' || id === 'cm-2')
+        .map((id) => ({ id, categoryId: `cat-${id}`, monthId: 'month-1' })),
+    );
+    const sumCommittedCentsForCategoryMonth = jest.fn(async () => 1000);
+    const deps = buildDeps({
+      categoryMonthService: { findManyByIds: categoryMonthFindManyByIds } as never,
+      recurringExpenseService: {
+        findManyByIds: jest.fn(async () => []),
+        sumCommittedCentsForCategoryMonth,
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    await Promise.all([
+      loaders.recurringCommittedCentsByCategoryMonthId.load('cm-1'),
+      loaders.recurringCommittedCentsByCategoryMonthId.load('cm-2'),
+    ]);
+
+    expect(categoryMonthFindManyByIds).toHaveBeenCalledTimes(1);
+    expect(categoryMonthFindManyByIds).toHaveBeenCalledWith(['cm-1', 'cm-2']);
+  });
 });
 
 describe('transactionsByRecurringExpenseId', () => {
@@ -163,6 +274,58 @@ describe('savingsFundById', () => {
 
     expect(result).toBeNull();
   });
+
+  it('batches multiple loads into a single findManyByIds call and maps rows back by id', async () => {
+    const findManyByIds = jest.fn(async (ids: string[]) =>
+      ids.filter((id) => id === 'fund-1' || id === 'fund-2').map((id) => ({ id, name: id })),
+    );
+    const deps = buildDeps({
+      savingsFundService: { findManyByIds } as never,
+      savingsMovementService: {
+        listByFundIds: jest.fn(async () => []),
+        computeCurrentAmountCents: jest.fn(async () => 0),
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    const [a, b] = await Promise.all([
+      loaders.savingsFundById.load('fund-1'),
+      loaders.savingsFundById.load('fund-2'),
+    ]);
+
+    expect(findManyByIds).toHaveBeenCalledTimes(1);
+    expect(findManyByIds).toHaveBeenCalledWith(['fund-1', 'fund-2']);
+    expect(a).toMatchObject({ id: 'fund-1' });
+    expect(b).toMatchObject({ id: 'fund-2' });
+  });
+});
+
+describe('movementsBySavingsFundId', () => {
+  it('batches multiple loads into a single listByFundIds call and groups rows by fund id', async () => {
+    const listByFundIds = jest.fn(async (ids: string[]) => [
+      { id: 'mv-1', fundId: 'fund-1', amountCents: 100 },
+      { id: 'mv-2', fundId: 'fund-1', amountCents: 200 },
+      { id: 'mv-3', fundId: ids.includes('fund-2') ? 'fund-2' : 'nope', amountCents: 300 },
+    ]);
+    const deps = buildDeps({
+      savingsFundService: { findManyByIds: jest.fn(async () => []) } as never,
+      savingsMovementService: {
+        listByFundIds,
+        computeCurrentAmountCents: jest.fn(async () => 0),
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    const [forFirst, forSecond] = await Promise.all([
+      loaders.movementsBySavingsFundId.load('fund-1'),
+      loaders.movementsBySavingsFundId.load('fund-2'),
+    ]);
+
+    expect(listByFundIds).toHaveBeenCalledTimes(1);
+    expect(listByFundIds).toHaveBeenCalledWith(['fund-1', 'fund-2']);
+    expect(forFirst.map((m) => m.id)).toEqual(['mv-1', 'mv-2']);
+    expect(forSecond.map((m) => m.id)).toEqual(['mv-3']);
+  });
 });
 
 describe('currentAmountCentsBySavingsFundId', () => {
@@ -181,6 +344,31 @@ describe('currentAmountCentsBySavingsFundId', () => {
 
     expect(result).toBe(0);
     expect(computeCurrentAmountCents).not.toHaveBeenCalled();
+  });
+
+  it('batches multiple loads into a single savingsFundService.findManyByIds call', async () => {
+    const findManyByIds = jest.fn(async (ids: string[]) =>
+      ids
+        .filter((id) => id === 'fund-1' || id === 'fund-2')
+        .map((id) => ({ id, initialBalanceCents: 1000 })),
+    );
+    const computeCurrentAmountCents = jest.fn(async () => 1500);
+    const deps = buildDeps({
+      savingsFundService: { findManyByIds } as never,
+      savingsMovementService: {
+        listByFundIds: jest.fn(async () => []),
+        computeCurrentAmountCents,
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    await Promise.all([
+      loaders.currentAmountCentsBySavingsFundId.load('fund-1'),
+      loaders.currentAmountCentsBySavingsFundId.load('fund-2'),
+    ]);
+
+    expect(findManyByIds).toHaveBeenCalledTimes(1);
+    expect(findManyByIds).toHaveBeenCalledWith(['fund-1', 'fund-2']);
   });
 });
 
