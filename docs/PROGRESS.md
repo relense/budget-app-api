@@ -1626,16 +1626,19 @@ runs back to back), `permissions: contents: read` at the workflow level
 `timeout-minutes: 15` on the job (so a hung step can't silently burn a
 large chunk of Actions minutes).
 
-Pushed as PR #24. The workflow itself was confirmed green on GitHub's
-actual runners (run 32370649072, 55s, every step passed) — the one thing
-that couldn't be verified locally before this.
+Merged into `develop` via PR #24. Confirmed working on GitHub twice over:
+the PR run (32370649072) and the `push`-triggered run the merge itself
+fired (32371064691, 1m3s) both passed clean.
 
-Next actions, in order:
-1. Once PR #24 merges, enable required status checks for the `ci` job on
-   `develop`/`main` via `gh api` (a check can't be required before GitHub
-   has seen it pass at least once on that branch — do it right after
-   merge).
-2. Remaining Production Readiness item: GDPR export/delete. Then Phase 2
+Enabling the required-status-check on `develop`/`main` turned out to be
+outside Claude Code's reach here: `gh api .../branches/develop/protection`
+403'd — the fine-grained PAT this session is authenticated with has no
+"Administration" repo permission, which branch protection reads/writes
+need. User will do this step manually in GitHub's UI (Settings → Branches
+→ require status checks → select `ci`) rather than widen the token's
+scope for a one-time config change.
+
+Remaining Production Readiness item: GDPR export/delete. Then Phase 2
    (mobile app), which needs design references (mockups + Excel structure
    — now partly in hand) before any screen work begins, per CLAUDE.md.
 3. Small tracked follow-up, not blocking, carried over from step 6: add
