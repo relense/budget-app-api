@@ -90,6 +90,18 @@ describe('exportUserData', () => {
     });
     await expect(accountService.exportUserData('nobody')).rejects.toBeInstanceOf(AccountServiceError);
   });
+
+  it('runs its reads inside a RepeatableRead transaction for a consistent snapshot', async () => {
+    const { prisma, accountService } = setup();
+    seedFullAccount(prisma, USER_A, 'a');
+    const transactionSpy = jest.spyOn(prisma, '$transaction');
+
+    await accountService.exportUserData(USER_A);
+
+    expect(transactionSpy).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: 'RepeatableRead',
+    });
+  });
 });
 
 describe('deleteAccount', () => {
@@ -150,5 +162,49 @@ describe('deleteAccount', () => {
 
     expect(caught).toBeInstanceOf(AccountServiceError);
     expect(caught).toMatchObject({ reason: 'account_not_found' });
+  });
+
+  it('does not remap an unrelated error from the final user.delete into account_not_found', async () => {
+    const { prisma, accountService } = setup();
+    const boom = new Error('connection reset');
+    jest.spyOn(prisma.user, 'delete').mockRejectedValueOnce(boom);
+
+    await expect(accountService.deleteAccount(USER_A)).rejects.toBe(boom);
+  });
+
+  it('deletes in dependency order — children before the parents they reference', async () => {
+    const { prisma, accountService } = setup();
+    seedFullAccount(prisma, USER_A, 'a');
+
+    const savingsMovementSpy = jest.spyOn(prisma.savingsMovement, 'deleteMany');
+    const transactionSpy = jest.spyOn(prisma.transaction, 'deleteMany');
+    const savingsFundSpy = jest.spyOn(prisma.savingsFund, 'deleteMany');
+    const recurringExpenseSpy = jest.spyOn(prisma.recurringExpense, 'deleteMany');
+    const categoryMonthSpy = jest.spyOn(prisma.categoryMonth, 'deleteMany');
+    const categorySpy = jest.spyOn(prisma.category, 'deleteMany');
+    const budgetMonthSpy = jest.spyOn(prisma.budgetMonth, 'deleteMany');
+    const otpCodeSpy = jest.spyOn(prisma.otpCode, 'deleteMany');
+    const userDeleteSpy = jest.spyOn(prisma.user, 'delete');
+
+    await accountService.deleteAccount(USER_A);
+
+    const order = (spy: { mock: { invocationCallOrder: readonly number[] } }): number =>
+      spy.mock.invocationCallOrder[0]!;
+
+    // SavingsMovement -> SavingsFund (Restrict).
+    expect(order(savingsMovementSpy)).toBeLessThan(order(savingsFundSpy));
+    // Transaction -> CategoryMonth and RecurringExpense (both Restrict).
+    expect(order(transactionSpy)).toBeLessThan(order(categoryMonthSpy));
+    expect(order(transactionSpy)).toBeLessThan(order(recurringExpenseSpy));
+    // RecurringExpense -> Category and BudgetMonth (both Restrict).
+    expect(order(recurringExpenseSpy)).toBeLessThan(order(categorySpy));
+    expect(order(recurringExpenseSpy)).toBeLessThan(order(budgetMonthSpy));
+    // CategoryMonth -> Category and BudgetMonth (both Restrict).
+    expect(order(categoryMonthSpy)).toBeLessThan(order(categorySpy));
+    expect(order(categoryMonthSpy)).toBeLessThan(order(budgetMonthSpy));
+    // Everything else before the user row itself.
+    expect(order(categorySpy)).toBeLessThan(order(userDeleteSpy));
+    expect(order(budgetMonthSpy)).toBeLessThan(order(userDeleteSpy));
+    expect(order(otpCodeSpy)).toBeLessThan(order(userDeleteSpy));
   });
 });
