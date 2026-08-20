@@ -64,8 +64,11 @@ export function createBankBalanceService({ prisma, now = () => new Date() }: Ban
 
   async function setBankBalanceCheckpoint(userId: string, amountCents: number): Promise<BankBalance> {
     assertValidCheckpointAmount(amountCents);
-    await findUserOrThrow(userId);
 
+    // No pre-check here (unlike getBankBalance's findUserOrThrow) — the
+    // update below already fails on a missing row, and userId always
+    // comes from a verified JWT for an existing user, so this would be an
+    // extra round trip for a case that's already unreachable in practice.
     const checkpointSetAt = now();
     const user = await prisma.user.update({
       where: { id: userId },

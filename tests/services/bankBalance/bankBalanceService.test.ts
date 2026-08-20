@@ -9,6 +9,17 @@ function setup(now: () => Date = () => new Date('2026-08-20T12:00:00.000Z')) {
 }
 
 describe('getBankBalance', () => {
+  it('throws a data integrity error for a userId with no matching user row', async () => {
+    // Not a client-triggerable case in practice — userId always comes from
+    // a verified JWT for an existing user — but this defensive branch is
+    // still worth proving does what it says.
+    const { bankBalanceService } = setup();
+
+    await expect(bankBalanceService.getBankBalance('missing-user')).rejects.toThrow(
+      'Data integrity error: User missing-user not found',
+    );
+  });
+
   it('defaults to 0 plus the net of every transaction, for a user who never set a checkpoint', async () => {
     const { prisma, bankBalanceService } = setup();
     seedUser(prisma, {
