@@ -81,14 +81,19 @@ export function createAccountService({ prisma }: AccountServiceDeps) {
     );
   }
 
-  // Deletion order matters: none of these tables have a real FK back to
-  // User (userId is an application-scoped column only, see PLAN.md's GDPR
-  // note), but they *do* have Restrict FKs to each other, so children must
-  // go before parents — transactions/movements before the category-months,
-  // recurring-expenses, and funds they reference; those before the
-  // categories and budget-months *they* reference. otp_codes are keyed by
+  // Deletion order matters: every table here has an onDelete: Restrict FK
+  // back to User (see PLAN.md's GDPR note) plus Restrict FKs to each other,
+  // so children must go before parents — transactions/movements before the
+  // category-months, recurring-expenses, and funds they reference; those
+  // before the categories and budget-months *they* reference. Restrict
+  // doesn't delete anything automatically, so this explicit ordering is
+  // still required either way — the FK is a DB-level backstop confirming
+  // it's correct, not the deletion mechanism. otp_codes are keyed by
   // email, not userId, so they're cleaned up separately. The user row goes
-  // last (its only real FK relation, refresh_tokens, cascades on delete).
+  // last (its only Cascade FK relation, refresh_tokens, cascades on delete;
+  // a stray row somehow still referencing this user at this point fails
+  // loudly with P2003, left to propagate rather than caught — the
+  // transaction rolls back atomically, so that failure is already safe).
   async function deleteAccount(userId: string): Promise<void> {
     const user = await findAccount(prisma, userId);
 

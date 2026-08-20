@@ -118,12 +118,13 @@ async function seed(prisma: PrismaClient) {
     console.log(`Removing existing seed user (${SEED_EMAIL})...`);
     // Order matters: transactions.recurring_expense_id and
     // transactions.category_month_id are both ON DELETE RESTRICT, so
-    // transactions must go first. budget_months has no FK/relation to
-    // users at all (userId is a plain denormalized column, like
-    // everywhere else in this schema) — nothing cascades it, so it needs
-    // an explicit delete too, or every re-run leaks one more orphaned row.
-    // Wrapped in a transaction so a failure partway through never leaves
-    // this account half-deleted.
+    // transactions must go first. budget_months has an onDelete: Restrict
+    // FK to users (see PLAN.md's GDPR note) — Restrict doesn't cascade
+    // anything, so it still needs an explicit delete too, or every re-run
+    // leaks one more orphaned row (and would now fail the FK outright
+    // instead of leaking, if this were ever skipped). Wrapped in a
+    // transaction so a failure partway through never leaves this account
+    // half-deleted.
     await prisma.$transaction([
       prisma.transaction.deleteMany({ where: { userId: existing.id } }),
       prisma.recurringExpense.deleteMany({ where: { userId: existing.id } }),
