@@ -92,7 +92,6 @@ exists here. Owns the month's budget. Deps: `prisma`, `budgetMonthService`,
 | `listByMonth(userId, month, direction?)` | Every active category for that month; `direction?` optionally filters to `'expense'` or `'income'`, resolved through each row's own `Category.direction` (a second, small `category.findMany` lookup by id — not pushed into the `categoryMonth` query itself). Powers `Query.categoryMonths`' `direction` arg — see "Income" note below. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
 | `addCategoryToMonth(userId, categoryId, month, monthlyBudgetCents?)` | Explicit activation; errors if already active that month (`category_month_already_active`). `monthlyBudgetCents` is optional — inherits the category's most recent (by real calendar month, not insertion order) `category_month`'s budget when omitted, or throws `category_month_budget_required` if this category has never been active anywhere yet. Rejects a genuinely new activation more than one month past the derived current month (`category_month_beyond_planning_horizon`) — see below. When this call is the one that creates the target month's `BudgetMonth` row for the first time, also fires `onNewBudgetMonth` (an injected dep, wired to `recurringExpenseService.seedNewMonth` in `server.ts`) after the transaction commits. |
-| `ensureActiveForCategory(userId, categoryId, month, monthlyBudgetCents?)` | Idempotent — returns the existing row if already active (no planning-horizon check in that case — pre-provisioned activations are never retroactively rejected). Same budget-inheritance rule as `addCategoryToMonth` when it actually creates one. |
 | `removeCategoryFromMonth(userId, categoryMonthId)` | Hard delete, blocked while any transaction references it that month (`category_month_has_transactions`) or any `recurring_expenses` row references it (`category_month_has_recurring_expenses` — recurring expenses have no `categoryMonthId` FK, so this checks by matching `categoryId`+`monthId`). |
 | `updateCategoryMonthBudget(userId, categoryMonthId, monthlyBudgetCents)` | This month's budget only. |
 
@@ -146,8 +145,8 @@ the category, never client-settable. Deps: `prisma`, `budgetMonthService`.
 
 | Function | Does |
 |---|---|
-| `create(userId, input, recurringExpenseId?)` | The third param is internal-only (never client-settable) — only `markRecurringPaid` passes it, to link the transaction to a recurring expense. |
-| `update(userId, id, input)` | Re-derives `direction` if `categoryMonthId` changes to a different-direction category. |
+| `create(userId, input, recurringExpenseId?)` | The third param is internal-only (never client-settable) — only `markRecurringPaid` passes it, to link the transaction to a recurring expense. Rejects a `date` outside the target CategoryMonth's own month (`date_month_mismatch`) — a transaction can't be dated into a different calendar month than the CategoryMonth it's linked to. |
+| `update(userId, id, input)` | Re-derives `direction` if `categoryMonthId` changes to a different-direction category. Same `date_month_mismatch` check as `create`, against the (possibly new) target CategoryMonth. |
 | `deleteTransaction(userId, id)` | Hard delete, immediate and permanent, no undo. |
 | `list(userId, month, categoryId?)` | Ordered date DESC, then createdAt DESC. |
 | `listByCategoryMonthIds(ids)` | Batch lookup for DataLoader use. |
@@ -300,7 +299,8 @@ Auth via `Authorization: Bearer <accessToken>`. Every field except
 Every resolver re-checks `userId` itself (no single top-level auth gate).
 Service errors map to `GraphQLError` with `extensions.code` = the service's
 error reason, upper-cased (e.g. `category_not_found` → `CATEGORY_NOT_FOUND`).
-Introspection and query-depth (max 10) are limited in production.
+Query depth (max 10) is limited in every environment; introspection is
+additionally disabled in production only.
 
 **Query**
 
