@@ -71,7 +71,7 @@ Pure catalog CRUD for categories — no month-awareness at all. Deps: `prisma`.
 | `listCatalog(userId)` | Every category for this user. |
 | `findManyByIds(ids)` | Batch lookup for DataLoader use. |
 | `createCategory(userId, input)` | Requires `budgetType` when `direction: 'expense'`; not meaningful (and stored `null`) for `'income'`. |
-| `updateCategory(userId, id, input)` | Blocks a `direction` change if any transaction already references this category. |
+| `updateCategory(userId, id, input)` | Blocks a `direction` change if any `Transaction` or `RecurringExpense` already references this category — a `RecurringExpense` derives every future payment's direction from its category (see `markRecurringPaid`), so a never-paid one (zero Transactions yet) must block the change too, not just a paid one. Runs under `lockCategoryRow` inside one transaction, so this can't race a concurrent write that reads or depends on this category's `direction` — see below. |
 | `deleteCategory(userId, id)` | Hard delete, blocked while any `category_month` row references it, for any month past or future. |
 
 Also exports **`assertOwnedCategory(client, userId, id)`** standalone — the
@@ -80,6 +80,16 @@ shared ownership-check, reused by `categoryMonthService` and
 transactional client — and **`assertValidBudgetType(direction, budgetType)`**
 standalone, reused by `authService`'s default-category seeding on signup so
 a future change to this rule can't silently drift from what gets seeded.
+
+Also exports **`lockCategoryRow(client, id)`** (`SELECT ... FOR UPDATE`),
+same pattern as `lockBudgetMonthRow`/`lockSavingsFundRow` — a Category's
+`direction` is read by `transactionService` (deriving a new Transaction's
+direction) and `recurringExpenseService` (validating a RecurringExpense's
+category, at both create and update) and written by `updateCategory`;
+every one of those call sites takes this lock first, so a direction flip
+can never race a concurrent create/update that depends on the pre-flip
+value. Found and closed during a whole-codebase audit, round 2 — see
+`PROGRESS.md`.
 
 ### `categoryMonthService` — `src/services/categories/categoryMonthService.ts`
 
