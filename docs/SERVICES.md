@@ -34,6 +34,22 @@ refresh tokens, log out. Deps: `prisma`, `emailService`, `jwtSecret`.
 | `logout(token)` | Revokes one refresh token. |
 | `logoutAll(userId)` | Revokes every refresh token for that user (all devices). |
 
+### `authCleanupService` — `src/services/auth/authCleanupService.ts`
+
+Row cleanup for `otp_codes`/`refresh_tokens` (PLAN.md's "Row cleanup" note)
+— nothing else in the app deletes from these tables over time. Deps:
+`prisma`, `now?`, `batchSize?` (default 1000).
+
+| Function | Does |
+|---|---|
+| `cleanupExpiredAuthRecords()` | Deletes expired `otp_codes`/`refresh_tokens`, plus used `otp_codes` and revoked `refresh_tokens` regardless of expiry (dead weight the moment they're used/revoked, no reason to wait for the TTL). Deletes in bounded batches (`findMany` a page of ids, `deleteMany` by id) rather than one unbounded `DELETE`, so a large backlog can't hold locks on these hot-path tables for one long transaction. Returns `{ otpCodesDeleted, refreshTokensDeleted }`. |
+
+Triggered two ways, both in-process (no external cron/hosting dependency):
+piggybacked on every `POST /auth/request-otp` (see REST Endpoints below;
+failures are logged, never fail the request) and an hourly `setInterval` in
+`index.ts` as a backstop for stretches with no login traffic at all —
+cleared on `SIGTERM`/`SIGINT` alongside the existing shutdown handler.
+
 ### `budgetMonthService` — `src/services/budgetMonths/budgetMonthService.ts`
 
 Resolves `"YYYY-MM"` strings to the real per-user `BudgetMonth` row every
@@ -295,7 +311,7 @@ All bodies are Zod-validated; a validation failure returns `400 { error: "valida
 
 | Method & Path | Body | Success | Notes |
 |---|---|---|---|
-| `POST /auth/request-otp` | `{ email }` | `200` | Rate-limited 3/15min by IP+email. Always `200` regardless of whether the email exists (no enumeration). |
+| `POST /auth/request-otp` | `{ email }` | `200` | Rate-limited 3/15min by IP+email. Always `200` regardless of whether the email exists (no enumeration). Also piggybacks `authCleanupService.cleanupExpiredAuthRecords()` (see Services above). |
 | `POST /auth/verify-otp` | `{ email, code, deviceLabel? }` | `200 { accessToken, refreshToken, user }` | Rate-limited 10/15min by IP+email (secondary backstop — `failedAttempts` on the code itself caps guesses at 5). `401` with a specific `error` code on failure (`code_not_found`\|`code_expired`\|`too_many_attempts`\|`incorrect_code`). |
 | `POST /auth/refresh` | `{ refreshToken }` | `200 { accessToken, refreshToken }` | Mandatory rotation — old token is revoked, reusing it fails. `401 { error: "refresh_token_invalid" }` on failure. |
 | `POST /auth/logout` | `{ refreshToken }` | `204` | Revokes one refresh token. |

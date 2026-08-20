@@ -1506,19 +1506,55 @@ exist to catch.
 clean. All on `fix/codebase-audit-findings`, not yet through a fresh
 `pr-reviewer` round for this latest commit or merge.
 
+`fix/codebase-audit-findings` went through `pr-reviewer`/`test-auditor` as
+planned and merged into `develop` via PR #22. Phase 1 (backend) is
+functionally complete as of that merge — every numbered Build Order step
+(0–9) is done.
+
+### Row cleanup (2026-08-20) — first Production Readiness item picked up
+
+Grilled before coding, on a fresh `chore/auth-row-cleanup` branch: the user
+was specifically thinking ahead to 1M/10M-user scale, not just "does it
+work today." Two things came out of that grill that shaped the design more
+than the original `PLAN.md` bullet implied:
+- **No hosting platform is chosen yet**, so there's no external cron to
+  hang this on — ruled out anything needing one. Both trigger mechanisms
+  ended up in-process: an hourly `setInterval` in `index.ts` (cleared on
+  `SIGTERM`/`SIGINT` alongside the existing shutdown handler) as a
+  backstop, plus a piggybacked cleanup call on every `POST
+  /auth/request-otp` (failures logged, never fail the actual request) so
+  cleanup stays prompt during real traffic without waiting for the hourly
+  tick.
+- **Revoked ≠ expired, and that gap matters more at scale, not less**:
+  `refresh_tokens` rotate on every refresh (mandatory, see `PLAN.md`), so
+  an expiry-only sweep would let a large number of already-useless revoked
+  rows pile up for their entire TTL before ever getting cleaned — at 1M
+  active users refreshing frequently, that's a real bloat source, not a
+  hypothetical one. Confirmed with the user: no reason to keep a
+  revoked/used row around at all, so both tables delete on either
+  condition (`expiresAt < now()` OR `used`/`revoked`), not expiry alone.
+- Two scale-specific implementation choices, both explained to the user
+  before writing code: **dedicated indexes** (`otp_codes.expiresAt`/`used`,
+  `refresh_tokens.expiresAt`/`revoked` — otherwise the cleanup query itself
+  degrades to a full table scan as these tables grow) and **batched
+  deletes** (1000 rows/call, looped, rather than one unbounded `DELETE`
+  that could hold locks on these hot-path tables for a long single
+  transaction if a large backlog ever built up).
+
+Built: `authCleanupService` (`cleanupExpiredAuthRecords()`, TDD against a
+new in-memory batch loop, extending `tests/services/auth/testFakePrisma.ts`
+with `findMany`/`deleteMany`), wired into `registerAuthRoutes` (new
+required `authCleanupService` dep) and `index.ts`'s interval. 484 Jest
+tests total (was 475). Not yet through `pr-reviewer`/`test-auditor`.
+
 Next actions, in order:
-1. Run `pr-reviewer` on the latest commit to `fix/codebase-audit-findings`
-   (the `lockCategoryRow` fix), go back and forth until approved, then
-   `test-auditor` until clean, then hand back for human review — same
-   two-stage pattern as every prior PR.
-2. After that merges: Build Order step 8 (seed script) was already the
-   last Build Order item — Phase 1 (backend) is functionally complete.
-   What's left before considering it production-ready: the Production
-   Readiness items `PLAN.md` flags (rate limiting, introspection/depth
-   limits are done — confirmed; `otp_codes`/`refresh_tokens` row
-   cleanup, CI, GDPR export/delete are not), then Phase 2 (mobile app),
-   which needs design references (mockups + Excel structure — now
-   partly in hand) before any screen work begins, per CLAUDE.md.
+1. Run `pr-reviewer` then `test-auditor` on `chore/auth-row-cleanup`, same
+   two-stage pattern as every prior branch, then hand back for human
+   review.
+2. Remaining Production Readiness items after that: CI, GDPR export/delete
+   (`otp_codes`/`refresh_tokens` row cleanup is now done). Then Phase 2
+   (mobile app), which needs design references (mockups + Excel structure
+   — now partly in hand) before any screen work begins, per CLAUDE.md.
 3. Small tracked follow-up, not blocking, carried over from step 6: add
    logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
    (recurring-expenses step) once this service layer has a logger
