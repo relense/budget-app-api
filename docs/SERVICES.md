@@ -229,6 +229,26 @@ is safe. Verified against real Postgres with a genuine concurrent race (two
 simultaneous withdrawals that are each individually safe but would overdraw
 together) — exactly one succeeds, the balance never goes negative.
 
+### `bankBalanceService` — `src/services/bankBalance/bankBalanceService.ts`
+
+A running total independent of any month, anchored to a checkpoint stored on
+the `User` row itself — not a stored, incrementally-maintained balance.
+Deliberately unrelated to `savingsFundService` — Savings Fund
+deposits/withdrawals never affect this number. Deps: `prisma`, `now?`
+(defaults to the real clock; overridable for tests).
+
+| Function | Does |
+|---|---|
+| `getBankBalance(userId)` | Reads the user's checkpoint, then sums every `Transaction` this user has ever created with `createdAt` after `bankBalanceCheckpointSetAt` (income adds, expense subtracts) — anchored on real insertion time, not the transaction's own `date`, so a transaction backdated to before the checkpoint but entered after it still counts. Returns `{ amountCents, checkpointAmountCents, checkpointSetAt }`. |
+| `setBankBalanceCheckpoint(userId, amountCents)` | Overwrites both `bankBalanceCheckpointCents` and `bankBalanceCheckpointSetAt` (to now) in one call — no history kept. `amountCents` must be an integer but has **no lower bound** — the one money value in this schema explicitly allowed to go negative, since a real bank account can overdraft. |
+
+A brand-new user who never calls `setBankBalanceCheckpoint` still gets a
+sensible balance: the `User` row's checkpoint fields default to `0` /
+account-creation time, so `getBankBalance` returns `0 +` every transaction
+they've ever logged — no separate "not set yet" state anywhere in the API.
+Verified against real Postgres (default balance, checkpoint set, real
+transaction sum, negative checkpoint, reset excluding prior transactions).
+
 ---
 
 ## Supporting libs — `src/lib/`
@@ -285,6 +305,7 @@ Introspection and query-depth (max 10) are limited in production.
 | `transactions` | `month: String!, categoryId: ID` | `[Transaction!]!` |
 | `recurringExpenses` | `month: String!` | `[RecurringExpense!]!` |
 | `savingsFunds` | — | `[SavingsFund!]!` |
+| `bankBalance` | — | `BankBalance!` |
 
 **Mutation**
 
@@ -311,12 +332,15 @@ Introspection and query-depth (max 10) are limited in production.
 | `createSavingsMovement` | `input: CreateSavingsMovementInput!` | `SavingsMovement!` |
 | `updateSavingsMovement` | `id: ID!, input: UpdateSavingsMovementInput!` | `SavingsMovement!` |
 | `deleteSavingsMovement` | `id: ID!` | `Boolean!` |
+| `setBankBalanceCheckpoint` | `amountCents: Int!` | `BankBalance!` |
 
 **Types**: `Category`, `CategoryMonth` (+ computed `actualAmountCents`,
 `recurringCommittedCents`), `Transaction` (+ nullable `recurringExpense`),
 `RecurringExpense` (+ computed `paidThisMonth`), `SavingsFund` (+ computed
 `currentAmountCents`/`achieved`), `SavingsMovement` (+ `fund` back-reference,
-mirroring `Transaction.categoryMonth`). Enums: `BudgetType`
+mirroring `Transaction.categoryMonth`), `BankBalance` (+ computed
+`amountCents`; the only type not tied to a month or another entity — tied
+to the user's account itself). Enums: `BudgetType`
 (`NEED`\|`WANT`\|`SAVINGS`), `Direction`
 (`EXPENSE`\|`INCOME`), `MovementType` (`DEPOSIT`\|`WITHDRAW`) — DB stores
 lowercase, GraphQL exposes upper-case, mapped in `enumMapping.ts`.
