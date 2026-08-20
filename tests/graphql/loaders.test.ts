@@ -326,6 +326,21 @@ describe('movementsBySavingsFundId', () => {
     expect(forFirst.map((m) => m.id)).toEqual(['mv-1', 'mv-2']);
     expect(forSecond.map((m) => m.id)).toEqual(['mv-3']);
   });
+
+  it('resolves to [] for a fund id with no movements', async () => {
+    const deps = buildDeps({
+      savingsFundService: { findManyByIds: jest.fn(async () => []) } as never,
+      savingsMovementService: {
+        listByFundIds: jest.fn(async () => []),
+        computeCurrentAmountCents: jest.fn(async () => 0),
+      } as never,
+    });
+    const loaders = createGraphQLLoaders(deps);
+
+    const result = await loaders.movementsBySavingsFundId.load('fund-with-no-movements');
+
+    expect(result).toEqual([]);
+  });
 });
 
 describe('currentAmountCentsBySavingsFundId', () => {
