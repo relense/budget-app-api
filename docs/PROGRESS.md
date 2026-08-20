@@ -1738,17 +1738,68 @@ Remaining Production Readiness items: none — CI, row cleanup, and GDPR
 export/delete are all built. A privacy policy is still needed before real
 signups, but that's a product/legal task, not code.
 
-Next actions, in order:
-1. `pr-reviewer` then `test-auditor` on `feature/account-export-delete`,
-   hand back for human review.
-2. **Retrofit missing `User` FK relations** (queued above) — needs its own
-   design pass: which tables get `onDelete: Cascade` vs keep `Restrict`,
-   how that interacts with the existing domain-to-domain `Restrict` rules,
-   whether `deleteAccount` can then simplify back toward relying on
-   cascade or should keep its explicit ordering regardless.
-3. Then Phase 2 (mobile app), which needs design references (mockups +
-   Excel structure — now partly in hand) before any screen work begins,
-   per CLAUDE.md.
+`feature/account-export-delete` went through `pr-reviewer`/`test-auditor`
+as planned and merged into `develop` via PR #28.
+
+### Retrofit missing `User` FK relations (2026-08-20)
+
+The queued follow-up, on a fresh `fix/missing-user-fk-relations` branch.
+Design question going in: `onDelete: Cascade` vs `Restrict` for the seven
+new relations. Traced through why `Cascade` doesn't actually work here —
+`deleteAccount` already does its own explicit, dependency-ordered delete;
+cascading straight from `User` would have to cascade through the
+*intentional* `Restrict` relations already between the domain tables
+(`CategoryMonth → Category`, etc.), which would silently weaken the real
+product safety guards those give the normal single-item `deleteCategory`/
+`deleteSavingsFund` flows. Landed on `Restrict` everywhere — a pure DB-level
+backstop confirming `deleteAccount`'s ordering is correct, not a deletion
+mechanism, so no service code needed to change at all.
+
+User asked a genuinely good clarifying question mid-grill: what's the
+actual worst case if `deleteAccount`'s final `user.delete` ever hits the
+new constraint? Traced it through explicitly — since everything runs
+inside one `$transaction`, a `P2003` there rolls back the *whole*
+transaction, so nothing is actually deleted; the request just fails and a
+retry re-queries fresh and succeeds. Compared against today's status quo
+(the race succeeds silently and orphans the row forever) — a safe failure
+is already a large improvement over silent corruption, without needing
+anything further. Given that, explicitly chose **not** to add either a
+retry loop or an advisory lock (the only way to close the timing window
+outright, at the cost of touching `categoryService`/`budgetMonthService`/
+`savingsFundService`'s create paths too) — a safe failure was judged
+sufficient for how rare an exact-timing collision actually is.
+
+Local dev DB had pre-existing orphaned test rows (4 `categories`, 11
+`budget_months`, 1 `category_month`) that would've blocked the new
+constraints from applying. User approved a full `prisma migrate reset`.
+Prisma's own CLI has an AI-agent safety check for exactly this class of
+command — it refused to run even when the user typed it directly,
+demanding an explicit `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION` env var
+carrying the user's literal consent text. Followed that protocol: laid out
+the action, target (confirmed `localhost:5432`/`budget_app`, the local
+Docker container, not anything production — no production deployment
+exists yet), and irreversibility explicitly, got clear confirmation, reran
+with the consent var set to the user's exact message.
+
+Schema: added `user User @relation(fields: [userId], references: [id],
+onDelete: Restrict)` to all seven models, plus the corresponding
+back-relation arrays on `User`. One migration
+(`20260820142059_add_missing_user_fk_relations`), applied clean against
+the freshly-reset DB. Zero code changes needed anywhere in the service
+layer — every existing test (513) still passed unchanged. Verified against
+real Postgres with a throwaway script (not a permanent Jest test — this
+needs real FK enforcement the fake Prisma can't simulate): (1) a `Category`
+insert with a nonexistent `userId` is now correctly rejected with `P2003`
+— the original gap, now actually closed; (2) `deleteAccount` still
+completes cleanly end to end with the new constraints; (3) manually
+replayed the exact orphan-race (a stray `Category` created mid-transaction,
+right before the final `user.delete`) and confirmed it fails loudly with
+`P2003` and the whole transaction rolls back — the stray row, the original
+category, and the user all still exactly as they were.
+
+Remaining Production Readiness items: none. Next: Phase 2 (mobile app),
+which needs design references (mockups + Excel structure — now partly in
+hand) before any screen work begins, per CLAUDE.md.
 
 Small tracked follow-up, not blocking, carried over from step 6: add
 logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
