@@ -108,10 +108,20 @@ export const schema = createSchema<GraphQLContext>({
       direction: Direction!
     }
 
+    """
+    actualAmountCents is the sum of this CategoryMonth's own transactions —
+    computed at read time, same pattern as recurringCommittedCents/
+    paidThisMonth/achieved. Direction-agnostic: for an expense category it's
+    "spent so far", for an income category (income has no dedicated entity —
+    it's just a Category with direction: INCOME, see the Query.categoryMonths
+    'direction' argument below) it's "received so far", against the same
+    monthlyBudgetCents used as the planned/expected number either way.
+    """
     type CategoryMonth {
       id: ID!
       month: String!
       monthlyBudgetCents: Int!
+      actualAmountCents: Int!
       recurringCommittedCents: Int!
       category: Category!
       transactions: [Transaction!]!
@@ -247,7 +257,7 @@ export const schema = createSchema<GraphQLContext>({
       ping: String!
       currentMonth: BudgetMonth!
       categories: [Category!]!
-      categoryMonths(month: String!): [CategoryMonth!]!
+      categoryMonths(month: String!, direction: Direction): [CategoryMonth!]!
       transactions(month: String!, categoryId: ID): [Transaction!]!
       recurringExpenses(month: String!): [RecurringExpense!]!
       savingsFunds: [SavingsFund!]!
@@ -298,9 +308,17 @@ export const schema = createSchema<GraphQLContext>({
         const userId = requireUserId(context.userId);
         return context.categoryService.listCatalog(userId);
       },
-      categoryMonths: async (_parent, args: { month: string }, context) => {
+      categoryMonths: async (
+        _parent,
+        args: { month: string; direction?: GraphQLDirection | null },
+        context,
+      ) => {
         const userId = requireUserId(context.userId);
-        return context.categoryMonthService.listByMonth(userId, args.month);
+        return context.categoryMonthService.listByMonth(
+          userId,
+          args.month,
+          args.direction ? directionToDb(args.direction) : undefined,
+        );
       },
       transactions: async (_parent, args: { month: string; categoryId?: string | null }, context) => {
         const userId = requireUserId(context.userId);
@@ -631,6 +649,10 @@ export const schema = createSchema<GraphQLContext>({
       },
       transactions: async (parent: { id: string }, _args: unknown, context) => {
         return context.loaders.transactionsByCategoryMonthId.load(parent.id);
+      },
+      actualAmountCents: async (parent: { id: string }, _args: unknown, context) => {
+        const transactions = await context.loaders.transactionsByCategoryMonthId.load(parent.id);
+        return transactions.reduce((sum, transaction) => sum + transaction.amountCents, 0);
       },
       recurringCommittedCents: async (parent: { id: string }, _args: unknown, context) => {
         return context.loaders.recurringCommittedCentsByCategoryMonthId.load(parent.id);

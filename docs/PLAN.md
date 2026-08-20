@@ -74,7 +74,7 @@ Going with GraphQL from the start, since the API is being built once and used by
 
 > **Timestamps**: every table below gets `created_at` and `updated_at` (Prisma: `@default(now())` / `@updatedAt`) even where not listed explicitly — omitted per-table below to avoid repetition, but it's not optional. Useful for debugging, ordering, and any "recently added" view later.
 
-> **Dates**: `date` fields (on `transactions`, `savings_movements`) and `start_date`/`end_date`/`due_day` are calendar dates, not timestamps — no time-of-day component, no timezone conversion to worry about. Use Postgres `date`, not `timestamp`. **Validate the format on input**: reject anything that isn't a bare `YYYY-MM-DD` (Zod `.regex(/^\d{4}-\d{2}-\d{2}$/)`, or a custom `Date` GraphQL scalar) so a client can't accidentally send a full ISO timestamp like `2026-08-17T15:32:00Z` and get a silently truncated or timezone-shifted value stored. `month` on `income_sources` gets the same treatment with `^\d{4}-\d{2}$`.
+> **Dates**: `date` fields (on `transactions`, `savings_movements`) and `start_date`/`end_date`/`due_day` are calendar dates, not timestamps — no time-of-day component, no timezone conversion to worry about. Use Postgres `date`, not `timestamp`. **Validate the format on input**: reject anything that isn't a bare `YYYY-MM-DD` (Zod `.regex(/^\d{4}-\d{2}-\d{2}$/)`, or a custom `Date` GraphQL scalar) so a client can't accidentally send a full ISO timestamp like `2026-08-17T15:32:00Z` and get a silently truncated or timezone-shifted value stored.
 
 **users**
 
@@ -230,15 +230,39 @@ There is no `activate`/bundle-into-`createCategory` behavior: `createCategory` i
 - date
 - ~~deleted_at~~ — see revision note above: hard-deleted, no soft-delete
 
-**income_sources**
-
-- id (pk)
-- user_id (fk)
-- name
-- expected_amount_cents (integer — cents)
-- actual_amount_cents (nullable, integer — cents)
-- month_id (fk → `budget_months`) — same pattern as `category_month`/`recurring_expenses`, for the same reason: one real per-user-per-calendar-month row backing every month reference in the schema, not a raw `YYYY-MM` string repeated (and potentially drifting) in every table that needs one
-- deleted_at (nullable) — soft delete
+> ~~**income_sources**~~ — superseded before any code existed for it,
+> during step 7's kickoff grill. Kept below as accurate history of the
+> original sketch, not deleted — same convention as the recurring-expense
+> template/instance section above. The table below was never migrated; no
+> teardown was needed.
+>
+> - id (pk)
+> - user_id (fk)
+> - name
+> - expected_amount_cents (integer — cents)
+> - actual_amount_cents (nullable, integer — cents)
+> - month_id (fk → `budget_months`) — same pattern as `category_month`/`recurring_expenses`, for the same reason: one real per-user-per-calendar-month row backing every month reference in the schema, not a raw `YYYY-MM` string repeated (and potentially drifting) in every table that needs one
+> - deleted_at (nullable) — soft delete
+>
+> **What replaced it: income is just a `Category`, no new table at all.**
+> Reconsidered on the same "why does this need its own table" grounds that
+> rebuilt recurring expenses in step 4 — `direction` already lives on
+> `Category`, not only on `Transaction`, so an income-direction Category
+> (e.g. "Salary", "Freelance"), activated into a month via the *existing*
+> `addCategoryToMonth`, already gives "one planned number this month,
+> satisfied by N actual Transactions" for free —
+> `category_month.monthly_budget_cents` doubles as the "expected amount"
+> (not renamed, to avoid breaking an already-shipped field), and a new
+> computed field, `CategoryMonth.actualAmountCents` (`SUM` of that
+> CategoryMonth's transactions, read-time-computed like
+> `recurringCommittedCents`/`paidThisMonth`/`achieved`), gives the "actual"
+> side — direction-agnostic, so it also gives expense categories a "spent
+> so far" figure they never had before. `Query.categoryMonths` gained an
+> optional `direction` arg to power a dedicated Income (or Expense) screen
+> without client-side filtering. No `deleted_at`/soft-delete question ever
+> arises, since there's no new entity to make that decision about — a
+> `Category`'s own hard-delete rule already covers it. See `GLOSSARY.md`'s
+> now-superseded Income Source entry and `PROGRESS.md` for the full grill.
 
 > Debts, taxes (IVA/IRS/SS), and the annual roll-up view from your Excel are real features but backlog for after Phase 1-3 are working end to end — don't let them expand the API surface before the core loop (categories → transactions → budget available) is solid and deployed.
 
@@ -260,7 +284,7 @@ A significant piece of design beyond the original flat data model above — reso
 
 **Bulk delete of a category's transactions** is always scoped to the single month currently being viewed — there's no "delete everything across months" action, ever. For `transactions` specifically (see the revised delete rule in the Data Model above), a bulk delete is immediate and permanent, same as a single-row delete — there's no batching or undo to coordinate.
 
-**Soft delete + undo — revised, now scoped down to only the entities that haven't been built yet.** The original design here was: nothing hard-deleted, every table gets `deleted_at`, undo clears it within a short window (10min-1h, TBD), bulk actions share a `delete_batch_id` so undo restores the whole batch. `category_month` and `transactions` broke from this first (step 3), for referential-integrity reasons (a soft-deleted transaction could otherwise dangle on a hard-deleted `category_month`). During step 4's review, `categories` and `recurring_expense_templates` — until then still soft-deleted — dropped it too, on an explicit user call: either something can be deleted (nothing references it, ever, past or future) or it's permanently blocked, no third "soft-deleted but still around" state, anywhere. Step 6's kickoff interview confirmed the same for `savings_funds`/`savings_movements` before any soft-delete code was ever written for them — every entity in the schema as of step 6 is hard-deleted, no undo. Only `income_sources` (step 7, not yet built) still carries the original soft-delete-and-undo design below on paper — re-grill when that step actually gets interviewed rather than assuming it stands as originally written.
+**Soft delete + undo — revised, now scoped down to only the entities that haven't been built yet.** The original design here was: nothing hard-deleted, every table gets `deleted_at`, undo clears it within a short window (10min-1h, TBD), bulk actions share a `delete_batch_id` so undo restores the whole batch. `category_month` and `transactions` broke from this first (step 3), for referential-integrity reasons (a soft-deleted transaction could otherwise dangle on a hard-deleted `category_month`). During step 4's review, `categories` and `recurring_expense_templates` — until then still soft-deleted — dropped it too, on an explicit user call: either something can be deleted (nothing references it, ever, past or future) or it's permanently blocked, no third "soft-deleted but still around" state, anywhere. Step 6's kickoff interview confirmed the same for `savings_funds`/`savings_movements` before any soft-delete code was ever written for them — every entity in the schema as of step 6 is hard-deleted, no undo. `income_sources` never got the chance to carry this question into code at all — step 7's kickoff grill dropped the table itself before any soft-delete-vs-hard-delete decision mattered (see the Data Model section's superseded `income_sources` note); every entity in the schema, full stop, is hard-deleted with no undo as of step 7.
 
 > **Revised during Build Order step 5's kickoff interview: no auto-lock cascade, no automatic next-month creation, carry-forward isn't its own mechanism.** The three paragraphs below describe the original design; this callout is the actual decision the backend was built against — kept side by side rather than silently rewritten, since the reasoning matters. Explicit user call: locking a month was overcomplicating an edge case that "will only happen if a user creates more months for planning and doesn't do anything with them" — most of the time it won't happen at all. Simplified to: **`lockMonth` does exactly one thing** — locks the target month (which must be the current one — the earliest unlocked), nothing else. No cascade walk, no carry-forward parameter, no automatically-created next month. If a user goes away for a while, "current month" (derived, see below) just naturally falls back to today's real calendar month once nothing unlocked stands in the way — no cascade logic needed to make that happen. If they *did* pre-provision ahead and it's sitting there empty once its predecessor locks, that's on them to resolve explicitly — lock it too (even empty), or **`deleteBudgetMonth`** it (new capability this revision introduces: hard-delete an empty, unlocked month — same "remove everything referencing it first, then the empty shell becomes deletable" pattern `deleteCategory`/`deleteTemplate` already use, blocked by the same `onDelete: Restrict` FK `category_month`/`recurring_expenses` already have to `budget_months`). **Category carry-forward needs no dedicated mutation**: it's the existing `addCategoryToMonth` mutation (already supports omitting the budget to auto-inherit, see the Data Model's `category_month` entry) called once per item the user checks, against whichever month they're planning — reusing the existing `categoryMonths(month)` query against the previous month to know what to offer as checkboxes, all pre-checked, uncheck to opt out. This is deliberately the *same* flow whether the user is proactively planning ahead or just locked the month before and is starting the new current one — one mechanism, triggered at two different moments, never an automatic side effect of locking (so it can never silently clobber a month the user already set up differently). **Recurring expenses diverge from this, under the flat-row redesign** (see Data Model's `recurring_expenses` entry above): they carry forward automatically, no per-item checklist, whenever a new month comes into existence. Planning horizon (current month or one month ahead, never further, and never a new activation in the past either — a user can only *newly* create a category/recurring-expense activation in `[current, current + 1]`) enforced server-side, not just a UI affordance — implemented (`assertWithinPlanningHorizon` in `categoryMonthService`, shared by the recurring-expense auto-activation path); the past-month restriction was added after `pr-reviewer` found that allowing it let a stray backfilled month hijack the derived "current" month itself — see PROGRESS.md.
 
@@ -318,7 +342,8 @@ type Category {
 type CategoryMonth {
   id: ID!
   month: String! # YYYY-MM, denormalized from the linked BudgetMonth for convenience
-  monthlyBudgetCents: Int!
+  monthlyBudgetCents: Int! # the planned/expected number, either direction — for an income category this doubles as "expected amount" (see the now-superseded income_sources note in the Data Model section)
+  actualAmountCents: Int! # computed, not stored: SUM(amountCents) across this CategoryMonth's own transactions. Direction-agnostic — "spent so far" for expense, "received so far" for income. Added in step 7, replacing the income_sources sketch (see Data Model)
   recurringCommittedCents: Int! # computed, not stored: SUM(amountCents) across this category's active recurring expense instances this month. Lets the FE offer "match budget to recurring total" with zero manual arithmetic — see Notes for Claude Code.
   category: Category!
   transactions: [Transaction!]! # this month's transactions for this category
@@ -370,13 +395,9 @@ type SavingsMovement {
   fund: SavingsFund! # back-reference, mirroring Transaction.categoryMonth
 }
 
-type IncomeSource {
-  id: ID!
-  name: String!
-  expectedAmountCents: Int!
-  actualAmountCents: Int
-  month: String! # YYYY-MM, denormalized from the linked BudgetMonth (month_id) — same pattern as CategoryMonth.month
-}
+# ~~type IncomeSource~~ — superseded, no such type exists; income is
+# CategoryMonth.actualAmountCents (above) against an income-direction
+# Category, see the Data Model section's income_sources note.
 
 input CategoryInput {
   name: String!
@@ -445,23 +466,19 @@ input UpdateSavingsMovementInput {
 # a different fund (that's really two funds' balances changing atomically at once, out of
 # scope — see Data Model revision note).
 
-input IncomeSourceInput {
-  name: String!
-  expectedAmountCents: Int!
-  actualAmountCents: Int
-  month: String!
-}
+# ~~input IncomeSourceInput~~ — superseded, no such input exists; use
+# addCategoryToMonth/updateCategoryMonthBudget/createTransaction on an
+# income-direction Category instead, see the Data Model section.
 
 type Query {
   currentMonth: BudgetMonth! # derived, never persisted by this query — earliest unlocked BudgetMonth, or today's real calendar month if none exists
   categories: [Category!]! # full catalog, every category regardless of month — the "reuse an existing category" picker
-  categoryMonths(month: String!): [CategoryMonth!]! # this is "which categories are active this month" — a month has an array of categories, not the reverse
-  # month filters everywhere in this schema use "YYYY-MM" — same format as IncomeSource.month.
+  categoryMonths(month: String!, direction: Direction): [CategoryMonth!]! # this is "which categories are active this month" — a month has an array of categories, not the reverse. direction filters to just income or just expense categories, e.g. for a dedicated Income screen — added in step 7, see the Data Model section's income_sources note
+  # month filters everywhere in this schema use "YYYY-MM".
   # Reject anything else at the input-validation layer (see the Dates convention above).
   transactions(month: String!, categoryId: ID): [Transaction!]! # ordered date DESC, createdAt DESC; unpaginated — a month's transactions is a bounded ~100-row list, not the unbounded case pagination is for (see Production Readiness)
   recurringExpenses(month: String!): [RecurringExpense!]! # this month's recurring expenses, mirrors `categoryMonths(month)` — no catalog-level query, recurring expenses have no month-independent existence (see Data Model)
   savingsFunds: [SavingsFund!]!
-  incomeSources(month: String): [IncomeSource!]!
 }
 
 type Mutation {
@@ -491,16 +508,26 @@ type Mutation {
   createSavingsMovement(input: CreateSavingsMovementInput!): SavingsMovement! # rejects a withdrawal (or edit) that would leave the fund's balance negative
   updateSavingsMovement(id: ID!, input: UpdateSavingsMovementInput!): SavingsMovement! # amountCents/type/date only, re-checks the resulting balance
   deleteSavingsMovement(id: ID!): Boolean! # re-checks the resulting balance with this movement's effect removed
-
-  createIncomeSource(input: IncomeSourceInput!): IncomeSource!
-  updateIncomeSource(id: ID!, input: IncomeSourceInput!): IncomeSource!
-  deleteIncomeSource(id: ID!): Boolean!
 }
 ```
 
-> The `IncomeSource` type/inputs/query/mutations below are still illustrative, not final — steps 6-9's remaining phase 1 build order includes income sources (step 7), not yet interviewed. Treat that part as a starting shape to interview around, not a spec to implement verbatim.
->
-> `Category`, `CategoryMonth`, `Transaction`, `RecurringExpense`, `SavingsFund`, and `SavingsMovement` all reflect finalized, grilled, and now-implemented designs — trust all of them now. `RecurringExpense` supersedes step 4's original `RecurringExpenseTemplate`/`RecurringExpenseInstance` split; `SavingsFund`/`SavingsMovement` supersede this section's original soft-delete/stored-balance sketch (see PROGRESS.md for both rebuilds). `initialBalanceCents` is settable only at creation (`CreateSavingsFundInput`) and deliberately absent from `UpdateSavingsFundInput`; `fundId` is likewise absent from `UpdateSavingsMovementInput` — see the Data Model revision note above for both.
+> **No `IncomeSource` type/inputs/query/mutations** — superseded before any
+> code existed for them, during step 7's kickoff grill. `Category`,
+> `CategoryMonth` (now including `actualAmountCents`, added this step),
+> `Transaction`, `RecurringExpense`, `SavingsFund`, and `SavingsMovement`
+> all reflect finalized, grilled, and now-implemented designs — trust all
+> of them now. `RecurringExpense` supersedes step 4's original
+> `RecurringExpenseTemplate`/`RecurringExpenseInstance` split;
+> `SavingsFund`/`SavingsMovement` supersede this section's original
+> soft-delete/stored-balance sketch (see PROGRESS.md for both rebuilds).
+> `initialBalanceCents` is settable only at creation
+> (`CreateSavingsFundInput`) and deliberately absent from
+> `UpdateSavingsFundInput`; `fundId` is likewise absent from
+> `UpdateSavingsMovementInput` — see the Data Model revision note above
+> for both. A "bank balance" feature (a running total independent of any
+> one month, surfaced mid-grill for step 7 but deliberately not part of
+> it) is queued as its own future step — see PROGRESS.md, not designed
+> here yet.
 
 Note about enum casing: GraphQL convention is UPPER_CASE enum values (`NEED`, `EXPENSE`), but the DB uses lowercase (`need`, `expense`). Map between the two in the resolver/service layer — don't let the DB casing leak into the GraphQL schema or vice versa. The `GLOSSARY.md` lowercase values are the DB representation. (`budgetType`'s three values were originally Portuguese — `preciso`/`quero`/`poupança`, matching the Excel tracker — translated to English `need`/`want`/`savings` in the codebase; the 50/30/20 meaning is unchanged.)
 
@@ -513,9 +540,9 @@ Note: any relation field on a list — `CategoryMonth.transactions`, `RecurringE
 2. **Auth (OTP)**: `otp_codes` + `refresh_tokens` tables, email sending wired up (start with logging the code to console in dev, swap in Resend/Postmark before anything real), request-otp/verify-otp/refresh/logout routes, JWT context builder for GraphQL resolvers
 3. **Categories + Transactions**: `budget_months` table lands here (schema-only — `locked` stays inert until step 5), plus `categories` (pure catalog, no month-awareness, **hard-deleted** — revised during step 4's review, see "Month Lifecycle" above), `category_month` (the join — row existence = active, budget lives here not on `categories`, **hard-deleted**, `@@unique([categoryId, monthId])`, blocked from deletion while any transaction references it that month), and `transactions` (FK to `category_month`, not `category` directly — structurally enforces "category must be active that month"; **hard-deleted**, no undo). `createCategory` is a pure catalog insert; `addCategoryToMonth`/`removeCategoryFromMonth`/`updateCategoryMonthBudget` are the only activation path in this step (budget always explicit — carry-forward's inheritance path is step 5). DataLoader for `CategoryMonth.transactions`. See "Month Lifecycle" above for the full reasoning, including the soft-delete-and-undo history.
 4. **Recurring expenses** — originally shipped as `recurring_expense_templates` + `recurring_expense_instances` (**hard-deleted**, transversal template mirroring `categories`, matching `category_month`'s per-month instance pattern), **since rebuilt as the flat `recurring_expenses` design** (see the Data Model section above and `PROGRESS.md` for the rebuild). The invariants carry over unchanged: creating a recurring expense auto-activates its category for that month if needed (diverges from `categories`' always-manual activation rule — grilled explicitly, see Data Model note), requiring an explicit `categoryMonthlyBudgetCents` only when that activation actually creates a new `category_month`; `markRecurringPaid` always creates a *new* Transaction (never updates one), can be called more than once per row; `paidThisMonth` is computed as `SUM(linked transactions) >= amountCents`, not "any transaction exists"; `CategoryMonth.recurringCommittedCents` (computed) sums a category's active recurring expenses for the month — feeds the phase-2 "match budget to recurring total" UX flagged under Notes for Claude Code. The flat redesign removes the template-edit-propagation question entirely (see Month Lifecycle) — never a step 5 dependency to begin with.
-5. **Month lifecycle**: carry-forward flow (with budget-inheritance for `category_month`; automatic, no per-item opt-in, for `recurring_expenses`), month locking + the auto-lock cascade for empty months. Soft-delete + undo (with `delete_batch_id` batching) no longer applies to any entity built so far (`categories`, `category_month`, `transactions`, and whichever recurring-expense shape is live are all hard-deleted) — only `savings_funds`/`savings_movements`/`income_sources` (steps 6-7) still carry that design on paper, unre-grilled. Depends on steps 3 and 4 both being done.
+5. **Month lifecycle**: carry-forward flow (with budget-inheritance for `category_month`; automatic, no per-item opt-in, for `recurring_expenses`), month locking + the auto-lock cascade for empty months. Soft-delete + undo (with `delete_batch_id` batching) no longer applies to any entity built so far (`categories`, `category_month`, `transactions`, and whichever recurring-expense shape is live are all hard-deleted) — only `savings_funds`/`savings_movements` (step 6) still carried that design on paper at the time this step was built. Depends on steps 3 and 4 both being done.
 6. **Savings funds + movements** — grilled, design finalized and built (see the Data Model section's revision note above): hard-deleted, no soft-delete (revised out during this step's kickoff interview, before any soft-delete code existed for it, matching every other entity). `currentAmountCents`/`achieved` computed at read time, not stored columns. `createSavingsMovement`/`updateSavingsMovement`/`deleteSavingsMovement` (not a single `addSavingsMovement` — movements are editable/deletable, unlike the original sketch) all re-validate the fund's resulting balance can't go negative, under a real row lock on the fund so concurrent movements can't race past the overdraft check together — verified against real Postgres. `deleteSavingsFund` blocked while any movement references it. DataLoaders for `SavingsFund.movements`/`currentAmountCents` and `SavingsMovement.fund`.
-7. **Income sources**: CRUD; `deleted_at` soft-delete from the start.
+7. **"Income sources"** — reconsidered before any code existed for it (see the Data Model section's superseded `income_sources` note): no new table. Income is an income-direction `Category`, activated into a month via the *existing* `addCategoryToMonth`, with each paycheck a normal `Transaction`. What actually got built this step: `CategoryMonth.actualAmountCents` (computed, `SUM` of that CategoryMonth's transactions, direction-agnostic — also gives expense categories a "spent so far" figure for the first time) and an optional `direction` arg on `Query.categoryMonths`. A separate "bank balance" feature (a checkpoint-anchored running total, independent of any one month) surfaced during this step's grill but was deliberately deferred to its own future step — not built here, see `PROGRESS.md`.
 8. **Seed script**: your real categories/funds from the Excel, for realistic test data
 9. **Basic tests**: at minimum, auth boundary tests (user A can't read user B's data) and one DataLoader batching check — this is the one thing worth testing before going live
 
@@ -542,7 +569,7 @@ Once the API is solid: **Phase 2** picks up the mobile app plan (screens, design
 - Offline support / sync conflict resolution
 - Open Banking / bank account integration — separate concern entirely (PSD2, an aggregator like GoCardless Bank Account Data or Tink, its own OAuth flow with the bank). Worth revisiting only with real user demand, given the regulatory and cost overhead.
 - GraphQL subscriptions / real-time updates (revisit only if a concrete need shows up)
-- Full audit trail / field-level edit history on financial records (soft-delete + short-window undo, as of step 6, only still applies on paper to the not-yet-built `income_sources` — see "Month Lifecycle" above; every entity built so far, `savings_funds`/`savings_movements` included, is hard-deleted with no undo at all, and a full history of every edit ever made to a transaction is a separate, bigger feature regardless, still backlog)
+- Full audit trail / field-level edit history on financial records (soft-delete + short-window undo no longer applies on paper to anything, as of step 7 — see "Month Lifecycle" above; every entity in the schema is hard-deleted with no undo at all, and a full history of every edit ever made to a transaction is a separate, bigger feature regardless, still backlog)
 - Planning horizon beyond one month ahead (capped at next-month-only for phase 1 — see "Month Lifecycle" above; candidate future paid-tier feature)
 
 ## Data Monetization Policy (future — no phase 1 work)

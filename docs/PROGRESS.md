@@ -1010,19 +1010,154 @@ correctly (doesn't mask `insufficient_funds` or swallow unrelated errors),
 no further `tx` query happens after the catch, and both regression tests
 genuinely exercise the race rather than a mocked shortcut.
 
+PR #15 went through a second `test-auditor` round after the fixes above:
+verdict **tests trustworthy**, all 8 findings genuinely closed with
+meaningful assertions (no fake-passing tests introduced), only one small
+new gap surfaced — `SavingsFund.startDate`/`endDate`'s date-formatting
+resolvers had zero coverage (existing tests only proved the values were
+passed *into* the service, never that they come back out formatted, or
+null-passthrough, correctly). Fixed with two cases (dates set / both null)
+added to `Query.savingsFunds`' existing test. 378 Jest tests total (was
+377). `pr-reviewer` (2 rounds) and `test-auditor` (2 rounds) both closed.
+**PR #15 merged into `develop`.**
+
+### Step 7 (Income sources) — grill me pivoted the design before any code existed
+
+Kicked off the standard grill-me for step 7 and got as far as nailing down
+a first batch of decisions the same way savings funds was (hard-delete not
+soft — reversing `PLAN.md`'s original sketch; `actualAmountCents` directly
+editable, not a separate `markReceived` event; unique name per month, same
+`@@unique([monthId, name])` shape as recurring expenses; same planning
+horizon as everything else) — but then the user pushed back on the
+*entity itself*, the same way step 4's "why do we need templates?"
+pushback rebuilt recurring expenses. Direct quote-level reasoning: a
+`Transaction` already has `direction`, and `direction` actually lives on
+`Category` (not just derived per-transaction) — so an income-direction
+Category, activated into a month via `CategoryMonth`, already gives
+"one planned number for the month, satisfied by N actual Transactions,"
+which is *exactly* the recurring-expense pattern (`amountCents` planned,
+`paidThisMonth` = `SUM(transactions) >= planned`) minus the extra row.
+Nothing new needs to exist.
+
+**Decided (not yet built):**
+- **No new `income_sources` table.** `income_sources` was never migrated —
+  no schema/migration ever existed for it, so there's nothing to tear
+  down, only `PLAN.md`/`GLOSSARY.md` prose to mark superseded (same
+  "kept side by side, not deleted" convention as the recurring-expense
+  template/instance section) once this actually gets built.
+- Income is: an income-direction `Category` (e.g. "Salary", "Freelance" —
+  the user confirmed a couple of income categories is fine, that's the
+  "2 different places" case), added to a month via the *existing*
+  `addCategoryToMonth`, with `monthlyBudgetCents` reused as-is for
+  "expected amount this month" — **not renamed**, to avoid an interface
+  break on an already-shipped field, just semantically doing double duty
+  for both directions now. Each actual paycheck/deposit is a normal
+  `Transaction` against that `CategoryMonth`.
+- **New computed field**: `CategoryMonth.actualAmountCents` (name not
+  finalized) — `SUM(transactions.amountCents)` for that `CategoryMonth`,
+  same read-time-computed pattern as `paidThisMonth`/
+  `recurringCommittedCents`/`achieved`. Scoped to **both directions**, not
+  income-only — the user explicitly wants "spent so far" for expense
+  categories too ("I always helps to know the total spent this month next
+  to how much you can still spend"), which today isn't exposed at all
+  (frontend would have to sum the `transactions` array itself).
+- **New optional `direction` arg on `categoryMonths(month)`** — powers a
+  dedicated "Income" screen (or "Expenses" screen) without client-side
+  filtering. Confirmed there's no gap here: `direction` is knowable
+  up-front from the Category, before any Transaction exists, same as an
+  expense category shows €0 spent before its first transaction.
+- None of this is built yet — no branch, no schema changes, no code. Pure
+  design discussion this session.
+
+### A second, bigger feature surfaced mid-grill: running "bank balance" — not in `PLAN.md` at all, explicitly deferred to its own step/PR
+
+While explaining *why* income matters, the user described wanting an
+always-visible total ("I have 75k, I receive 4500, now I have 79500")
+distinct from any single month's number, and confirmed a month going
+negative is fine/expected — the overall balance is what actually has to
+stay honest, not each month in isolation. Decided so far:
+- **Computed at read time**, same house pattern as everything else
+  derived — not incrementally maintained.
+- **Anchored to a user-editable checkpoint, not full transaction history.**
+  Explicit user call: "we assume the bank value he now added is already
+  all the money he has and the transactions only affect from that point
+  forward." So: a value (+ the timestamp it was set) the user can set or
+  overwrite at any time, even mid-month — first-time users can enter `0`
+  and correct it later. Whenever it's edited, everything before that
+  timestamp stops counting; the running balance from then on is
+  `checkpointAmountCents + net(Transactions dated after checkpointSetAt)`.
+- **Savings Fund deposits/withdrawals do NOT affect this balance** —
+  explicit user call, deliberately kept as two separate visible numbers
+  (mirrors their Excel: bank money vs. invested/saved money shown
+  separately, specifically to avoid the "confusing once split across 10
+  investments" problem of a single blended net-worth figure).
+- **Not yet decided**: exact GraphQL field names, where the checkpoint
+  value + its timestamp live (likely a new field pair on `User`, no such
+  precedent exists yet), whether setting/editing it needs its own
+  dedicated mutation, validation bounds. Deliberately not grilled to
+  completion yet — agreed to ship as its own follow-up step/PR after
+  Income sources, with its own short grill, rather than bundling two
+  unrelated-sized features into one branch.
+
+Session paused here at the user's request ("continue tomorrow") —
+no code written for either piece above.
+
+### Step 7, resumed and built: `CategoryMonth.actualAmountCents` + `categoryMonths(direction)`
+
+Closed the two remaining open questions from the pause point in two
+quick confirms: the new computed field is named `actualAmountCents`
+(mirrors the "expected vs actual" language from the original income
+sources sketch), and `addCategoryToMonth`/`updateCategoryMonthBudget`
+need no changes at all — both are already direction-agnostic, only
+setting `monthlyBudgetCents` on a row regardless of what direction its
+category has.
+
+Built on `feature/category-month-actuals`:
+- `categoryMonthService.listByMonth(userId, month, direction?)` — the
+  `categoryMonth` query itself still just filters by `userId`/`monthId`
+  (no relational-filter query shape); when `direction` is given, a
+  second small `category.findMany({ where: { id: { in: [...] } } })`
+  resolves each row's category and filters in application code. Kept
+  this simple over pushing `category: { direction }` into the Prisma
+  `where` clause specifically to avoid teaching the fake Prisma test
+  double a new relational-filter shape — the result set per month is
+  small (bounded like a month's transactions), so the extra query is
+  cheap.
+- `GraphQL.CategoryMonth.actualAmountCents` — reuses the *existing*
+  `transactionsByCategoryMonthId` DataLoader (the same one
+  `CategoryMonth.transactions` already used) and sums in the resolver —
+  no new DataLoader, no new Prisma query at all.
+- `GraphQL.Query.categoryMonths` gained an optional `direction` arg,
+  mapped through `directionToDb` same as every other direction-facing
+  resolver.
+- Verified the direction filter + the sum against real Postgres via a
+  throwaway `scripts/smoke-category-month-actuals.ts` (deleted after
+  use, never committed) — an income-direction "Salary" CategoryMonth and
+  an expense-direction "Groceries" one, each with real Transactions,
+  confirmed `listByMonth(..., 'income')`/`listByMonth(..., 'expense')`
+  return exactly the right row and the summed cents match.
+- `docs/PLAN.md`/`GLOSSARY.md`/`SERVICES.md` updated: `income_sources`
+  (Data Model section, the illustrative `IncomeSource`
+  type/input/query/mutations, Build Order step 7, the soft-delete
+  history paragraph, the audit-trail Out-of-Scope note) all marked
+  superseded — kept side by side, not deleted, same convention as the
+  recurring-expense template/instance section. 384 Jest tests total (was
+  378).
+
 Next actions, in order:
-1. Wait for human review/merge on `feature/savings-funds`
-   (`pr-reviewer`-approved as of round 2).
-2. Small tracked follow-up, not blocking: add logging on the
-   `onNewBudgetMonth`/`seedNewMonth` swallow path (recurring-expenses
-   step) once this service layer has a logger dependency to hang it on
-   (none exists yet — `src/lib/shutdown.ts` is the only existing
-   precedent, at the app-startup level, not per-service).
-3. Step 7 (Income sources) is next after this merges — still carries the
-   original soft-delete-and-undo design on paper (`PLAN.md`'s "Soft
-   delete + undo" section); re-grill when that step is actually
-   interviewed, same as savings funds was, rather than assuming it stands
-   as originally written.
+1. Run `pr-reviewer` on `feature/category-month-actuals`, go back and
+   forth until approved, then `test-auditor` until clean, then open the
+   PR and hand back for human review — same two-stage pattern as PRs
+   #14/#15.
+2. After that merges: grill and build the bank-balance checkpoint feature
+   as its own step/PR (see the "bank balance" note above for what's
+   already decided).
+3. Small tracked follow-up, not blocking, carried over from step 6: add
+   logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
+   (recurring-expenses step) once this service layer has a logger
+   dependency to hang it on (none exists yet — `src/lib/shutdown.ts` is
+   the only existing precedent, at the app-startup level, not
+   per-service).
 
 ## Phase 1 — Backend
 
@@ -1144,20 +1279,17 @@ Next actions, in order:
       entirely — all revised out of the original scope described here
       during the step's kickoff interview, see `PLAN.md`'s Month Lifecycle
       section for the actual design.
-- [ ] **6. Savings funds + movements** — grilled, design finalized and
-      built (see "Where we left off" above and `PLAN.md`'s Data Model
-      revision note): hard-deleted like everything else in this app, not
-      soft-deleted per the original sketch; `currentAmountCents`/`achieved`
-      computed at read time, not stored columns;
-      `createSavingsMovement`/`updateSavingsMovement`/`deleteSavingsMovement`
-      (not a single `addSavingsMovement` — movements are editable/deletable)
-      all re-validate the fund's resulting balance under a real row lock,
-      verified against real Postgres with a genuine concurrent-overdraft
-      race. `pr-reviewer`-approved as of round 2, awaiting human review/merge
-      on `feature/savings-funds`.
-- [ ] **7. Income sources** — CRUD; `income_sources.month_id` already
-      designed to reference `budget_months`, per step 3's month-modeling
-      decision.
+- [x] **6. Savings funds + movements** — grilled, built, `pr-reviewer`
+      (2 rounds) and `test-auditor` (2 rounds) both closed clean. Merged into
+      `develop` via PR #15. See "Where we left off" above for the full
+      design/build/review narrative.
+- [ ] **7. "Income sources"** — **reconsidered before any code was written;
+      the dedicated `income_sources` table described in `PLAN.md` is
+      dropped**, replaced by `CategoryMonth.actualAmountCents` (computed) +
+      an optional `direction` arg on `categoryMonths` against ordinary
+      income-direction Categories. Built on `feature/category-month-actuals`,
+      not yet through `pr-reviewer`/`test-auditor`/merge. See "Where we left
+      off" above for the full pivot and build.
 - [ ] **8. Seed script** — real categories/funds from the Excel tracker.
 - [ ] **9. Basic tests** — auth boundary tests (user A can't read user B's
       data), one DataLoader batching check.
