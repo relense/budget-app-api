@@ -1246,17 +1246,84 @@ starts feeling load-bearing rather than incidental.
 No new Prisma queries or migrations in this branch — pure test-layer
 additions — so no real-Postgres smoke verification was needed this time.
 
+PR #18 merged. The user then placed their real Excel tracker
+(`VISAO ANUAL 2026.xlsx`, a full personal budget spreadsheet — income,
+rent, bills, savings goals, a year of real transaction history) in the
+repo root for step 8. First move: added `*.xlsx`/`*.xls`/`*.csv` to
+`.gitignore` immediately, before doing anything else, since this is real
+personal financial data that should never enter git history.
+
+Read the file directly (no xlsx parser was installed — wrote a small
+stdlib-only Python script, `zipfile` + `xml.etree`, to dump each sheet's
+grid; not committed, lived only in the scratchpad). The workbook has 15
+sheets: one savings-fund tracker, one per calendar month (Jan-Dec, most
+hidden — only the "current" ones visible), and two grocery-breakdown
+sheets. Confirmed the structure is stable month to month by comparing
+January against August.
+
+Grilled the seed script's scope before writing any code — several real
+decisions, not defaults:
+- **No transactions, no savings funds, no bank balance** — explicit user
+  call: "the seed should only be for categorys, recurring expenses,
+  income and the basics not the actual transactions." Scoped to the
+  catalog + current month's activations only.
+- **English names, not Portuguese** — explicit user rule, applied
+  throughout (Compras → Shopping, Renda → Rent, etc.), except for two
+  names confirmed to stay as-is: "Ultracc" (a real recurring service,
+  no better name given) and "Segurança Social" (the income category —
+  user explicitly said keep it in Portuguese since it names a specific
+  institution, unlike every other renamed category).
+- **Recurring bills need one category** — the Excel's "CONTAS" list
+  isn't grouped under anything, but `RecurringExpense.categoryId` needs
+  an existing Category. User's call: one new "Fixed Bills" category for
+  all of them, matching how the Excel already treats them as one flat
+  list, rather than trying to fit each bill into an existing expense
+  category.
+- **Income categories**: user gave their actual two real sources
+  directly rather than trusting the Excel's inconsistent monthly labels
+  — "Obconnect" (salary) and "Segurança Social", with a third
+  (Medis/insurance reimbursements) explicitly excluded ("don't add it").
+  Expected amounts: Segurança Social's real August figure (816.62);
+  Obconnect's real January figure (4500.00, since August's sheet didn't
+  list it separately) — user confirmed reusing that number was fine.
+- **dueDay**: no real per-bill due-day data exists in the sheet — user
+  confirmed a flat `dueDay: 1` default for every recurring bill is fine.
+- **Which user gets this data** — the one point requiring a detour: the
+  user initially wondered whether this should instead be wired into
+  real signup (conflating it with `authService`'s *already-existing*,
+  unrelated generic default-category seeding every real new user gets).
+  Clarified the seed script is a separate dev-only convenience for
+  populating one throwaway account with realistic test data, not a
+  change to real onboarding — user agreed, landed on a dedicated
+  `seed@example.com` account.
+
+Built `prisma/seed.ts` (`npm run seed`): idempotent (deletes and
+recreates that one account's data every run, never touches anything
+else), resolves "current month" the same way the app itself would for a
+brand-new user (`formatMonth(new Date())` — no existing `BudgetMonth`
+row to derive from), and goes through the real service layer
+(`categoryService`, `categoryMonthService`, `recurringExpenseService`)
+rather than raw Prisma inserts, so it exercises the same validation and
+auto-activation logic a real request would. `prisma/` wasn't in either
+`tsconfig`'s `include` list — added it to `tsconfig.test.json` so this
+file (and any future `prisma/*.ts` script) actually gets typechecked,
+not silently skipped. Verified against real Postgres: ran twice back to
+back to prove idempotency, then confirmed via direct SQL — exactly one
+`seed@example.com` user, 16 categories (13 expense + Fixed Bills + 2
+income), 14 recurring bills, no duplicates.
+
 Next actions, in order:
-1. Run `pr-reviewer` on `chore/basic-tests-audit`, go back and forth until
+1. Run `pr-reviewer` on `feature/seed-script`, go back and forth until
    approved, then `test-auditor` until clean, then open the PR and hand
-   back for human review — same two-stage pattern as PRs #14-#17.
-2. After that merges: Build Order step 8 (seed script) is the only Build
-   Order step left before Phase 1 (backend) is done — needs the user's
-   real categories/funds from the Excel tracker first, not yet provided.
-   Also still outstanding: the Production Readiness items `PLAN.md` flags
-   (rate limiting, introspection/depth limits are done — confirmed;
-   `otp_codes`/`refresh_tokens` row cleanup, CI, GDPR export/delete are
-   not).
+   back for human review — same two-stage pattern as PRs #14-#18.
+2. After that merges: Build Order step 8 was the last item — Phase 1
+   (backend) is then functionally complete. What's left is the
+   Production Readiness items `PLAN.md` flags (rate limiting,
+   introspection/depth limits are done — confirmed; `otp_codes`/
+   `refresh_tokens` row cleanup, CI, GDPR export/delete are not), then
+   Phase 2 (mobile app), which needs design references (mockups + Excel
+   structure — now partly in hand) before any screen work begins, per
+   CLAUDE.md.
 3. Small tracked follow-up, not blocking, carried over from step 6: add
    logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
    (recurring-expenses step) once this service layer has a logger
@@ -1402,7 +1469,12 @@ Next actions, in order:
       schema allowed to go negative. `pr-reviewer` (2 rounds) and
       `test-auditor` both closed clean. Merged into `develop` via PR #17.
       See "Where we left off" above for the full pivot and both builds.
-- [ ] **8. Seed script** — real categories/funds from the Excel tracker.
+- [x] **8. Seed script** — `prisma/seed.ts` (`npm run seed`), built from the
+      user's real Excel tracker. Scoped to catalog + current month only, no
+      transactions/funds/bank balance (explicitly grilled out). Seeds a
+      dedicated `seed@example.com` account, idempotent. Built on
+      `feature/seed-script`, not yet through `pr-reviewer`/`test-auditor`/
+      merge. See "Where we left off" above for the full grill and build.
 - [x] **9. Basic tests** — audited on `chore/basic-tests-audit`: a
       `test-auditor` pass scoped specifically to this step's own two asks
       (not the general suite) found real gaps — several list/read
