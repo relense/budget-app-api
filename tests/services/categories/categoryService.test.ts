@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { createCategoryService } from '../../../src/services/categories/categoryService.js';
 import { createFakePrisma } from './testFakePrisma.js';
 
@@ -445,5 +445,35 @@ describe('deleteCategory', () => {
     await expect(categoryService.deleteCategory('user-2', category.id)).rejects.toMatchObject({
       reason: 'category_not_found',
     });
+  });
+});
+
+describe('row locking', () => {
+  it('locks the category row (via $queryRaw ... FOR UPDATE) on updateCategory', async () => {
+    const { prisma, categoryService } = setup();
+    const category = await categoryService.createCategory('user-1', {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    const queryRawSpy = jest.fn(prisma.$queryRaw);
+    prisma.$queryRaw = queryRawSpy as typeof prisma.$queryRaw;
+
+    await categoryService.updateCategory('user-1', category.id, {
+      name: 'Groceries',
+      icon: 'cart',
+      color: '#00FF00',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
+    expect(queryRawSpy).toHaveBeenCalledTimes(1);
+    const [strings, lockedId] = queryRawSpy.mock.calls[0] as [TemplateStringsArray, string];
+    const sql = strings.join('');
+    expect(sql).toContain('FOR UPDATE');
+    expect(sql).toContain('categories');
+    expect(lockedId).toBe(category.id);
   });
 });

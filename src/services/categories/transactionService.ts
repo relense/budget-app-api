@@ -1,5 +1,6 @@
 import type { BudgetMonthService } from '../budgetMonths/budgetMonthService.js';
 import { lockBudgetMonthRow } from '../budgetMonths/budgetMonthService.js';
+import { lockCategoryRow } from './categoryService.js';
 import { isValidCalendarDate } from '../../lib/dateFormat.js';
 import { isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
@@ -90,6 +91,9 @@ export function createTransactionService({ prisma, budgetMonthService }: Transac
       throw new TransactionServiceError('date_month_mismatch');
     }
 
+    // Serializes against a concurrent updateCategory changing this
+    // category's direction — see lockCategoryRow's doc comment.
+    await lockCategoryRow(client, categoryMonth.categoryId);
     const category = await client.category.findUnique({ where: { id: categoryMonth.categoryId } });
     if (!category) {
       throw new Error(`Data integrity error: Category ${categoryMonth.categoryId} not found`);

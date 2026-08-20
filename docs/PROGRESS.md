@@ -1312,25 +1312,6 @@ back to prove idempotency, then confirmed via direct SQL — exactly one
 `seed@example.com` user, 16 categories (13 expense + Fixed Bills + 2
 income), 14 recurring bills, no duplicates.
 
-Next actions, in order:
-1. Run `pr-reviewer` on `feature/seed-script`, go back and forth until
-   approved, then `test-auditor` until clean, then open the PR and hand
-   back for human review — same two-stage pattern as PRs #14-#18.
-2. After that merges: Build Order step 8 was the last item — Phase 1
-   (backend) is then functionally complete. What's left is the
-   Production Readiness items `PLAN.md` flags (rate limiting,
-   introspection/depth limits are done — confirmed; `otp_codes`/
-   `refresh_tokens` row cleanup, CI, GDPR export/delete are not), then
-   Phase 2 (mobile app), which needs design references (mockups + Excel
-   structure — now partly in hand) before any screen work begins, per
-   CLAUDE.md.
-3. Small tracked follow-up, not blocking, carried over from step 6: add
-   logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
-   (recurring-expenses step) once this service layer has a logger
-   dependency to hang it on (none exists yet — `src/lib/shutdown.ts` is
-   the only existing precedent, at the app-startup level, not
-   per-service).
-
 ### PR #19 merged — whole-codebase audit before Production Readiness
 
 The user explicitly wanted something no single `pr-reviewer` pass had ever
@@ -1426,8 +1407,124 @@ Also fixed, all flagged by the same audit:
   yet through pr-reviewer/test-auditor/merge" after PR #19 had already
   merged — corrected.
 
-466 Jest tests total (was 453). All on `fix/codebase-audit-findings`, not
-yet through `pr-reviewer`/merge.
+466 Jest tests total (was 453). PR #21 opened, went through two rounds of
+`pr-reviewer` (round 1 found a minor `isValidCalendarDate` edge case —
+years 0000-0099 hit a JS `Date.UTC` two-digit-year quirk — and a cosmetic
+sequential-vs-`Promise.all` nitpick in `updateCategory`, both fixed; round
+2 approved) and `test-auditor` (found the create-path-only asymmetry in
+the new date-validation tests — `updateSavingsMovement`/`updateSavingsFund`/
+`transactionService.update` never got the same nonexistent-calendar-date
+regression coverage as their `create` siblings, since `assertValidDate`/
+`assertValidDateFormat` are the same shared functions called from both;
+closed). 472 tests by the end of that cycle.
+
+### Round 2 of the whole-codebase audit — a real concurrency bug found and fixed
+
+With PR #21 approved but not yet merged, the user asked for a second full
+audit pass — not a re-check of round 1's fixes, but a fresh look for
+whatever round 1 didn't cover. Ran the same `general-purpose` subagent
+pattern, explicitly pointed at areas round 1's report hadn't dwelt on
+(the auth/OTP/JWT flow, `recurringExpenseService`'s edge cases,
+`budgetMonthService`'s locking, `bankBalanceService`, cross-service
+consistency, `prisma/seed.ts` post-fix, and a field-for-field check of
+`PLAN.md`'s illustrative schema against the real one). Auth, recurring
+expenses, budget months, bank balance, seed script, and the schema
+comparison all came back clean — confirmed solid, not just unchecked.
+
+One real finding: **`updateCategory`'s direction-change guard (round 1's
+own fix) has a TOCTOU race that every analogous check elsewhere in this
+codebase closes, and it didn't.** The check-then-write (read referencing
+`Transaction`/`RecurringExpense` rows, then later call `category.update`)
+ran as unlocked, separate statements — a concurrent `createRecurringExpense`/
+`updateRecurringExpense`/`transactionService.create`/`update` landing in
+that gap could either let a direction flip through despite a reference
+now existing, or create a new reference against a direction that's about
+to change underneath it. Every other place in this codebase with this
+exact shape of problem closes it with a `SELECT ... FOR UPDATE` row lock
+inside a transaction (`lockBudgetMonthRow`, `lockSavingsFundRow`);
+`updateCategory` had neither, and `direction` is a plain column, not
+FK-constrained, so there's no DB-level backstop possible the way
+`deleteCategory` gets one for free from `RecurringExpense.category`'s
+`onDelete: Restrict`.
+
+Closing this completely meant it wasn't a one-file fix — asked the user
+whether to do the full multi-service fix, a narrower partial fix, or
+accept the risk as a documented known gap; user chose the full fix. Added
+**`lockCategoryRow`** (`SELECT ... FOR UPDATE` on `categories`, same
+pattern as its two siblings) to `categoryService.ts`, and threaded it
+through every read site that derives a lasting decision from a category's
+`direction`:
+- `categoryService.updateCategory` — the writer: locks first, *then*
+  reads `existing.direction` and the referencing checks, inside one
+  transaction (previously `assertOwnedCategory` ran pre-transaction;
+  moved inside so the read is against the locked, current row, not a
+  stale pre-lock snapshot).
+- `transactionService.loadCategoryMonthForWrite` (shared by `create` and
+  `update`) — locks the category row (via `categoryMonth.categoryId`)
+  right before deriving the new/updated Transaction's `direction`.
+- `recurringExpenseService` — split the old `assertValidInput` into a
+  pure/sync half (`assertValidRecurringExpenseFields`: amount/dueDay/
+  budgetType, no DB, stays as a fast pre-check) and a new DB-dependent
+  half (`assertValidCategoryForRecurringExpense`: locks, then checks
+  ownership + expense-direction) that now runs *inside* each
+  transaction — previously the whole thing ran as an unlocked pre-check
+  before the transaction even opened, in both `createRecurringExpense`
+  and `updateRecurringExpense`.
+- `addCategoryToMonth`/`ensureActiveForCategoryOnClient` deliberately
+  **not** touched — a `CategoryMonth` activation never reads or stores
+  `direction`, so it isn't part of this race at all; narrowed the fix to
+  exactly the call sites that matter instead of locking everywhere
+  category-adjacent.
+
+Verified two ways, matching this codebase's established two-tier pattern
+for concurrency fixes:
+1. A genuine real-Postgres race — a throwaway smoke script (deleted, not
+   committed) firing `updateCategory` (flip to income) and
+   `createRecurringExpense` at the exact same category, truly
+   concurrently, 10 times via `Promise.allSettled`, then asserting the
+   final state was never "category is income AND a recurring expense
+   references it" simultaneously. 10/10 runs clean — both orderings were
+   actually observed (sometimes the update won, sometimes the create
+   won), and in every case exactly one operation succeeded while the
+   other correctly failed with its typed error, never leaving
+   inconsistent state.
+2. Permanent Jest coverage (fake Prisma, which can't simulate real
+   locking but can prove the *code path* is right): three new `describe('row
+   locking')` blocks (`categoryService.test.ts`, `transactionService.test.ts`,
+   `recurringExpenseService.test.ts`), each spying on `$queryRaw` and
+   asserting it's called with `FOR UPDATE` on every relevant write path —
+   same style as `savingsMovementService.test.ts`'s existing one.
+
+Also fixed while in there: `SERVICES.md`/`PLAN.md` both still described
+`updateCategory`'s guard as `Transaction`-only after round 1's own fix
+added the `RecurringExpense` check — round 1's fix commit updated the
+code, tests, and `PROGRESS.md` but missed this one-line description in
+both docs. A live example of exactly the kind of drift these audits
+exist to catch.
+
+475 Jest tests total (was 472). `npm run typecheck`/`lint`/`build` all
+clean. All on `fix/codebase-audit-findings`, not yet through a fresh
+`pr-reviewer` round for this latest commit or merge.
+
+Next actions, in order:
+1. Run `pr-reviewer` on the latest commit to `fix/codebase-audit-findings`
+   (the `lockCategoryRow` fix), go back and forth until approved, then
+   `test-auditor` until clean, then hand back for human review — same
+   two-stage pattern as every prior PR.
+2. After that merges: Build Order step 8 (seed script) was already the
+   last Build Order item — Phase 1 (backend) is functionally complete.
+   What's left before considering it production-ready: the Production
+   Readiness items `PLAN.md` flags (rate limiting, introspection/depth
+   limits are done — confirmed; `otp_codes`/`refresh_tokens` row
+   cleanup, CI, GDPR export/delete are not), then Phase 2 (mobile app),
+   which needs design references (mockups + Excel structure — now
+   partly in hand) before any screen work begins, per CLAUDE.md.
+3. Small tracked follow-up, not blocking, carried over from step 6: add
+   logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
+   (recurring-expenses step) once this service layer has a logger
+   dependency to hang it on (none exists yet — `src/lib/shutdown.ts` is
+   the only existing precedent, at the app-startup level, not
+   per-service).
 
 ## Phase 1 — Backend
 
