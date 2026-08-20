@@ -19,7 +19,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "seed": "tsx --env-file=.env prisma/seed.ts",
-    "postinstall": "prisma generate"
+    "graphql:codegen": "graphql-codegen",
+    "postinstall": "prisma generate && graphql-codegen"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
@@ -39,6 +40,9 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@graphql-codegen/cli": "^7.2.0",
+    "@graphql-codegen/typescript": "^6.1.0",
+    "@graphql-codegen/typescript-resolvers": "^6.1.0",
     "@jest/globals": "^30.4.1",
     "@types/graphql-depth-limit": "^1.1.6",
     "@types/jest": "^30.0.0",

@@ -1,9 +1,12 @@
+import type {
+  BudgetType as GraphQLBudgetType,
+  Direction as GraphQLDirection,
+  MovementType as GraphQLMovementType,
+} from '../generated/graphql.js';
 import type { BudgetType, Direction } from '../services/categories/categoryService.js';
 import type { MovementType } from '../services/savings/savingsMovementService.js';
 
-export type GraphQLBudgetType = 'NEED' | 'WANT' | 'SAVINGS';
-export type GraphQLDirection = 'EXPENSE' | 'INCOME';
-export type GraphQLMovementType = 'DEPOSIT' | 'WITHDRAW';
+export type { GraphQLBudgetType, GraphQLDirection, GraphQLMovementType };
 
 const BUDGET_TYPE_TO_DB: Record<GraphQLBudgetType, BudgetType> = {
   NEED: 'need',

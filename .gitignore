@@ -37,6 +37,7 @@ docker-compose.override.yml
 # TypeScript
 *.tsbuildinfo
 /src/generated/prisma
+/src/generated/graphql.ts
 
 # Personal financial data — never commit real income/spending/savings numbers.
 # Anchored to the repo root (where the real tracker lives), not unanchored,
