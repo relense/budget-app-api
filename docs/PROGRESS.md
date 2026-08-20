@@ -1910,6 +1910,24 @@ field is not, and still only surfaces at request time same as before.
 Corrected the wording in `PLAN.md`, `SERVICES.md`, and the code comment in
 `schema.ts` to say exactly that instead of overclaiming.
 
+`test-auditor` came back clean (no new tests strictly needed — the diff
+is resolver-body-unchanged/type-only, and the existing `schema.*.test.ts`
+suite already exercises the exact enum-conversion/resolver paths touched,
+with real value assertions), but surfaced that the "new field, no
+resolver" gap `pr-reviewer` found has a genuinely cheap runtime fix: since
+it directly closed something documented as an open gap in this same
+branch, closed it rather than leaving it dangling. Exported
+`queryResolvers`/`mutationResolvers` from `schema.ts` and added a
+`describe('schema completeness')` block to `tests/graphql/schema.test.ts`
+asserting every `Query`/`Mutation` SDL field has a matching resolver key —
+verified it actually catches the exact regression `pr-reviewer`
+demonstrated (added an unresolved field, watched the new test fail with a
+clear diff, reverted). Doesn't extend to nested-type fields (`Category`,
+`CategoryMonth`, etc.) — most of those intentionally rely on GraphQL's
+default property-access resolver, so a naive "every field needs an
+explicit resolver" check there would false-positive on fields that are
+correctly unresolved by design. 515 Jest tests total (was 513).
+
 ## Phase 1 — Backend
 
 - [x] **0. Ground truth** — `.claude/CLAUDE.md`, `docs/GLOSSARY.md`, `docs/PLAN.md`, `docs/SCALING.md` committed (originally flat at the repo root — moved into `.claude/`/`docs/` later, see "Where we left off").

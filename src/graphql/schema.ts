@@ -278,7 +278,13 @@ const typeDefs = /* GraphQL */ `
 // codegen (GraphQL allows a default property-access resolver), so a
 // brand-new schema field with *no* resolver at all still typechecks —
 // that failure mode still only surfaces at request time.
-const queryResolvers: QueryResolvers<GraphQLContext> = {
+// Exported (not just used below) so tests can assert every Query/Mutation
+// field the SDL declares has a matching key here — codegen's generated
+// Resolvers types make every field optional (GraphQL allows a default
+// property-access resolver), so a brand-new field with no resolver at all
+// still typechecks; this is the runtime backstop for that gap, see
+// tests/graphql/schema.test.ts.
+export const queryResolvers: QueryResolvers<GraphQLContext> = {
   ping: () => 'pong',
   currentMonth: async (_parent, _args, context) => {
     const userId = requireUserId(context.userId);
@@ -314,7 +320,7 @@ const queryResolvers: QueryResolvers<GraphQLContext> = {
   },
 };
 
-const mutationResolvers: MutationResolvers<GraphQLContext> = {
+export const mutationResolvers: MutationResolvers<GraphQLContext> = {
   lockMonth: async (_parent, args, context) => {
     const userId = requireUserId(context.userId);
     try {
