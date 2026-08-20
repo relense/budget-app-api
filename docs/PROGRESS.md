@@ -1828,6 +1828,106 @@ Small tracked follow-ups, not blocking:
   after `migrate deploy` would close that for every future migration, not
   just this one.
 
+### GraphQL Code Generator (2026-08-20)
+
+Backend was functionally complete; user asked what else was missing, given
+an honest audit against `PLAN.md`'s own checklists rather than memory —
+found error tracking (Sentry, never wired up despite being on the
+Production Readiness list), `graphql-codegen` (planned in the original
+stack section, never built), and no actual deployment anywhere. User
+picked `graphql-codegen` first, after asking what it even was — explained
+plainly (schema string and resolver types can silently drift apart with
+nothing catching it; codegen generates matching TS types from the schema
+so they mechanically can't).
+
+Checked how the schema is actually built before designing anything:
+`src/graphql/schema.ts` already exports a single `schema` const from
+`createSchema({...})`, so `codegen.ts` can point straight at the file with
+no restructuring — codegen's TS/JS schema loader finds the exported
+`GraphQLSchema` automatically. Output goes to `src/generated/graphql.ts`,
+gitignored, regenerated via `postinstall` alongside `prisma generate` —
+same convention as the Prisma client, so CI needed zero changes (already
+runs `pnpm install` first).
+
+Hit the real complexity immediately on typechecking: every resolver here
+returns Prisma-shaped rows (lowercase enums, `userId`/timestamps still
+present) and converts to GraphQL shape per-field in nested resolvers
+(`Category.budgetType`, `Transaction.date`, etc.), not before returning —
+but codegen's default `ResolversParentTypes` assumes parent objects
+already match the final GraphQL shape. Every root `Query`/`Mutation`
+resolver failed to typecheck against that assumption. Fixed with
+`mappers` config pointing each GraphQL object type at the actual
+domain-shaped type flowing through resolvers at runtime — Prisma model
+types for six of them (`Category`, `CategoryMonth`, `Transaction`,
+`RecurringExpense`, `SavingsFund`, `SavingsMovement`, all aliased on
+import since their names collide with the generated GraphQL types of the
+same name), and `bankBalanceService`'s own `BankBalance` interface for the
+one computed (non-table) type. `BudgetMonth` deliberately left unmapped —
+its GraphQL type is only `{ month, locked }` with no nested resolvers or
+enum/date conversion, and `findCurrentMonth` can synthesize a row that was
+never persisted, so the default plain generated type is the only accurate
+parent shape for it, not a narrower issue `mappers` needed to solve.
+
+Retyped `Query`/`Mutation` in `schema.ts` against the generated
+`QueryResolvers`/`MutationResolvers` (extracted into their own consts,
+`satisfies`-style — args/return types now inferred instead of hand-rolled
+inline). Deleted the seven now-redundant `*GraphQLInput` interfaces this
+replaced entirely (`CategoryGraphQLInput`, `TransactionGraphQLInput`,
+etc.) — including a small independent cleanup: `SavingsMovementGraphQLInput`
+had an awkward `& { fundId: string }` intersection hack to cover both
+create and update; the generated `CreateSavingsMovementInput`/
+`UpdateSavingsMovementInput` already split that correctly. Also swapped
+`enumMapping.ts`'s three hand-maintained `GraphQLBudgetType`/
+`GraphQLDirection`/`GraphQLMovementType` string-union types (which had to
+be kept in sync with the SDL's `enum` blocks by hand) for aliased imports
+of the generated equivalents — zero other changes needed in that file.
+Nested-type resolvers (`Category`, `CategoryMonth`, `Transaction`,
+`RecurringExpense`, `SavingsFund`, `SavingsMovement`, `BankBalance`) keep
+their existing narrow per-field inline typing, not retyped against the
+generated per-type `Resolvers` — a residual, known gap (a new field added
+to one of these GraphQL types wouldn't force a matching resolver to exist)
+flagged in `PLAN.md`, not closed by this pass.
+
+Pure type-level change, zero runtime behavior change — confirmed three
+ways: all 513 existing Jest tests passed unchanged, `npm run lint`/
+`typecheck`/`build` all clean, and a live smoke test against the real dev
+server (real Postgres, the seeded account, a full OTP login) exercising
+`{ ping }`, an authenticated `categories` query (enum conversion), and a
+`categoryMonths` query (loader-based nested resolvers + computed
+`actualAmountCents`) — all returned correct data.
+
+`pr-reviewer` approved with one real doc-accuracy finding, no code
+changes needed: the "a schema change unmatched by a resolver is a compile
+error, not a silent drift" framing overstates what this actually catches
+— the reviewer proved it by adding a brand-new `Query` field with zero
+resolver and regenerating; it typechecked clean anyway, since every
+generated resolver field is optional (GraphQL allows a default
+property-access resolver, so codegen can't assume every field needs an
+explicit one). The real safety net is narrower and still genuinely
+useful: a resolver that *exists* but has drifted (wrong field name,
+mismatched arg/return type) is caught; a *forgotten* resolver for a new
+field is not, and still only surfaces at request time same as before.
+Corrected the wording in `PLAN.md`, `SERVICES.md`, and the code comment in
+`schema.ts` to say exactly that instead of overclaiming.
+
+`test-auditor` came back clean (no new tests strictly needed — the diff
+is resolver-body-unchanged/type-only, and the existing `schema.*.test.ts`
+suite already exercises the exact enum-conversion/resolver paths touched,
+with real value assertions), but surfaced that the "new field, no
+resolver" gap `pr-reviewer` found has a genuinely cheap runtime fix: since
+it directly closed something documented as an open gap in this same
+branch, closed it rather than leaving it dangling. Exported
+`queryResolvers`/`mutationResolvers` from `schema.ts` and added a
+`describe('schema completeness')` block to `tests/graphql/schema.test.ts`
+asserting every `Query`/`Mutation` SDL field has a matching resolver key —
+verified it actually catches the exact regression `pr-reviewer`
+demonstrated (added an unresolved field, watched the new test fail with a
+clear diff, reverted). Doesn't extend to nested-type fields (`Category`,
+`CategoryMonth`, etc.) — most of those intentionally rely on GraphQL's
+default property-access resolver, so a naive "every field needs an
+explicit resolver" check there would false-positive on fields that are
+correctly unresolved by design. 515 Jest tests total (was 513).
+
 ## Phase 1 — Backend
 
 - [x] **0. Ground truth** — `.claude/CLAUDE.md`, `docs/GLOSSARY.md`, `docs/PLAN.md`, `docs/SCALING.md` committed (originally flat at the repo root — moved into `.claude/`/`docs/` later, see "Where we left off").
