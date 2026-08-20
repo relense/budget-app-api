@@ -175,6 +175,13 @@ model Transaction {
   categoryMonth    CategoryMonth     @relation(fields: [categoryMonthId], references: [id], onDelete: Restrict)
   recurringExpense RecurringExpense? @relation(fields: [recurringExpenseId], references: [id], onDelete: Restrict)
 
+  // Forward-provisioned, not currently served by any query — flagged during
+  // a whole-codebase audit (see docs/PROGRESS.md). transactionService.list
+  // filters by a categoryMonthId set (via @@index([categoryMonthId]) below)
+  // and sorts by date in application code, not a DB-level date-range WHERE.
+  // Kept per PLAN.md's original "you'll filter by user + month constantly"
+  // reasoning for a future cross-month history/search query; revisit if
+  // that never materializes.
   @@index([userId, date])
   @@index([userId, createdAt]) // serves bankBalanceService's "every transaction created after the checkpoint" query — a different axis than date, since a backfilled transaction's date and its real insertion time can diverge
   @@index([categoryMonthId])
@@ -266,11 +273,13 @@ model SavingsMovement {
 
   fund SavingsFund @relation(fields: [fundId], references: [id], onDelete: Restrict)
 
-  // (userId, fundId), not (userId, date) as docs/PLAN.md's general indexing
+  // (fundId, userId), not (userId, date) as docs/PLAN.md's general indexing
   // note originally suggested — deliberate deviation, not an oversight: the
   // real query patterns (computeNetMovementCents/listByFundIds in
-  // savingsMovementService) filter by fund, not by a date range, so this
-  // index serves the actual code. See docs/PLAN.md's indexing bullet.
-  @@index([userId, fundId])
+  // savingsMovementService) filter by fundId alone, not userId and not by a
+  // date range — fundId leads so those queries actually range-scan the
+  // index instead of a full index scan. userId trails, still available for
+  // any future userId-scoped lookup. See docs/PLAN.md's indexing bullet.
+  @@index([fundId, userId])
   @@map("savings_movements")
 }
