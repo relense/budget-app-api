@@ -1638,15 +1638,31 @@ need. User will do this step manually in GitHub's UI (Settings → Branches
 → require status checks → select `ci`) rather than widen the token's
 scope for a one-time config change.
 
+Two small PRs followed, both docs-only/mechanical, used to smoke-test the
+pipeline end to end with the user (PR #25 recording the merge/handoff
+above, PR #26 a trivial docs edit specifically to watch a full PR run
+happen live) — both confirmed green.
+
+That surfaced a real, if non-blocking, finding: every run carried a
+"Node.js 20 is deprecated" annotation for `actions/checkout@v4`,
+`pnpm/action-setup@v4`, and `actions/setup-node@v4` — each pinned to a
+major version whose own runtime is still Node 20, which GitHub is
+deprecating as an Actions runtime and silently substituting Node 24 for in
+the meantime (not a failure yet, but the fallback won't last forever).
+Fixed by bumping to the current majors (checkout v7, setup-node v7,
+pnpm/action-setup v6 — confirmed via each action's `action.yml` that all
+three now declare `using: node24`), verified with a real CI run before
+merging.
+
 Remaining Production Readiness item: GDPR export/delete. Then Phase 2
-   (mobile app), which needs design references (mockups + Excel structure
-   — now partly in hand) before any screen work begins, per CLAUDE.md.
-3. Small tracked follow-up, not blocking, carried over from step 6: add
-   logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
-   (recurring-expenses step) once this service layer has a logger
-   dependency to hang it on (none exists yet — `src/lib/shutdown.ts` is
-   the only existing precedent, at the app-startup level, not
-   per-service).
+(mobile app), which needs design references (mockups + Excel structure —
+now partly in hand) before any screen work begins, per CLAUDE.md.
+
+Small tracked follow-up, not blocking, carried over from step 6: add
+logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
+(recurring-expenses step) once this service layer has a logger dependency
+to hang it on (none exists yet — `src/lib/shutdown.ts` is the only
+existing precedent, at the app-startup level, not per-service).
 
 ## Phase 1 — Backend
 
