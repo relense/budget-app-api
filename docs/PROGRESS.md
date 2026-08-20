@@ -1331,6 +1331,104 @@ Next actions, in order:
    the only existing precedent, at the app-startup level, not
    per-service).
 
+### PR #19 merged — whole-codebase audit before Production Readiness
+
+The user explicitly wanted something no single `pr-reviewer` pass had ever
+done: a review of the *entire* codebase for inconsistencies, not just one
+PR's diff. Ran this as a fresh, self-contained `general-purpose` subagent
+(not `pr-reviewer`, which is wired to review a diff, not audit a tree) —
+given `.claude/CLAUDE.md`/`GLOSSARY.md`/`PLAN.md`/`SERVICES.md`/
+`FUNCTIONALITIES.md`/`PROGRESS.md` for context, then the full `src/`,
+`prisma/`, `tests/` trees, with explicit instructions not to re-litigate
+documented, intentional design decisions (e.g. the recurring-expenses
+flat redesign, the income pivot) as if they were bugs. Confirmed baseline
+clean (453 tests, typecheck/lint/build) before hunting.
+
+Found two real, previously-uncaught bugs — both genuine gaps against
+already-documented intended behavior, not new design questions, so fixed
+directly rather than re-grilled:
+
+- **Invalid calendar dates silently rolled over instead of being
+  rejected.** `DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/` (duplicated across
+  `transactionService`/`savingsMovementService`/`savingsFundService`)
+  only checked shape — `new Date('2026-02-30')` silently becomes
+  `2026-03-02` in JS, no error. Worse, `transactionService`'s
+  `date_month_mismatch` guard compared `date.slice(0, 7)` against the
+  target CategoryMonth's month **before** any `Date` conversion, so
+  `"2026-02-30"` for a February CategoryMonth passed that check too
+  (string prefix matched), then got persisted as a March transaction
+  still linked to a February CategoryMonth — exactly the "silently
+  truncated or shifted value" `PLAN.md`'s Dates convention exists to
+  prevent, via a path the regex-only check never covered. Fixed with a
+  new shared `src/lib/dateFormat.ts` (`isValidCalendarDate`) that
+  round-trips the parsed Y/M/D back through `Date.UTC` and rejects
+  anything that doesn't match exactly (Feb 30, Apr 31, month 13, etc.) —
+  consolidates what was three separate regex constants into one
+  correctly-validating helper, wired into all three services.
+- **`updateCategory` could flip a category with an active (never-paid)
+  recurring expense from expense to income.** The direction-change guard
+  only checked for referencing `Transaction` rows, never
+  `RecurringExpense` rows — `recurringExpenseService` only enforces
+  "category must be expense-direction" at the recurring expense's own
+  create/update time, never re-checked afterward. A brand-new recurring
+  expense has zero transactions, so nothing blocked the switch; the next
+  `markRecurringPaid` would then derive the resulting Transaction's
+  `direction` from the now-income category, silently mislabeling it. This
+  crosses a boundary introduced in a later PR (recurring expenses, #4)
+  than the original direction-guard (categories, #3) — exactly the class
+  of gap no single-PR review would catch. Fixed by adding a
+  `recurringExpense.findFirst({ where: { categoryId } })` check alongside
+  the existing transaction check, reusing the same `direction_change_blocked`
+  error reason (no interface change).
+
+Both verified against real Postgres with throwaway smoke scripts (deleted,
+not committed) reproducing the exact failure mode, in addition to new
+regression tests.
+
+Also fixed, all flagged by the same audit:
+- **Doc drift**: `SERVICES.md` was missing the `date_month_mismatch` rule
+  entirely; it also implied query-depth limiting was production-only when
+  it's actually always on (`server.ts`'s ternary only prod-gates
+  introspection lockdown, not `depthLimit`) — the docs understated a
+  protection that was already there, not a real gap, but still wrong.
+- **Index comment inaccuracy, and the index itself corrected**:
+  `SavingsMovement`'s `@@index([userId, fundId])` comment claimed it
+  served `computeNetMovementCents`/`listByFundIds`, but neither query
+  filters by `userId` — both filter by `fundId` alone. Reordered to
+  `@@index([fundId, userId])` (new migration
+  `20260820090446_fix_savings_movement_index_order`) so the leading
+  column actually matches the real query pattern; `userId` still trails
+  for any future userId-scoped lookup. `PLAN.md`'s Indexes bullet
+  repeated the same inaccurate rationale, fixed too.
+- **Dead code removed**: `categoryMonthService`'s bound
+  `ensureActiveForCategory` method had zero production callers —
+  `recurringExpenseService` calls the standalone
+  `ensureActiveForCategoryOnClient` directly instead, and always did;
+  the bound wrapper's own doc comment even claimed it was "for callers
+  (recurring expenses)," which was never true. Removed the method; its
+  test suite (11 real behavioral tests — idempotency, budget inheritance
+  by real calendar month not insertion order, planning-horizon
+  exemptions) was rewritten to call `ensureActiveForCategoryOnClient`
+  directly via the same single-transaction shape production code
+  actually uses, so coverage of the still-live logic wasn't lost, only
+  the coverage of the dead wrapper.
+- **`Transaction`'s `(userId, date)` index has no current serving
+  query** (`transactionService.list` filters by a `categoryMonthId` set
+  and sorts in application code, not a DB-level date-range `WHERE`) —
+  left in place per `PLAN.md`'s original forward-provisioning intent, but
+  documented as such directly on the index in `schema.prisma` rather than
+  silently unexplained.
+- **New test proving the query-depth limit actually rejects** an
+  over-deep query (`tests/server.test.ts`) — previously only introspection
+  lockdown had this kind of end-to-end proof; depth-limiting was
+  correctly wired but unverified by any test.
+- **Stale `PROGRESS.md` line**: step 8's checklist entry still said "not
+  yet through pr-reviewer/test-auditor/merge" after PR #19 had already
+  merged — corrected.
+
+466 Jest tests total (was 453). All on `fix/codebase-audit-findings`, not
+yet through `pr-reviewer`/merge.
+
 ## Phase 1 — Backend
 
 - [x] **0. Ground truth** — `.claude/CLAUDE.md`, `docs/GLOSSARY.md`, `docs/PLAN.md`, `docs/SCALING.md` committed (originally flat at the repo root — moved into `.claude/`/`docs/` later, see "Where we left off").
@@ -1472,9 +1570,11 @@ Next actions, in order:
 - [x] **8. Seed script** — `prisma/seed.ts` (`npm run seed`), built from the
       user's real Excel tracker. Scoped to catalog + current month only, no
       transactions/funds/bank balance (explicitly grilled out). Seeds a
-      dedicated `seed@example.com` account, idempotent. Built on
-      `feature/seed-script`, not yet through `pr-reviewer`/`test-auditor`/
-      merge. See "Where we left off" above for the full grill and build.
+      dedicated `seed@example.com` account, idempotent. `pr-reviewer` (2
+      rounds — round 1 found two real bugs in the cleanup/idempotency
+      logic) and `test-auditor` both closed clean. Merged into `develop`
+      via PR #19. See "Where we left off" above for the full grill and
+      build.
 - [x] **9. Basic tests** — audited on `chore/basic-tests-audit`: a
       `test-auditor` pass scoped specifically to this step's own two asks
       (not the general suite) found real gaps — several list/read
