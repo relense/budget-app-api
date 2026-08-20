@@ -1587,10 +1587,55 @@ rows/batchSize 1.
 488 Jest tests total (was 475 before this branch, +13 across both review
 rounds). Both `pr-reviewer` and `test-auditor` closed clean.
 
+`chore/auth-row-cleanup` merged into `develop` via PR #23.
+
+### CI pipeline (2026-08-20)
+
+Grilled before coding, on a fresh `chore/ci-pipeline` branch: confirmed
+with the user this should run on both PRs and direct pushes to
+`develop`/`main` (the latter as a safety net, even though CLAUDE.md's
+branch workflow means it shouldn't normally happen), that "run tests +
+Prisma migrations" from `PLAN.md`'s bullet should include an actual
+ephemeral-Postgres `prisma migrate deploy` (not just the Jest suite, which
+only needs in-memory fakes — confirmed no test file touches a real DB), and
+that the resulting check should be a required, merge-blocking status check
+on `develop`/`main` once it exists.
+
+Built `.github/workflows/ci.yml` — one job, `postgres:17-alpine` service
+container matching `docker-compose.yml`'s credentials, `pnpm`
+install/lint/typecheck/build/test, then `prisma migrate deploy` against the
+service container. Verified locally before pushing: spun up a throwaway
+Postgres container and confirmed all 9 existing migrations replay cleanly
+from empty (`prisma migrate deploy`) — this is exactly what CI will do, so
+worth proving outside CI first rather than debugging it via failed runs.
+
+`pr-reviewer` round 1 found one real, verified blocker: `pnpm/action-setup@v4`
+has no `version` input and the repo's `package.json` had no
+`packageManager` field either — the action throws immediately with no
+version to resolve, so the workflow as first committed would have failed
+on step 1 of every run, before lint/typecheck/build/test/migration-replay
+ever got to execute. The "verified locally" note above only ever covered
+the Postgres/migration-replay piece, since the pnpm-setup failure mode is
+GitHub-Actions-specific and can't be reproduced locally. Fixed by adding
+`"packageManager": "pnpm@11.22.0"` to `package.json` (also pins local
+Corepack resolution as a side benefit). Also picked up three cheap
+hardening suggestions from the same round: a `concurrency` group
+(cancels a superseded run instead of queueting two full Postgres-backed
+runs back to back), `permissions: contents: read` at the workflow level
+(least-privilege — this job never needs to write anything), and
+`timeout-minutes: 15` on the job (so a hung step can't silently burn a
+large chunk of Actions minutes).
+
+Pushed as PR #24. The workflow itself was confirmed green on GitHub's
+actual runners (run 32370649072, 55s, every step passed) — the one thing
+that couldn't be verified locally before this.
+
 Next actions, in order:
-1. Hand `chore/auth-row-cleanup` back for human review — PR into `develop`.
-2. Remaining Production Readiness items after that: CI, GDPR export/delete
-   (`otp_codes`/`refresh_tokens` row cleanup is now done). Then Phase 2
+1. Once PR #24 merges, enable required status checks for the `ci` job on
+   `develop`/`main` via `gh api` (a check can't be required before GitHub
+   has seen it pass at least once on that branch — do it right after
+   merge).
+2. Remaining Production Readiness item: GDPR export/delete. Then Phase 2
    (mobile app), which needs design references (mockups + Excel structure
    — now partly in hand) before any screen work begins, per CLAUDE.md.
 3. Small tracked follow-up, not blocking, carried over from step 6: add

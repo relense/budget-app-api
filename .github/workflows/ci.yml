@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: budget_app
+          POSTGRES_PASSWORD: budget_app
+          POSTGRES_DB: budget_app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U budget_app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run lint
+
+      - run: pnpm run typecheck
+
+      - run: pnpm run build
+
+      - run: pnpm test
+
+      - name: Verify migrations apply cleanly
+        run: pnpm exec prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://budget_app:budget_app@localhost:5432/budget_app
