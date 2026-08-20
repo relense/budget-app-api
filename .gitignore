@@ -37,3 +37,8 @@ docker-compose.override.yml
 # TypeScript
 *.tsbuildinfo
 /src/generated/prisma
+
+# Personal financial data — never commit real income/spending/savings numbers
+*.xlsx
+*.xls
+*.csv
