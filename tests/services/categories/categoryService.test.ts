@@ -224,7 +224,7 @@ describe('updateCategory', () => {
       id: 'tx-1',
       userId: 'user-1',
       categoryMonthId: 'cm-1',
-      recurringExpenseInstanceId: null,
+      recurringExpenseId: null,
       amountCents: 500,
       date: new Date('2026-08-01'),
       merchant: null,
@@ -266,7 +266,7 @@ describe('updateCategory', () => {
       id: 'tx-1',
       userId: 'user-1',
       categoryMonthId: 'cm-1',
-      recurringExpenseInstanceId: null,
+      recurringExpenseId: null,
       amountCents: 500,
       date: new Date('2026-08-01'),
       merchant: null,
@@ -363,7 +363,7 @@ describe('deleteCategory', () => {
     expect(prisma.categories).toHaveLength(1);
   });
 
-  it('throws category_has_active_months when a recurring expense template references the category, even with no category_month row', async () => {
+  it('throws category_has_active_months when a recurring expense references the category, even with no category_month row', async () => {
     const { prisma, categoryService } = setup();
     const category = await categoryService.createCategory('user-1', {
       name: 'Groceries',
@@ -373,12 +373,13 @@ describe('deleteCategory', () => {
       direction: 'expense',
     });
     // No category_month row for this category — the pre-check alone
-    // wouldn't catch this. Reachable in practice: a template's instance
-    // (and the category_month it activated) can both be removed later
-    // while the template itself is kept.
-    prisma.recurringExpenseTemplates.push({
-      id: 'tpl-1',
+    // wouldn't catch this. Reachable in practice: the category_month a
+    // recurring expense activated can be removed later while the recurring
+    // expense row itself is kept.
+    prisma.recurringExpenses.push({
+      id: 'recurring-1',
       userId: 'user-1',
+      monthId: 'month-1',
       name: 'Rent',
       amountCents: 80000,
       categoryId: category.id,

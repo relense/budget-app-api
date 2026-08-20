@@ -18,6 +18,18 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // Bank balance checkpoint (see docs/PLAN.md's "Bank balance" note): the
+  // running balance is computed at read time as bankBalanceCheckpointCents
+  // + the net of every Transaction created after
+  // bankBalanceCheckpointSetAt — not a running total maintained on every
+  // write. No history is kept; setBankBalanceCheckpoint overwrites both
+  // fields in place, same "no undo, single current value" rule as every
+  // other entity in this schema. Defaults mean a user who never touches
+  // this feature still gets a sensible balance: 0 + every transaction
+  // they've ever logged.
+  bankBalanceCheckpointCents Int      @default(0) @map("bank_balance_checkpoint_cents")
+  bankBalanceCheckpointSetAt DateTime @default(now()) @map("bank_balance_checkpoint_set_at")
+
   refreshTokens RefreshToken[]
 
   @@map("users")
@@ -69,11 +81,18 @@ enum Direction {
   @@map("direction")
 }
 
+enum MovementType {
+  deposit
+  withdraw
+
+  @@map("movement_type")
+}
+
 // One row per user per real calendar month (YYYY-MM, e.g. "2026-03" and
 // "2027-03" are distinct rows) — not a recurring 1-12 bucket. `locked`/
 // `lockedAt` are inert until Build Order step 5 wires up the locking
 // mutation; the columns exist now so category_month/recurring instances
-// have a real FK target instead of a raw month string. See plan.md's
+// have a real FK target instead of a raw month string. See docs/PLAN.md's
 // "Month Lifecycle" section.
 model BudgetMonth {
   id       String    @id @default(uuid()) @db.Uuid
@@ -84,8 +103,8 @@ model BudgetMonth {
 
   createdAt DateTime @default(now()) @map("created_at")
 
-  categoryMonths            CategoryMonth[]
-  recurringExpenseInstances RecurringExpenseInstance[]
+  categoryMonths    CategoryMonth[]
+  recurringExpenses RecurringExpense[]
 
   @@unique([userId, month])
   @@map("budget_months")
@@ -93,7 +112,7 @@ model BudgetMonth {
 
 // Pure catalog — transversal across months, no month-awareness at all.
 // Month-scoped state (is it active, what's its budget) lives on
-// CategoryMonth, not here. Hard-deleted, not soft-deleted (see plan.md's
+// CategoryMonth, not here. Hard-deleted, not soft-deleted (see docs/PLAN.md's
 // "Month Lifecycle" section) — blocked while any category_month row
 // references it, for any month past or future.
 model Category {
@@ -108,15 +127,15 @@ model Category {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  categoryMonths            CategoryMonth[]
-  recurringExpenseTemplates RecurringExpenseTemplate[]
+  categoryMonths    CategoryMonth[]
+  recurringExpenses RecurringExpense[]
 
   @@index([userId])
   @@map("categories")
 }
 
 // The real join: a category is "active" in a month iff a row exists here
-// for it. Hard-deleted, not soft-deleted (see plan.md's "Month Lifecycle"
+// for it. Hard-deleted, not soft-deleted (see docs/PLAN.md's "Month Lifecycle"
 // section) — deletion is only allowed once no Transaction references it.
 model CategoryMonth {
   id                 String @id @default(uuid()) @db.Uuid
@@ -137,74 +156,121 @@ model CategoryMonth {
   @@map("category_month")
 }
 
-// Hard-deleted, not soft-deleted (see plan.md's "Month Lifecycle" section)
+// Hard-deleted, not soft-deleted (see docs/PLAN.md's "Month Lifecycle" section)
 // — no undo, no batching, single or bulk delete is immediate and permanent.
 model Transaction {
-  id                         String    @id @default(uuid()) @db.Uuid
-  userId                     String    @map("user_id") @db.Uuid
-  categoryMonthId            String    @map("category_month_id") @db.Uuid
-  recurringExpenseInstanceId String?   @map("recurring_expense_instance_id") @db.Uuid
-  amountCents                Int       @map("amount_cents")
-  date                       DateTime  @db.Date
-  merchant                   String?
-  note                       String?
-  direction                  Direction
+  id                 String    @id @default(uuid()) @db.Uuid
+  userId             String    @map("user_id") @db.Uuid
+  categoryMonthId    String    @map("category_month_id") @db.Uuid
+  recurringExpenseId String?   @map("recurring_expense_id") @db.Uuid
+  amountCents        Int       @map("amount_cents")
+  date               DateTime  @db.Date
+  merchant           String?
+  note               String?
+  direction          Direction
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  categoryMonth            CategoryMonth             @relation(fields: [categoryMonthId], references: [id], onDelete: Restrict)
-  recurringExpenseInstance RecurringExpenseInstance? @relation(fields: [recurringExpenseInstanceId], references: [id], onDelete: Restrict)
+  categoryMonth    CategoryMonth     @relation(fields: [categoryMonthId], references: [id], onDelete: Restrict)
+  recurringExpense RecurringExpense? @relation(fields: [recurringExpenseId], references: [id], onDelete: Restrict)
 
   @@index([userId, date])
+  @@index([userId, createdAt]) // serves bankBalanceService's "every transaction created after the checkpoint" query — a different axis than date, since a backfilled transaction's date and its real insertion time can diverge
   @@index([categoryMonthId])
-  @@index([recurringExpenseInstanceId])
+  @@index([recurringExpenseId])
   @@map("transactions")
 }
 
-// Pure catalog — transversal across months, no month-awareness. Points at
-// an existing Category (never creates one). Hard-deleted, not soft-deleted
-// (see plan.md's "Month Lifecycle" section) — blocked while any instance
-// references it, for any month, past or future.
-model RecurringExpenseTemplate {
+// One flat row per recurring expense per month it exists in — replaces the
+// old RecurringExpenseTemplate/RecurringExpenseInstance split (see
+// docs/PLAN.md's Data Model section for why: recurring expenses have no
+// dormant, month-independent existence the way Category does, so a
+// transversal catalog table wasn't earning its complexity). No cross-month
+// identity — each month's row is fully independent. Hard-deleted, matching
+// CategoryMonth, for the identical reason — blocked while any Transaction
+// references it. Points at an existing Category (never creates one).
+// @@unique([monthId, name]): scoped per month, not global — "Rent" can
+// exist once in October and once in November, just never twice in the
+// same month.
+model RecurringExpense {
   id          String     @id @default(uuid()) @db.Uuid
   userId      String     @map("user_id") @db.Uuid
+  monthId     String     @map("month_id") @db.Uuid
+  categoryId  String     @map("category_id") @db.Uuid
   name        String
   amountCents Int        @map("amount_cents")
-  categoryId  String     @map("category_id") @db.Uuid
   budgetType  BudgetType @map("budget_type")
   dueDay      Int        @map("due_day")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  category  Category                   @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  instances RecurringExpenseInstance[]
+  budgetMonth  BudgetMonth   @relation(fields: [monthId], references: [id], onDelete: Restrict)
+  category     Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
 
-  @@index([userId])
-  @@map("recurring_expense_templates")
+  @@unique([monthId, name])
+  @@index([userId, monthId])
+  @@map("recurring_expenses")
 }
 
-// The real join, one row per template per month it's carried into — same
-// role as CategoryMonth. Hard-deleted, matching CategoryMonth, for the
-// identical reason (see plan.md's step 4 design notes) — deletion is only
-// allowed once no Transaction references it. Not one-to-one with
-// Transaction: split payments are allowed, no uniqueness constraint here.
-model RecurringExpenseInstance {
-  id          String @id @default(uuid()) @db.Uuid
-  userId      String @map("user_id") @db.Uuid
-  templateId  String @map("template_id") @db.Uuid
-  monthId     String @map("month_id") @db.Uuid
-  amountCents Int    @map("amount_cents")
+// A long-running savings goal, unrelated to any single month (see
+// docs/GLOSSARY.md's "Category vs. Savings Fund"). Hard-deleted, not
+// soft-deleted (see docs/PLAN.md's step 6 note — every entity built so
+// far ended up hard-deleted with no undo, so this follows the same rule
+// rather than keeping the original soft-delete sketch) — blocked while
+// any movement references it. currentAmountCents and achieved are
+// deliberately NOT columns here — both are computed at read time by
+// savingsFundService (initialBalanceCents + SUM(movements), and
+// currentAmountCents >= targetAmountCents respectively), matching
+// recurringCommittedCents/paidThisMonth's same "never let a derived value
+// drift out of sync with reality" reasoning.
+model SavingsFund {
+  id                  String    @id @default(uuid()) @db.Uuid
+  userId              String    @map("user_id") @db.Uuid
+  name                String
+  targetAmountCents   Int?      @map("target_amount_cents")
+  initialBalanceCents Int       @map("initial_balance_cents")
+  startDate           DateTime? @map("start_date") @db.Date
+  endDate             DateTime? @map("end_date") @db.Date
+  monthlyTargetCents  Int?      @map("monthly_target_cents")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  template     RecurringExpenseTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
-  budgetMonth  BudgetMonth              @relation(fields: [monthId], references: [id], onDelete: Restrict)
-  transactions Transaction[]
+  movements SavingsMovement[]
 
-  @@unique([templateId, monthId])
-  @@index([userId, monthId])
-  @@map("recurring_expense_instances")
+  @@index([userId])
+  @@map("savings_funds")
+}
+
+// One deposit/withdrawal event against a fund — same relationship to
+// SavingsFund as Transaction has to CategoryMonth (docs/GLOSSARY.md).
+// Hard-deleted, no soft-delete, no undo. amountCents is always positive —
+// sign/meaning comes from `type`, same pattern as Transaction.direction.
+// Editable/deletable after creation (unlike a real accounting ledger) —
+// every write path (create/update/delete) re-validates that the fund's
+// resulting balance can never go negative, computed fresh inside the same
+// transaction as the write.
+model SavingsMovement {
+  id          String       @id @default(uuid()) @db.Uuid
+  userId      String       @map("user_id") @db.Uuid
+  fundId      String       @map("fund_id") @db.Uuid
+  amountCents Int          @map("amount_cents")
+  type        MovementType
+  date        DateTime     @db.Date
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  fund SavingsFund @relation(fields: [fundId], references: [id], onDelete: Restrict)
+
+  // (userId, fundId), not (userId, date) as docs/PLAN.md's general indexing
+  // note originally suggested — deliberate deviation, not an oversight: the
+  // real query patterns (computeNetMovementCents/listByFundIds in
+  // savingsMovementService) filter by fund, not by a date range, so this
+  // index serves the actual code. See docs/PLAN.md's indexing bullet.
+  @@index([userId, fundId])
+  @@map("savings_movements")
 }

@@ -264,23 +264,25 @@ describe('deleteBudgetMonth', () => {
     expect(prisma.budgetMonths).toHaveLength(1);
   });
 
-  it('throws budget_month_has_activations when a recurring_expense_instance references it with no category_month present', async () => {
-    // recurring_expense_instances.month_id has its own direct
-    // onDelete: Restrict FK to budget_months — it doesn't go through
-    // category_month. Reachable in practice: activate a category for a
-    // month, add a recurring expense against it (creates both rows),
-    // then removeCategoryFromMonth (which only checks for referencing
-    // transactions, not recurring_expense_instance) — the category_month
-    // is gone but the instance remains. The pre-check above (categoryMonth
-    // .findFirst) can't see this; only the P2003 catch does.
+  it('throws budget_month_has_activations when a recurring_expenses row references it with no category_month present', async () => {
+    // recurring_expenses.month_id has its own direct onDelete: Restrict FK
+    // to budget_months — it doesn't go through category_month. This is now
+    // hard to reach via removeCategoryFromMonth itself (it checks for a
+    // referencing recurring_expenses row too), but the FK backstop is
+    // defensive on purpose — proving deleteBudgetMonth's own P2003 catch
+    // still closes the gap regardless of how a dangling row like this could
+    // ever arise, not just for the one path that's blocked today.
     const { prisma, budgetMonthService } = setup();
     const monthId = await budgetMonthService.resolveBudgetMonthId('user-1', '2026-08');
-    prisma.recurringExpenseInstances.push({
-      id: 'inst-1',
+    prisma.recurringExpenses.push({
+      id: 'recurring-1',
       userId: 'user-1',
-      templateId: 'tpl-1',
       monthId,
+      categoryId: 'category-1',
+      name: 'Rent',
       amountCents: 8000,
+      budgetType: 'need',
+      dueDay: 1,
       createdAt: new Date(),
       updatedAt: new Date(),
     });

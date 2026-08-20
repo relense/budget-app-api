@@ -17,6 +17,14 @@ export class FakeForeignKeyConstraintError extends Error {
   }
 }
 
+/** Mimics the shape of Prisma's PrismaClientKnownRequestError for P2002 (unique constraint). */
+export class FakeUniqueConstraintError extends Error {
+  readonly code = 'P2002';
+  constructor() {
+    super('Unique constraint failed');
+  }
+}
+
 export interface FakeBudgetMonthDelegate {
   findUnique(args: {
     where: { id: string } | { userId_month: { userId: string; month: string } };
@@ -29,6 +37,8 @@ export interface FakeBudgetMonthDelegate {
     create: { userId: string; month: string };
     update: Record<string, never>;
   }): Promise<FakeBudgetMonth>;
+  /** Throws FakeUniqueConstraintError on a duplicate (userId, month) — mirrors the real @@unique([userId, month]). */
+  create(args: { data: { userId: string; month: string } }): Promise<FakeBudgetMonth>;
   update(args: {
     where: { id: string };
     data: Partial<Pick<FakeBudgetMonth, 'locked' | 'lockedAt'>>;
@@ -38,7 +48,7 @@ export interface FakeBudgetMonthDelegate {
 
 export interface FakeBudgetMonthDelegateRefs {
   categoryMonths?: Array<{ monthId: string }>;
-  recurringExpenseInstances?: Array<{ monthId: string }>;
+  recurringExpenses?: Array<{ monthId: string }>;
 }
 
 /**
@@ -89,6 +99,21 @@ export function createFakeBudgetMonthDelegate(
       budgetMonths.push(row);
       return row;
     },
+    async create({ data }) {
+      const duplicate = budgetMonths.find((bm) => bm.userId === data.userId && bm.month === data.month);
+      if (duplicate) throw new FakeUniqueConstraintError();
+
+      const row: FakeBudgetMonth = {
+        id: randomUUID(),
+        userId: data.userId,
+        month: data.month,
+        locked: false,
+        lockedAt: null,
+        createdAt: new Date(),
+      };
+      budgetMonths.push(row);
+      return row;
+    },
     async update({ where, data }) {
       const row = budgetMonths.find((bm) => bm.id === where.id);
       if (!row) throw new Error('not found');
@@ -100,7 +125,7 @@ export function createFakeBudgetMonthDelegate(
       if (index === -1) throw new Error('not found');
       const referenced =
         (refs.categoryMonths ?? []).some((cm) => cm.monthId === where.id) ||
-        (refs.recurringExpenseInstances ?? []).some((ri) => ri.monthId === where.id);
+        (refs.recurringExpenses ?? []).some((re) => re.monthId === where.id);
       if (referenced) {
         throw new FakeForeignKeyConstraintError();
       }

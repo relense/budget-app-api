@@ -1,0 +1,119 @@
+# Functionalities — What The App Can Do Right Now
+
+Plain-language walkthrough of the app from the user's perspective, as built
+today. Not a design-rationale doc (see `PLAN.md` for that) and not the API
+reference (see `SERVICES.md` for that) — just "what can I actually do."
+
+## 1. Sign up / log in
+
+- Enter email → get a 6-character code by email → enter code → logged in.
+- First time ever: this also creates the account and seeds a default set of
+  starter categories for free.
+- Returning: same code flow, just logs in.
+
+## 2. Categories
+
+The spending buckets — "Housing", "Shopping", "Health", etc.
+
+- Create a category (name, expense or income, and if expense, need/want/savings).
+- Edit or delete a category (delete only works if it's never been used in
+  any month).
+- Categories sit in a catalog and don't belong to any month by themselves —
+  they can sit unused/dormant until activated for a month.
+
+## 3. Months
+
+- No explicit "create a month" action — the app figures out the "current
+  month" on its own (earliest one that isn't locked yet, or today's real
+  month if brand new).
+- "Activate" a category *for* a month by adding it with a budget amount
+  (e.g. "Housing: 900€ this month") — manual, per category, per month.
+- Locking a month freezes everything in it forever — no more edits, no more
+  transactions.
+- Can pre-provision the *next* month early (one month ahead, not further).
+- A pre-provisioned month with nothing in it yet can be deleted.
+
+## 4. Transactions
+
+Actual spending/income entries.
+
+- Log a transaction against an active category-for-a-month: amount, date,
+  optional merchant/note.
+- Edit or delete it (only if that month isn't locked).
+
+## 5. Recurring expenses ("Contas" — Rent, Netflix, etc.)
+
+One flat row per recurring expense per month it exists in — name, category,
+amount, due day, and paid-or-not (via a linked transaction). No separate
+"template" — that split was tried, then dropped (see `PLAN.md`'s Data Model
+section for the reasoning).
+
+- Create one directly, for a given month: also auto-activates its category
+  for that month if needed, same "no dormant state" rule categories don't
+  get.
+- Moving to a new month **automatically** copies the previous month's list
+  forward (fresh, unpaid) — no per-item opt-in, and no link between one
+  month's row and the next month's copy (each is fully independent).
+  Whichever action first touches a brand-new month — adding a category or
+  creating a new recurring expense — triggers this, not just locking.
+- Mark one paid → creates a transaction linked to it. Callable more than
+  once for split payments (e.g. rent paid in two chunks); tracks whether
+  the total paid covers the full amount.
+- Edit one directly (name/category/budget type/due day/amount, all
+  together) — only ever changes that one month's row. No "apply to future
+  months too?" question, since there's no template default to reconcile
+  against.
+- Remove one from a month (blocked if a transaction already points at it).
+  The same name can't exist twice in the same month, but can repeat across
+  different months (e.g. "Rent" every month).
+
+## 6. Savings funds
+
+Named savings goals, separate from monthly spending categories (e.g.
+"Emergency Fund", "Wedding") — money that accumulates over time rather than
+resetting each month.
+
+- Create a fund: name, starting balance, optionally a target amount, a
+  start/end date, and a monthly savings target.
+- Log a deposit or withdrawal against it (a "movement") — a withdrawal is
+  blocked if it would leave the fund negative, even under concurrent
+  requests.
+- Edit or delete a movement — the balance is re-checked against the edit or
+  removal the same way, so you can never end up negative by editing history
+  either.
+- Delete a fund (only once it has no movements left).
+- See the fund's current balance and whether it's hit its target — both
+  calculated live from its movements, not stored numbers that could drift.
+
+## 7. Income
+
+There's no separate "income source" feature — income is just a category
+like any other, tagged as income instead of expense (e.g. "Salary",
+"Freelance"). Add it to a month like any category, with the expected amount
+as its budget; each paycheck you log is a normal transaction against it.
+
+- Every category-for-a-month now also shows how much has actually come in
+  (or, for expense categories, actually been spent) — the "actual" number
+  next to the planned one, calculated live from its transactions.
+- Ask for just the income side (or just the expense side) of a month
+  separately, e.g. for a dedicated "Income this month" view.
+
+## 8. Bank balance
+
+A single running total of your money, separate from any one month and
+separate from Savings Funds (moving money into a fund doesn't change this
+number — it's still yours, just tracked in two places, same as keeping a
+spreadsheet column for "in the bank" and another for "invested").
+
+- Tell the app how much you have right now (e.g. "I have 30k") — it doesn't
+  matter when in the month you do this, or whether you've used the app
+  before. If you don't set anything, it just assumes 0 to start.
+- From that point on, the balance updates automatically as you log income
+  and expense transactions — no need to touch it again unless the real
+  number needs correcting (e.g. you double-checked your actual bank
+  balance and want to reset the anchor).
+- Correcting it doesn't rewrite history — it just means "start counting
+  from here," so old transactions logged before the correction stop
+  affecting the number.
+- Unlike everywhere else in the app, this number is allowed to go negative
+  — a real bank account can be overdrawn.

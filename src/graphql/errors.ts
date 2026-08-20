@@ -1,10 +1,12 @@
 import { GraphQLError } from 'graphql';
+import { BankBalanceServiceError } from '../services/bankBalance/bankBalanceService.js';
 import { BudgetMonthServiceError } from '../services/budgetMonths/budgetMonthService.js';
 import { CategoryMonthServiceError } from '../services/categories/categoryMonthService.js';
 import { CategoryServiceError } from '../services/categories/categoryService.js';
 import { TransactionServiceError } from '../services/categories/transactionService.js';
-import { RecurringExpenseInstanceServiceError } from '../services/recurringExpenses/recurringExpenseInstanceService.js';
-import { RecurringExpenseTemplateServiceError } from '../services/recurringExpenses/recurringExpenseTemplateService.js';
+import { RecurringExpenseServiceError } from '../services/recurringExpenses/recurringExpenseService.js';
+import { SavingsFundServiceError } from '../services/savings/savingsFundService.js';
+import { SavingsMovementServiceError } from '../services/savings/savingsMovementService.js';
 
 /**
  * Maps known service-layer errors to a GraphQLError with a stable
@@ -18,8 +20,10 @@ export function toGraphQLError(error: unknown): never {
     error instanceof CategoryMonthServiceError ||
     error instanceof BudgetMonthServiceError ||
     error instanceof TransactionServiceError ||
-    error instanceof RecurringExpenseTemplateServiceError ||
-    error instanceof RecurringExpenseInstanceServiceError
+    error instanceof RecurringExpenseServiceError ||
+    error instanceof SavingsFundServiceError ||
+    error instanceof SavingsMovementServiceError ||
+    error instanceof BankBalanceServiceError
   ) {
     throw new GraphQLError(error.message, { extensions: { code: error.reason.toUpperCase() } });
   }

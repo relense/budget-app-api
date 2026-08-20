@@ -12,12 +12,14 @@ import { verifyAccessToken } from './lib/jwt.js';
 import type { PrismaClient } from './lib/prisma.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import type { AuthService } from './services/auth/authService.js';
+import { createBankBalanceService } from './services/bankBalance/bankBalanceService.js';
 import { createBudgetMonthService } from './services/budgetMonths/budgetMonthService.js';
 import { createCategoryMonthService } from './services/categories/categoryMonthService.js';
 import { createCategoryService } from './services/categories/categoryService.js';
 import { createTransactionService } from './services/categories/transactionService.js';
-import { createRecurringExpenseInstanceService } from './services/recurringExpenses/recurringExpenseInstanceService.js';
-import { createRecurringExpenseTemplateService } from './services/recurringExpenses/recurringExpenseTemplateService.js';
+import { createRecurringExpenseService } from './services/recurringExpenses/recurringExpenseService.js';
+import { createSavingsFundService } from './services/savings/savingsFundService.js';
+import { createSavingsMovementService } from './services/savings/savingsMovementService.js';
 
 const MAX_QUERY_DEPTH = 10;
 const BEARER_PREFIX = 'Bearer ';
@@ -40,8 +42,10 @@ export interface BuildServerOptions {
     | 'categoryMonth'
     | 'budgetMonth'
     | 'transaction'
-    | 'recurringExpenseTemplate'
-    | 'recurringExpenseInstance'
+    | 'recurringExpense'
+    | 'savingsFund'
+    | 'savingsMovement'
+    | 'user'
   >;
   authService: Pick<
     AuthService,
@@ -67,21 +71,33 @@ export async function buildServer({
 
   const budgetMonthService = createBudgetMonthService({ prisma });
   const categoryService = createCategoryService({ prisma });
-  const categoryMonthService = createCategoryMonthService({ prisma, budgetMonthService });
   const transactionService = createTransactionService({ prisma, budgetMonthService });
-  const templateService = createRecurringExpenseTemplateService({ prisma });
-  const instanceService = createRecurringExpenseInstanceService({
+  const recurringExpenseService = createRecurringExpenseService({
     prisma,
     budgetMonthService,
     transactionService,
   });
+  // onNewBudgetMonth wired here, not imported directly by categoryMonthService
+  // — see CategoryMonthServiceDeps's doc comment for why (keeps the
+  // one-directional service-layer dependency graph: recurringExpenseService
+  // depends on categoryMonthService, never the reverse).
+  const categoryMonthService = createCategoryMonthService({
+    prisma,
+    budgetMonthService,
+    onNewBudgetMonth: recurringExpenseService.seedNewMonth,
+  });
+  const savingsFundService = createSavingsFundService({ prisma });
+  const savingsMovementService = createSavingsMovementService({ prisma });
+  const bankBalanceService = createBankBalanceService({ prisma });
   const buildGraphQLContext = createGraphQLContextBuilder({
     categoryService,
     categoryMonthService,
     budgetMonthService,
     transactionService,
-    templateService,
-    instanceService,
+    recurringExpenseService,
+    savingsFundService,
+    savingsMovementService,
+    bankBalanceService,
   });
 
   app.get('/health', async (_request, reply) => {

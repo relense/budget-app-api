@@ -1,24 +1,17 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import { graphql } from 'graphql';
 import type { GraphQLContext } from '../../src/graphql/context.js';
-import { RecurringExpenseInstanceServiceError } from '../../src/services/recurringExpenses/recurringExpenseInstanceService.js';
-import { RecurringExpenseTemplateServiceError } from '../../src/services/recurringExpenses/recurringExpenseTemplateService.js';
+import { RecurringExpenseServiceError } from '../../src/services/recurringExpenses/recurringExpenseService.js';
 import { schema } from '../../src/graphql/schema.js';
 
-const template = {
-  id: 'tpl-1',
+const recurringExpense = {
+  id: 'recurring-1',
+  monthId: 'month-1',
   name: 'Rent',
   amountCents: 80000,
   budgetType: 'need' as const,
   dueDay: 1,
   categoryId: 'cat-1',
-};
-
-const instance = {
-  id: 'inst-1',
-  monthId: 'month-1',
-  amountCents: 80000,
-  templateId: template.id,
 };
 
 const transaction = {
@@ -29,7 +22,7 @@ const transaction = {
   note: null,
   direction: 'expense' as const,
   categoryMonthId: 'cm-1',
-  recurringExpenseInstanceId: instance.id,
+  recurringExpenseId: recurringExpense.id,
 };
 
 function buildContext(userId: string | null): GraphQLContext {
@@ -39,19 +32,16 @@ function buildContext(userId: string | null): GraphQLContext {
     categoryMonthService: {} as never,
     budgetMonthService: {} as never,
     transactionService: {} as never,
-    templateService: {
-      listCatalog: jest.fn(async () => [template]),
-      updateTemplate: jest.fn(async () => template),
-      deleteTemplate: jest.fn(async () => undefined),
-    } as never,
-    instanceService: {
-      listByMonth: jest.fn(async () => [instance]),
-      createTemplateForMonth: jest.fn(async () => ({ template, instance })),
-      addRecurringExpenseToMonth: jest.fn(async () => instance),
-      updateInstance: jest.fn(async () => instance),
+    recurringExpenseService: {
+      listByMonth: jest.fn(async () => [recurringExpense]),
+      createRecurringExpense: jest.fn(async () => recurringExpense),
+      updateRecurringExpense: jest.fn(async () => recurringExpense),
       removeFromMonth: jest.fn(async () => undefined),
       markRecurringPaid: jest.fn(async () => transaction),
     } as never,
+    savingsFundService: {} as never,
+    savingsMovementService: {} as never,
+    bankBalanceService: {} as never,
     loaders: {} as never,
   };
 }
@@ -60,21 +50,21 @@ async function run(source: string, contextValue: GraphQLContext) {
   return graphql({ schema, source, contextValue });
 }
 
-describe('Query.recurringExpenseTemplates', () => {
-  const query = '{ recurringExpenseTemplates { id name amountCents budgetType dueDay } }';
+describe('Query.recurringExpenses', () => {
+  const query = '{ recurringExpenses(month: "2026-08") { id name amountCents budgetType dueDay } }';
 
-  it('returns the catalog for the authenticated user', async () => {
+  it('returns recurring expenses for the given month, scoped to the authenticated user', async () => {
     const context = buildContext('user-1');
 
     const result = await run(query, context);
 
     expect(result.errors).toBeUndefined();
     expect(result.data).toEqual({
-      recurringExpenseTemplates: [
-        { id: 'tpl-1', name: 'Rent', amountCents: 80000, budgetType: 'NEED', dueDay: 1 },
+      recurringExpenses: [
+        { id: 'recurring-1', name: 'Rent', amountCents: 80000, budgetType: 'NEED', dueDay: 1 },
       ],
     });
-    expect(context.templateService.listCatalog).toHaveBeenCalledWith('user-1');
+    expect(context.recurringExpenseService.listByMonth).toHaveBeenCalledWith('user-1', '2026-08');
   });
 
   it('rejects an unauthenticated request without calling the service', async () => {
@@ -83,37 +73,14 @@ describe('Query.recurringExpenseTemplates', () => {
     const result = await run(query, context);
 
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
-    expect(context.templateService.listCatalog).not.toHaveBeenCalled();
+    expect(context.recurringExpenseService.listByMonth).not.toHaveBeenCalled();
   });
 });
 
-describe('Query.recurringExpenseInstances', () => {
-  const query = '{ recurringExpenseInstances(month: "2026-08") { id amountCents } }';
-
-  it('returns instances for the given month, scoped to the authenticated user', async () => {
-    const context = buildContext('user-1');
-
-    const result = await run(query, context);
-
-    expect(result.errors).toBeUndefined();
-    expect(result.data).toEqual({ recurringExpenseInstances: [{ id: 'inst-1', amountCents: 80000 }] });
-    expect(context.instanceService.listByMonth).toHaveBeenCalledWith('user-1', '2026-08');
-  });
-
-  it('rejects an unauthenticated request without calling the service', async () => {
-    const context = buildContext(null);
-
-    const result = await run(query, context);
-
-    expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
-    expect(context.instanceService.listByMonth).not.toHaveBeenCalled();
-  });
-});
-
-describe('Mutation.createRecurringExpenseTemplate', () => {
+describe('Mutation.createRecurringExpense', () => {
   const mutation = `
     mutation {
-      createRecurringExpenseTemplate(
+      createRecurringExpense(
         input: { name: "Rent", amountCents: 80000, categoryId: "cat-1", budgetType: NEED, dueDay: 1 }
         month: "2026-08"
         categoryMonthlyBudgetCents: 90000
@@ -121,22 +88,22 @@ describe('Mutation.createRecurringExpenseTemplate', () => {
     }
   `;
 
-  it('creates the template for the given month and returns it', async () => {
+  it('creates the recurring expense for the given month and returns it', async () => {
     const context = buildContext('user-1');
 
     const result = await run(mutation, context);
 
     expect(result.errors).toBeUndefined();
     expect(result.data).toEqual({
-      createRecurringExpenseTemplate: {
-        id: 'tpl-1',
+      createRecurringExpense: {
+        id: 'recurring-1',
         name: 'Rent',
         amountCents: 80000,
         budgetType: 'NEED',
         dueDay: 1,
       },
     });
-    expect(context.instanceService.createTemplateForMonth).toHaveBeenCalledWith(
+    expect(context.recurringExpenseService.createRecurringExpense).toHaveBeenCalledWith(
       'user-1',
       { name: 'Rent', amountCents: 80000, categoryId: 'cat-1', budgetType: 'need', dueDay: 1 },
       '2026-08',
@@ -150,13 +117,13 @@ describe('Mutation.createRecurringExpenseTemplate', () => {
     const result = await run(mutation, context);
 
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
-    expect(context.instanceService.createTemplateForMonth).not.toHaveBeenCalled();
+    expect(context.recurringExpenseService.createRecurringExpense).not.toHaveBeenCalled();
   });
 
   it('maps a service error to a GraphQLError with a matching extensions.code', async () => {
     const context = buildContext('user-1');
-    (context.instanceService.createTemplateForMonth as jest.Mock).mockImplementation(async () => {
-      throw new RecurringExpenseTemplateServiceError('invalid_category_direction');
+    (context.recurringExpenseService.createRecurringExpense as jest.Mock).mockImplementation(async () => {
+      throw new RecurringExpenseServiceError('invalid_category_direction');
     });
 
     const result = await run(mutation, context);
@@ -165,106 +132,32 @@ describe('Mutation.createRecurringExpenseTemplate', () => {
   });
 });
 
-describe('Mutation.updateRecurringExpenseTemplate', () => {
+describe('Mutation.updateRecurringExpense', () => {
   const mutation = `
     mutation {
-      updateRecurringExpenseTemplate(
-        id: "tpl-1"
+      updateRecurringExpense(
+        id: "recurring-1"
         input: { name: "Rent", amountCents: 85000, categoryId: "cat-1", budgetType: WANT, dueDay: 5 }
       ) { id }
     }
   `;
 
-  it('updates the template and returns it', async () => {
+  it('updates the recurring expense and returns it', async () => {
     const context = buildContext('user-1');
 
     const result = await run(mutation, context);
 
     expect(result.errors).toBeUndefined();
-    expect(context.templateService.updateTemplate).toHaveBeenCalledWith('user-1', 'tpl-1', {
-      name: 'Rent',
-      amountCents: 85000,
-      categoryId: 'cat-1',
-      budgetType: 'want',
-      dueDay: 5,
-    });
-  });
-
-  it('rejects an unauthenticated request without calling the service', async () => {
-    const context = buildContext(null);
-
-    const result = await run(mutation, context);
-
-    expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
-    expect(context.templateService.updateTemplate).not.toHaveBeenCalled();
-  });
-
-  it('maps template_not_found to a GraphQLError', async () => {
-    const context = buildContext('user-1');
-    (context.templateService.updateTemplate as jest.Mock).mockImplementation(async () => {
-      throw new RecurringExpenseTemplateServiceError('template_not_found');
-    });
-
-    const result = await run(mutation, context);
-
-    expect(result.errors?.[0]?.extensions?.code).toBe('TEMPLATE_NOT_FOUND');
-  });
-});
-
-describe('Mutation.deleteRecurringExpenseTemplate', () => {
-  const mutation = 'mutation { deleteRecurringExpenseTemplate(id: "tpl-1") }';
-
-  it('deletes the template and returns true', async () => {
-    const context = buildContext('user-1');
-
-    const result = await run(mutation, context);
-
-    expect(result.errors).toBeUndefined();
-    expect(result.data).toEqual({ deleteRecurringExpenseTemplate: true });
-    expect(context.templateService.deleteTemplate).toHaveBeenCalledWith('user-1', 'tpl-1');
-  });
-
-  it('rejects an unauthenticated request without calling the service', async () => {
-    const context = buildContext(null);
-
-    const result = await run(mutation, context);
-
-    expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
-    expect(context.templateService.deleteTemplate).not.toHaveBeenCalled();
-  });
-
-  it('maps template_has_active_instances to a GraphQLError', async () => {
-    const context = buildContext('user-1');
-    (context.templateService.deleteTemplate as jest.Mock).mockImplementation(async () => {
-      throw new RecurringExpenseTemplateServiceError('template_has_active_instances');
-    });
-
-    const result = await run(mutation, context);
-
-    expect(result.errors?.[0]?.extensions?.code).toBe('TEMPLATE_HAS_ACTIVE_INSTANCES');
-  });
-});
-
-describe('Mutation.addRecurringExpenseToMonth', () => {
-  const mutation = `
-    mutation {
-      addRecurringExpenseToMonth(templateId: "tpl-1", month: "2026-08", categoryMonthlyBudgetCents: 90000)
-      { id amountCents }
-    }
-  `;
-
-  it('adds the template to the given month and returns the instance', async () => {
-    const context = buildContext('user-1');
-
-    const result = await run(mutation, context);
-
-    expect(result.errors).toBeUndefined();
-    expect(result.data).toEqual({ addRecurringExpenseToMonth: { id: 'inst-1', amountCents: 80000 } });
-    expect(context.instanceService.addRecurringExpenseToMonth).toHaveBeenCalledWith(
+    expect(context.recurringExpenseService.updateRecurringExpense).toHaveBeenCalledWith(
       'user-1',
-      'tpl-1',
-      '2026-08',
-      90000,
+      'recurring-1',
+      {
+        name: 'Rent',
+        amountCents: 85000,
+        categoryId: 'cat-1',
+        budgetType: 'want',
+        dueDay: 5,
+      },
     );
   });
 
@@ -274,65 +167,32 @@ describe('Mutation.addRecurringExpenseToMonth', () => {
     const result = await run(mutation, context);
 
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
-    expect(context.instanceService.addRecurringExpenseToMonth).not.toHaveBeenCalled();
+    expect(context.recurringExpenseService.updateRecurringExpense).not.toHaveBeenCalled();
   });
 
-  it('maps instance_already_active to a GraphQLError', async () => {
+  it('maps recurring_expense_not_found to a GraphQLError', async () => {
     const context = buildContext('user-1');
-    (context.instanceService.addRecurringExpenseToMonth as jest.Mock).mockImplementation(async () => {
-      throw new RecurringExpenseInstanceServiceError('instance_already_active');
+    (context.recurringExpenseService.updateRecurringExpense as jest.Mock).mockImplementation(async () => {
+      throw new RecurringExpenseServiceError('recurring_expense_not_found');
     });
 
     const result = await run(mutation, context);
 
-    expect(result.errors?.[0]?.extensions?.code).toBe('INSTANCE_ALREADY_ACTIVE');
-  });
-});
-
-describe('Mutation.updateRecurringExpenseInstance', () => {
-  const mutation = 'mutation { updateRecurringExpenseInstance(id: "inst-1", amountCents: 4500) { id } }';
-
-  it('updates the instance amount', async () => {
-    const context = buildContext('user-1');
-
-    const result = await run(mutation, context);
-
-    expect(result.errors).toBeUndefined();
-    expect(context.instanceService.updateInstance).toHaveBeenCalledWith('user-1', 'inst-1', 4500);
-  });
-
-  it('rejects an unauthenticated request without calling the service', async () => {
-    const context = buildContext(null);
-
-    const result = await run(mutation, context);
-
-    expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
-    expect(context.instanceService.updateInstance).not.toHaveBeenCalled();
-  });
-
-  it('maps invalid_amount to a GraphQLError', async () => {
-    const context = buildContext('user-1');
-    (context.instanceService.updateInstance as jest.Mock).mockImplementation(async () => {
-      throw new RecurringExpenseInstanceServiceError('invalid_amount');
-    });
-
-    const result = await run(mutation, context);
-
-    expect(result.errors?.[0]?.extensions?.code).toBe('INVALID_AMOUNT');
+    expect(result.errors?.[0]?.extensions?.code).toBe('RECURRING_EXPENSE_NOT_FOUND');
   });
 });
 
 describe('Mutation.removeRecurringExpenseFromMonth', () => {
-  const mutation = 'mutation { removeRecurringExpenseFromMonth(id: "inst-1") }';
+  const mutation = 'mutation { removeRecurringExpenseFromMonth(id: "recurring-1") }';
 
-  it('removes the instance and returns true', async () => {
+  it('removes the recurring expense and returns true', async () => {
     const context = buildContext('user-1');
 
     const result = await run(mutation, context);
 
     expect(result.errors).toBeUndefined();
     expect(result.data).toEqual({ removeRecurringExpenseFromMonth: true });
-    expect(context.instanceService.removeFromMonth).toHaveBeenCalledWith('user-1', 'inst-1');
+    expect(context.recurringExpenseService.removeFromMonth).toHaveBeenCalledWith('user-1', 'recurring-1');
   });
 
   it('rejects an unauthenticated request without calling the service', async () => {
@@ -341,18 +201,18 @@ describe('Mutation.removeRecurringExpenseFromMonth', () => {
     const result = await run(mutation, context);
 
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
-    expect(context.instanceService.removeFromMonth).not.toHaveBeenCalled();
+    expect(context.recurringExpenseService.removeFromMonth).not.toHaveBeenCalled();
   });
 
-  it('maps instance_has_transactions to a GraphQLError', async () => {
+  it('maps recurring_expense_has_transactions to a GraphQLError', async () => {
     const context = buildContext('user-1');
-    (context.instanceService.removeFromMonth as jest.Mock).mockImplementation(async () => {
-      throw new RecurringExpenseInstanceServiceError('instance_has_transactions');
+    (context.recurringExpenseService.removeFromMonth as jest.Mock).mockImplementation(async () => {
+      throw new RecurringExpenseServiceError('recurring_expense_has_transactions');
     });
 
     const result = await run(mutation, context);
 
-    expect(result.errors?.[0]?.extensions?.code).toBe('INSTANCE_HAS_TRANSACTIONS');
+    expect(result.errors?.[0]?.extensions?.code).toBe('RECURRING_EXPENSE_HAS_TRANSACTIONS');
   });
 });
 
@@ -360,7 +220,7 @@ describe('Mutation.markRecurringPaid', () => {
   const mutation = `
     mutation {
       markRecurringPaid(
-        id: "inst-1"
+        id: "recurring-1"
         input: { amountCents: 80000, date: "2026-08-01", merchant: "Landlord" }
       ) { id amountCents merchant direction date }
     }
@@ -381,12 +241,16 @@ describe('Mutation.markRecurringPaid', () => {
         date: '2026-08-01',
       },
     });
-    expect(context.instanceService.markRecurringPaid).toHaveBeenCalledWith('user-1', 'inst-1', {
-      amountCents: 80000,
-      date: '2026-08-01',
-      merchant: 'Landlord',
-      note: undefined,
-    });
+    expect(context.recurringExpenseService.markRecurringPaid).toHaveBeenCalledWith(
+      'user-1',
+      'recurring-1',
+      {
+        amountCents: 80000,
+        date: '2026-08-01',
+        merchant: 'Landlord',
+        note: undefined,
+      },
+    );
   });
 
   it('rejects an unauthenticated request without calling the service', async () => {
@@ -395,13 +259,13 @@ describe('Mutation.markRecurringPaid', () => {
     const result = await run(mutation, context);
 
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
-    expect(context.instanceService.markRecurringPaid).not.toHaveBeenCalled();
+    expect(context.recurringExpenseService.markRecurringPaid).not.toHaveBeenCalled();
   });
 
   it('maps month_locked to a GraphQLError', async () => {
     const context = buildContext('user-1');
-    (context.instanceService.markRecurringPaid as jest.Mock).mockImplementation(async () => {
-      throw new RecurringExpenseInstanceServiceError('month_locked');
+    (context.recurringExpenseService.markRecurringPaid as jest.Mock).mockImplementation(async () => {
+      throw new RecurringExpenseServiceError('month_locked');
     });
 
     const result = await run(mutation, context);

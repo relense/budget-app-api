@@ -1,9 +1,11 @@
+import type { BankBalanceService } from '../services/bankBalance/bankBalanceService.js';
 import type { BudgetMonthService } from '../services/budgetMonths/budgetMonthService.js';
 import type { CategoryMonthService } from '../services/categories/categoryMonthService.js';
 import type { CategoryService } from '../services/categories/categoryService.js';
 import type { TransactionService } from '../services/categories/transactionService.js';
-import type { RecurringExpenseInstanceService } from '../services/recurringExpenses/recurringExpenseInstanceService.js';
-import type { RecurringExpenseTemplateService } from '../services/recurringExpenses/recurringExpenseTemplateService.js';
+import type { RecurringExpenseService } from '../services/recurringExpenses/recurringExpenseService.js';
+import type { SavingsFundService } from '../services/savings/savingsFundService.js';
+import type { SavingsMovementService } from '../services/savings/savingsMovementService.js';
 import { createGraphQLLoaders, type GraphQLLoaders } from './loaders.js';
 
 export interface GraphQLContext {
@@ -12,8 +14,10 @@ export interface GraphQLContext {
   categoryMonthService: CategoryMonthService;
   budgetMonthService: BudgetMonthService;
   transactionService: TransactionService;
-  templateService: RecurringExpenseTemplateService;
-  instanceService: RecurringExpenseInstanceService;
+  recurringExpenseService: RecurringExpenseService;
+  savingsFundService: SavingsFundService;
+  savingsMovementService: SavingsMovementService;
+  bankBalanceService: BankBalanceService;
   loaders: GraphQLLoaders;
 }
 
@@ -22,8 +26,10 @@ export interface GraphQLContextBuilderDeps {
   categoryMonthService: CategoryMonthService;
   budgetMonthService: BudgetMonthService;
   transactionService: TransactionService;
-  templateService: RecurringExpenseTemplateService;
-  instanceService: RecurringExpenseInstanceService;
+  recurringExpenseService: RecurringExpenseService;
+  savingsFundService: SavingsFundService;
+  savingsMovementService: SavingsMovementService;
+  bankBalanceService: BankBalanceService;
 }
 
 /**
@@ -39,8 +45,10 @@ export function createGraphQLContextBuilder(deps: GraphQLContextBuilderDeps) {
       categoryMonthService: deps.categoryMonthService,
       budgetMonthService: deps.budgetMonthService,
       transactionService: deps.transactionService,
-      templateService: deps.templateService,
-      instanceService: deps.instanceService,
+      recurringExpenseService: deps.recurringExpenseService,
+      savingsFundService: deps.savingsFundService,
+      savingsMovementService: deps.savingsMovementService,
+      bankBalanceService: deps.bankBalanceService,
       loaders: createGraphQLLoaders(deps),
     };
   };

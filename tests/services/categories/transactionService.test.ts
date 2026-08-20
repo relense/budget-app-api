@@ -5,13 +5,19 @@ import { createCategoryService } from '../../../src/services/categories/category
 import { createFakePrisma } from './testFakePrisma.js';
 import { createTransactionService } from '../../../src/services/categories/transactionService.js';
 
-async function setup() {
+// Fixed rather than the real clock — setup() activates categories in
+// 2026-08, and now that the one-month planning horizon is enforced
+// server-side (relative to "today"), leaving this on the real clock would
+// make every test in this file silently start failing once wall-clock time
+// drifts past 2026-09, for reasons unrelated to any actual code change.
+async function setup(now: () => Date = () => new Date('2026-08-15T00:00:00.000Z')) {
   const prisma = createFakePrisma();
   const budgetMonthService = createBudgetMonthService({ prisma: prisma as never });
   const categoryService = createCategoryService({ prisma: prisma as never });
   const categoryMonthService = createCategoryMonthService({
     prisma: prisma as never,
     budgetMonthService,
+    now,
   });
   const transactionService = createTransactionService({
     prisma: prisma as never,
@@ -77,10 +83,10 @@ describe('create', () => {
       note: 'weekly shop',
       direction: 'expense',
     });
-    expect(transaction.recurringExpenseInstanceId).toBeNull();
+    expect(transaction.recurringExpenseId).toBeNull();
   });
 
-  it('stamps recurringExpenseInstanceId when given (internal use — markRecurringPaid)', async () => {
+  it('stamps recurringExpenseId when given (internal use — markRecurringPaid)', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();
 
     const transaction = await transactionService.create(
@@ -89,7 +95,7 @@ describe('create', () => {
       'instance-1',
     );
 
-    expect(transaction.recurringExpenseInstanceId).toBe('instance-1');
+    expect(transaction.recurringExpenseId).toBe('instance-1');
   });
 
   it('derives income direction from an income category', async () => {
@@ -450,8 +456,8 @@ describe('listByCategoryMonthIds', () => {
   });
 });
 
-describe('listByRecurringExpenseInstanceIds', () => {
-  it('groups transactions by recurringExpenseInstanceId for the given ids, ignoring unlinked transactions', async () => {
+describe('listByRecurringExpenseIds', () => {
+  it('groups transactions by recurringExpenseId for the given ids, ignoring unlinked transactions', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();
     const linked = await transactionService.create(
       'user-1',
@@ -464,7 +470,7 @@ describe('listByRecurringExpenseInstanceIds', () => {
       date: '2026-08-05',
     });
 
-    const result = await transactionService.listByRecurringExpenseInstanceIds(['instance-1']);
+    const result = await transactionService.listByRecurringExpenseIds(['instance-1']);
 
     expect(result.map((t) => t.id)).toEqual([linked.id]);
   });
@@ -472,7 +478,7 @@ describe('listByRecurringExpenseInstanceIds', () => {
   it('returns an empty array for an empty id list', async () => {
     const { transactionService } = await setup();
 
-    const result = await transactionService.listByRecurringExpenseInstanceIds([]);
+    const result = await transactionService.listByRecurringExpenseIds([]);
 
     expect(result).toEqual([]);
   });
@@ -485,6 +491,38 @@ describe('list', () => {
     await expect(transactionService.list('user-1', 'banana')).rejects.toMatchObject({
       reason: 'invalid_month',
     });
+  });
+
+  it('never returns another user\'s transactions for the same month string', async () => {
+    const { transactionService, categoryService, categoryMonthService, expenseCategoryMonth } = await setup();
+    await transactionService.create('user-1', {
+      categoryMonthId: expenseCategoryMonth.id,
+      amountCents: 100,
+      date: '2026-08-05',
+    });
+    const otherUsersCategory = await categoryService.createCategory('user-2', {
+      name: 'Other',
+      icon: 'x',
+      color: '#000000',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    const otherUsersCategoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-2',
+      otherUsersCategory.id,
+      '2026-08',
+      99999,
+    );
+    await transactionService.create('user-2', {
+      categoryMonthId: otherUsersCategoryMonth.id,
+      amountCents: 999999,
+      date: '2026-08-05',
+    });
+
+    const result = await transactionService.list('user-1', '2026-08');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.amountCents).toBe(100);
   });
 
   it('returns transactions for the month, ordered date DESC then createdAt DESC', async () => {

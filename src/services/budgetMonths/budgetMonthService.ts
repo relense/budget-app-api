@@ -1,6 +1,7 @@
 import { formatMonth, isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
+import { withSavepoint } from '../../lib/prismaSavepoint.js';
 
 export type BudgetMonthServiceErrorReason =
   | 'invalid_month'
@@ -31,11 +32,11 @@ function assertValidMonth(month: string): void {
 /**
  * Client-parameterized core of resolveBudgetMonthId — exported standalone so
  * a caller that already has its own open transaction (e.g.
- * recurringExpenseInstanceService's locked instance-creation flow) can run
- * this as part of that same transaction, instead of on the service's own
- * separately-bound connection where it wouldn't actually participate in the
- * caller's lock. The bound service method below is a thin wrapper around
- * this for regular (non-nested) callers.
+ * recurringExpenseService's locked-creation flow) can run this as part of
+ * that same transaction, instead of on the service's own separately-bound
+ * connection where it wouldn't actually participate in the caller's lock.
+ * The bound service method below is a thin wrapper around this for regular
+ * (non-nested) callers.
  */
 export async function resolveBudgetMonthId(
   client: Pick<PrismaClient, 'budgetMonth'>,
@@ -51,15 +52,49 @@ export async function resolveBudgetMonthId(
 }
 
 /**
+ * Same resolution as resolveBudgetMonthId, but also reports whether this
+ * call is the one that actually created the row — needed by
+ * recurringExpenseService's carry-forward-on-first-touch seeding (see
+ * docs/PLAN.md's Data Model section) to know when a month is genuinely new,
+ * as opposed to already existing. Plain create-then-catch-P2002 rather than
+ * upsert, matching this codebase's established idiom elsewhere (e.g.
+ * ensureActiveForCategoryOnClient's own "lost the race, return the winner"
+ * catch) — atomic under Postgres's unique constraint either way.
+ *
+ * Must be called with an active transactional client — the create attempt
+ * runs under withSavepoint specifically so a caught conflict doesn't poison
+ * the rest of the caller's transaction (confirmed necessary by a real
+ * Postgres repro, not just theoretical — see withSavepoint's doc comment).
+ * A caller with no transaction of its own open must wrap this call in
+ * `prisma.$transaction(...)` itself (see addCategoryToMonth below).
+ */
+export async function resolveBudgetMonthIdWithCreatedFlag(
+  client: Pick<PrismaClient, 'budgetMonth' | '$executeRawUnsafe'>,
+  userId: string,
+  month: string,
+): Promise<{ id: string; wasCreated: boolean }> {
+  const attempt = await withSavepoint(client, 'resolve_budget_month', () =>
+    client.budgetMonth.create({ data: { userId, month } }),
+  );
+  if (attempt.ok) {
+    return { id: attempt.value.id, wasCreated: true };
+  }
+  if (hasPrismaErrorCode(attempt.error, 'P2002')) {
+    const existing = await client.budgetMonth.findUnique({ where: { userId_month: { userId, month } } });
+    if (existing) return { id: existing.id, wasCreated: false };
+  }
+  throw attempt.error;
+}
+
+/**
  * Takes a row lock (SELECT ... FOR UPDATE) on one BudgetMonth — must be
  * called inside a $transaction. Exported standalone so every write path
  * that needs to check `locked` (categoryMonthService, transactionService,
- * recurringExpenseInstanceService, and lockMonth/deleteBudgetMonth below)
- * takes the *same* lock before checking it, instead of a plain read: under
- * Postgres's default READ COMMITTED isolation, a plain check-then-write has
- * no protection against a concurrent lockMonth committing in the gap
- * between the check and the write — the lock is what actually closes that,
- * same pattern as recurringExpenseTemplateService's lockTemplateRow.
+ * recurringExpenseService, and lockMonth/deleteBudgetMonth below) takes the
+ * *same* lock before checking it, instead of a plain read: under Postgres's
+ * default READ COMMITTED isolation, a plain check-then-write has no
+ * protection against a concurrent lockMonth committing in the gap between
+ * the check and the write — the lock is what actually closes that.
  */
 export async function lockBudgetMonthRow(client: Pick<PrismaClient, '$queryRaw'>, id: string): Promise<void> {
   await client.$queryRaw`SELECT id FROM budget_months WHERE id = ${id} FOR UPDATE`;
@@ -123,7 +158,7 @@ export function createBudgetMonthService({ prisma, now = () => new Date() }: Bud
    * calendar month. Read-only: never creates a row, same rule
    * findBudgetMonthId follows for query paths. No auto-lock cascade, no
    * automatic next-month creation — locking and planning ahead are both
-   * separate, explicit user actions (see PROGRESS.md).
+   * separate, explicit user actions (see docs/PROGRESS.md).
    */
   async function findCurrentMonth(userId: string): Promise<{ month: string; locked: boolean }> {
     return findCurrentMonthOnClient(prisma, userId, now);

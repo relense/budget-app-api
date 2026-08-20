@@ -15,8 +15,10 @@ function buildContext(userId: string | null): GraphQLContext {
       deleteBudgetMonth: jest.fn(async () => undefined),
     } as never,
     transactionService: {} as never,
-    templateService: {} as never,
-    instanceService: {} as never,
+    recurringExpenseService: {} as never,
+    savingsFundService: {} as never,
+    savingsMovementService: {} as never,
+    bankBalanceService: {} as never,
     loaders: {} as never,
   };
 }

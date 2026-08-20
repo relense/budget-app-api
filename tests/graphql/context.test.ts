@@ -7,8 +7,10 @@ function buildDeps(): GraphQLContextBuilderDeps {
     categoryMonthService: {} as never,
     budgetMonthService: {} as never,
     transactionService: {} as never,
-    templateService: {} as never,
-    instanceService: {} as never,
+    recurringExpenseService: {} as never,
+    savingsFundService: {} as never,
+    savingsMovementService: {} as never,
+    bankBalanceService: {} as never,
   };
 }
 
@@ -27,8 +29,8 @@ describe('createGraphQLContextBuilder', () => {
     const first = buildContext('user-1');
     const second = buildContext('user-2');
 
-    expect(first.templateService).toBe(deps.templateService);
-    expect(first.templateService).toBe(second.templateService);
+    expect(first.recurringExpenseService).toBe(deps.recurringExpenseService);
+    expect(first.recurringExpenseService).toBe(second.recurringExpenseService);
   });
 
   it('builds a fresh loaders instance per call, so no cache can leak across requests', () => {

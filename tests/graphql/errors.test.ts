@@ -1,11 +1,13 @@
 import { describe, expect, it } from '@jest/globals';
 import { GraphQLError } from 'graphql';
+import { BankBalanceServiceError } from '../../src/services/bankBalance/bankBalanceService.js';
 import { BudgetMonthServiceError } from '../../src/services/budgetMonths/budgetMonthService.js';
 import { CategoryMonthServiceError } from '../../src/services/categories/categoryMonthService.js';
 import { CategoryServiceError } from '../../src/services/categories/categoryService.js';
 import { TransactionServiceError } from '../../src/services/categories/transactionService.js';
-import { RecurringExpenseInstanceServiceError } from '../../src/services/recurringExpenses/recurringExpenseInstanceService.js';
-import { RecurringExpenseTemplateServiceError } from '../../src/services/recurringExpenses/recurringExpenseTemplateService.js';
+import { RecurringExpenseServiceError } from '../../src/services/recurringExpenses/recurringExpenseService.js';
+import { SavingsFundServiceError } from '../../src/services/savings/savingsFundService.js';
+import { SavingsMovementServiceError } from '../../src/services/savings/savingsMovementService.js';
 import { requireUserId, toGraphQLError } from '../../src/graphql/errors.js';
 
 describe('requireUserId', () => {
@@ -44,15 +46,17 @@ describe('toGraphQLError', () => {
       'BUDGET_MONTH_NOT_FOUND',
     ],
     [
-      'RecurringExpenseTemplateServiceError',
-      new RecurringExpenseTemplateServiceError('template_not_found'),
-      'TEMPLATE_NOT_FOUND',
+      'RecurringExpenseServiceError',
+      new RecurringExpenseServiceError('recurring_expense_not_found'),
+      'RECURRING_EXPENSE_NOT_FOUND',
     ],
+    ['SavingsFundServiceError', new SavingsFundServiceError('fund_has_movements'), 'FUND_HAS_MOVEMENTS'],
     [
-      'RecurringExpenseInstanceServiceError',
-      new RecurringExpenseInstanceServiceError('instance_not_found'),
-      'INSTANCE_NOT_FOUND',
+      'SavingsMovementServiceError',
+      new SavingsMovementServiceError('insufficient_funds'),
+      'INSUFFICIENT_FUNDS',
     ],
+    ['BankBalanceServiceError', new BankBalanceServiceError('invalid_amount'), 'INVALID_AMOUNT'],
   ])('maps %s to a GraphQLError with extensions.code %s', (_label, error, expectedCode) => {
     expect(() => toGraphQLError(error)).toThrow(GraphQLError);
     try {

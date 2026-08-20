@@ -3,41 +3,42 @@ import type { BudgetMonthService } from '../services/budgetMonths/budgetMonthSer
 import type { CategoryMonthService } from '../services/categories/categoryMonthService.js';
 import type { CategoryService } from '../services/categories/categoryService.js';
 import type { TransactionService } from '../services/categories/transactionService.js';
-import type { RecurringExpenseInstanceService } from '../services/recurringExpenses/recurringExpenseInstanceService.js';
-import type { RecurringExpenseTemplateService } from '../services/recurringExpenses/recurringExpenseTemplateService.js';
+import type { RecurringExpenseService } from '../services/recurringExpenses/recurringExpenseService.js';
+import type { SavingsFundService } from '../services/savings/savingsFundService.js';
+import type { SavingsMovementService } from '../services/savings/savingsMovementService.js';
 
 type CategoryRecord = Awaited<ReturnType<CategoryService['findManyByIds']>>[number];
 type CategoryMonthRecord = Awaited<ReturnType<CategoryMonthService['findManyByIds']>>[number];
 type BudgetMonthRecord = Awaited<ReturnType<BudgetMonthService['findManyByIds']>>[number];
 type TransactionRecord = Awaited<ReturnType<TransactionService['listByCategoryMonthIds']>>[number];
-type RecurringExpenseTemplateRecord = Awaited<
-  ReturnType<RecurringExpenseTemplateService['findManyByIds']>
->[number];
-type RecurringExpenseInstanceRecord = Awaited<
-  ReturnType<RecurringExpenseInstanceService['findManyByIds']>
->[number];
+type RecurringExpenseRecord = Awaited<ReturnType<RecurringExpenseService['findManyByIds']>>[number];
+type SavingsFundRecord = Awaited<ReturnType<SavingsFundService['findManyByIds']>>[number];
+type SavingsMovementRecord = Awaited<ReturnType<SavingsMovementService['listByFundIds']>>[number];
 
 export interface GraphQLLoaders {
   categoryById: DataLoader<string, CategoryRecord | null>;
   categoryMonthById: DataLoader<string, CategoryMonthRecord | null>;
   budgetMonthById: DataLoader<string, BudgetMonthRecord | null>;
   transactionsByCategoryMonthId: DataLoader<string, TransactionRecord[]>;
-  recurringExpenseTemplateById: DataLoader<string, RecurringExpenseTemplateRecord | null>;
-  recurringExpenseInstanceById: DataLoader<string, RecurringExpenseInstanceRecord | null>;
-  transactionsByRecurringExpenseInstanceId: DataLoader<string, TransactionRecord[]>;
+  recurringExpenseById: DataLoader<string, RecurringExpenseRecord | null>;
+  transactionsByRecurringExpenseId: DataLoader<string, TransactionRecord[]>;
   recurringCommittedCentsByCategoryMonthId: DataLoader<string, number>;
+  savingsFundById: DataLoader<string, SavingsFundRecord | null>;
+  movementsBySavingsFundId: DataLoader<string, SavingsMovementRecord[]>;
+  currentAmountCentsBySavingsFundId: DataLoader<string, number>;
 }
 
 export interface GraphQLLoaderDeps {
   categoryService: Pick<CategoryService, 'findManyByIds'>;
   categoryMonthService: Pick<CategoryMonthService, 'findManyByIds'>;
   budgetMonthService: Pick<BudgetMonthService, 'findManyByIds'>;
-  transactionService: Pick<TransactionService, 'listByCategoryMonthIds' | 'listByRecurringExpenseInstanceIds'>;
-  templateService: Pick<RecurringExpenseTemplateService, 'findManyByIds'>;
-  instanceService: Pick<
-    RecurringExpenseInstanceService,
+  transactionService: Pick<TransactionService, 'listByCategoryMonthIds' | 'listByRecurringExpenseIds'>;
+  recurringExpenseService: Pick<
+    RecurringExpenseService,
     'findManyByIds' | 'sumCommittedCentsForCategoryMonth'
   >;
+  savingsFundService: Pick<SavingsFundService, 'findManyByIds'>;
+  savingsMovementService: Pick<SavingsMovementService, 'listByFundIds' | 'computeCurrentAmountCents'>;
 }
 
 /**
@@ -75,35 +76,23 @@ export function createGraphQLLoaders(deps: GraphQLLoaderDeps): GraphQLLoaders {
     return ids.map((id) => byCategoryMonthId.get(id) ?? []);
   });
 
-  const recurringExpenseTemplateById = new DataLoader<string, RecurringExpenseTemplateRecord | null>(
-    async (ids) => {
-      const rows = await deps.templateService.findManyByIds([...ids]);
-      const byId = new Map(rows.map((row) => [row.id, row]));
-      return ids.map((id) => byId.get(id) ?? null);
-    },
-  );
+  const recurringExpenseById = new DataLoader<string, RecurringExpenseRecord | null>(async (ids) => {
+    const rows = await deps.recurringExpenseService.findManyByIds([...ids]);
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return ids.map((id) => byId.get(id) ?? null);
+  });
 
-  const recurringExpenseInstanceById = new DataLoader<string, RecurringExpenseInstanceRecord | null>(
-    async (ids) => {
-      const rows = await deps.instanceService.findManyByIds([...ids]);
-      const byId = new Map(rows.map((row) => [row.id, row]));
-      return ids.map((id) => byId.get(id) ?? null);
-    },
-  );
-
-  const transactionsByRecurringExpenseInstanceId = new DataLoader<string, TransactionRecord[]>(
-    async (ids) => {
-      const rows = await deps.transactionService.listByRecurringExpenseInstanceIds([...ids]);
-      const byInstanceId = new Map<string, TransactionRecord[]>();
-      for (const row of rows) {
-        if (!row.recurringExpenseInstanceId) continue;
-        const list = byInstanceId.get(row.recurringExpenseInstanceId) ?? [];
-        list.push(row);
-        byInstanceId.set(row.recurringExpenseInstanceId, list);
-      }
-      return ids.map((id) => byInstanceId.get(id) ?? []);
-    },
-  );
+  const transactionsByRecurringExpenseId = new DataLoader<string, TransactionRecord[]>(async (ids) => {
+    const rows = await deps.transactionService.listByRecurringExpenseIds([...ids]);
+    const byRecurringExpenseId = new Map<string, TransactionRecord[]>();
+    for (const row of rows) {
+      if (!row.recurringExpenseId) continue;
+      const list = byRecurringExpenseId.get(row.recurringExpenseId) ?? [];
+      list.push(row);
+      byRecurringExpenseId.set(row.recurringExpenseId, list);
+    }
+    return ids.map((id) => byRecurringExpenseId.get(id) ?? []);
+  });
 
   // Not a single batched query underneath (sumCommittedCentsForCategoryMonth
   // is per-pair, same low-cardinality reasoning as its own implementation) —
@@ -116,10 +105,43 @@ export function createGraphQLLoaders(deps: GraphQLLoaderDeps): GraphQLLoaders {
       ids.map(async (id) => {
         const categoryMonth = byId.get(id);
         if (!categoryMonth) return 0;
-        return deps.instanceService.sumCommittedCentsForCategoryMonth(
+        return deps.recurringExpenseService.sumCommittedCentsForCategoryMonth(
           categoryMonth.categoryId,
           categoryMonth.monthId,
         );
+      }),
+    );
+  });
+
+  const savingsFundById = new DataLoader<string, SavingsFundRecord | null>(async (ids) => {
+    const rows = await deps.savingsFundService.findManyByIds([...ids]);
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return ids.map((id) => byId.get(id) ?? null);
+  });
+
+  const movementsBySavingsFundId = new DataLoader<string, SavingsMovementRecord[]>(async (ids) => {
+    const rows = await deps.savingsMovementService.listByFundIds([...ids]);
+    const byFundId = new Map<string, SavingsMovementRecord[]>();
+    for (const row of rows) {
+      const list = byFundId.get(row.fundId) ?? [];
+      list.push(row);
+      byFundId.set(row.fundId, list);
+    }
+    return ids.map((id) => byFundId.get(id) ?? []);
+  });
+
+  // Not a single batched query underneath, same reasoning as
+  // recurringCommittedCentsByCategoryMonthId above — still collapses N
+  // field resolutions (SavingsFund.currentAmountCents and .achieved both
+  // hit this same loader) into one batch tick per request.
+  const currentAmountCentsBySavingsFundId = new DataLoader<string, number>(async (ids) => {
+    const funds = await deps.savingsFundService.findManyByIds([...ids]);
+    const byId = new Map(funds.map((fund) => [fund.id, fund]));
+    return Promise.all(
+      ids.map(async (id) => {
+        const fund = byId.get(id);
+        if (!fund) return 0;
+        return deps.savingsMovementService.computeCurrentAmountCents(id, fund.initialBalanceCents);
       }),
     );
   });
@@ -129,9 +151,11 @@ export function createGraphQLLoaders(deps: GraphQLLoaderDeps): GraphQLLoaders {
     categoryMonthById,
     budgetMonthById,
     transactionsByCategoryMonthId,
-    recurringExpenseTemplateById,
-    recurringExpenseInstanceById,
-    transactionsByRecurringExpenseInstanceId,
+    recurringExpenseById,
+    transactionsByRecurringExpenseId,
     recurringCommittedCentsByCategoryMonthId,
+    savingsFundById,
+    movementsBySavingsFundId,
+    currentAmountCentsBySavingsFundId,
   };
 }
