@@ -46,6 +46,11 @@ model OtpCode {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   @@index([email])
+  // Both serve authCleanupService's batched row-cleanup queries (expired
+  // codes, and used codes regardless of expiry) — see PLAN.md's "Row
+  // cleanup" note.
+  @@index([expiresAt])
+  @@index([used])
   @@map("otp_codes")
 }
 
@@ -63,6 +68,11 @@ model RefreshToken {
 
   @@index([tokenHash])
   @@index([userId])
+  // Both serve authCleanupService's batched row-cleanup queries (expired
+  // tokens, and revoked tokens regardless of expiry) — see PLAN.md's "Row
+  // cleanup" note.
+  @@index([expiresAt])
+  @@index([revoked])
   @@map("refresh_tokens")
 }
 

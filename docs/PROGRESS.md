@@ -1506,19 +1506,93 @@ exist to catch.
 clean. All on `fix/codebase-audit-findings`, not yet through a fresh
 `pr-reviewer` round for this latest commit or merge.
 
+`fix/codebase-audit-findings` went through `pr-reviewer`/`test-auditor` as
+planned and merged into `develop` via PR #22. Phase 1 (backend) is
+functionally complete as of that merge — every numbered Build Order step
+(0–9) is done.
+
+### Row cleanup (2026-08-20) — first Production Readiness item picked up
+
+Grilled before coding, on a fresh `chore/auth-row-cleanup` branch: the user
+was specifically thinking ahead to 1M/10M-user scale, not just "does it
+work today." Two things came out of that grill that shaped the design more
+than the original `PLAN.md` bullet implied:
+- **No hosting platform is chosen yet**, so there's no external cron to
+  hang this on — ruled out anything needing one. Both trigger mechanisms
+  ended up in-process: an hourly `setInterval` in `index.ts` (cleared on
+  `SIGTERM`/`SIGINT` alongside the existing shutdown handler) as a
+  backstop, plus a piggybacked cleanup call on every `POST
+  /auth/request-otp` (failures logged, never fail the actual request) so
+  cleanup stays prompt during real traffic without waiting for the hourly
+  tick.
+- **Revoked ≠ expired, and that gap matters more at scale, not less**:
+  `refresh_tokens` rotate on every refresh (mandatory, see `PLAN.md`), so
+  an expiry-only sweep would let a large number of already-useless revoked
+  rows pile up for their entire TTL before ever getting cleaned — at 1M
+  active users refreshing frequently, that's a real bloat source, not a
+  hypothetical one. Confirmed with the user: no reason to keep a
+  revoked/used row around at all, so both tables delete on either
+  condition (`expiresAt < now()` OR `used`/`revoked`), not expiry alone.
+- Two scale-specific implementation choices, both explained to the user
+  before writing code: **dedicated indexes** (`otp_codes.expiresAt`/`used`,
+  `refresh_tokens.expiresAt`/`revoked` — otherwise the cleanup query itself
+  degrades to a full table scan as these tables grow) and **batched
+  deletes** (1000 rows/call, looped, rather than one unbounded `DELETE`
+  that could hold locks on these hot-path tables for a long single
+  transaction if a large backlog ever built up).
+
+Built: `authCleanupService` (`cleanupExpiredAuthRecords()`, TDD against a
+new in-memory batch loop, extending `tests/services/auth/testFakePrisma.ts`
+with `findMany`/`deleteMany`), wired into `registerAuthRoutes` (new
+required `authCleanupService` dep) and `index.ts`'s interval.
+
+`pr-reviewer` round 1 found one real bug and several worthwhile
+simplifications, all fixed: the request-otp piggyback was `await`ing
+cleanup before responding — not actually the non-blocking design agreed on,
+and it would add unbounded latency to a hot, rate-limited auth endpoint
+under any real backlog (fixed to fire-and-forget with `.catch()`, matching
+the interval's pattern); the four near-identical batch-delete call sites
+collapsed into two small `cleanupOtpCodes`/`cleanupRefreshTokens` helpers;
+`authCleanupService` was being constructed twice (once in `server.ts`, once
+in `index.ts`) — now built once in `index.ts` and threaded into
+`buildServer` the same way `authService` already is; added a regression
+test for a row matching both delete conditions at once (e.g. expired *and*
+used), proving the sequential-pass design can't double-count. The reviewer
+also flagged that `used`/`revoked` could be partial indexes instead of
+plain ones for less bloat at real scale — surfaced to the user, who chose
+to keep them plain: Prisma's schema DSL can't express a partial index's
+`WHERE` clause, so a partial index would mean hand-editing generated
+migration SQL, and since `schema.prisma` would still declare a plain index,
+any *future* unrelated `prisma migrate dev` run would see that as drift and
+silently regenerate the plain index — reverting the optimization with
+nothing flagging it as intentional. Not worth that ongoing footgun for a
+scale concern the reviewer itself called non-blocking.
+
+`test-auditor` then found two real gaps of its own, both closed: the two
+existing request-otp cleanup tests only proved `cleanupExpiredAuthRecords`
+was *called*, never that the response doesn't wait for it — a regression
+back to `await`ing it (the exact bug round 1's `pr-reviewer` fix already
+covered) would have slipped past both silently. Fixed with a test using a
+deliberately never-resolved cleanup promise: if the route awaited it, the
+`app.inject()` call would hang until Jest's timeout, since the promise is
+only resolved *after* asserting the response already came back. Also
+found the batch-loop's trickiest boundary — an eligible-row count that's an
+exact multiple of `batchSize`, which forces one extra round-trip returning
+an empty page before the loop can know it's done — was never exercised (the
+one multi-batch test used 5 rows over batches of 2, which always hits the
+`batch.length < batchSize` short-circuit and never that boundary). Added
+two tests spying on `findMany` call counts: 4 rows/batchSize 2, and 2
+rows/batchSize 1.
+
+488 Jest tests total (was 475 before this branch, +13 across both review
+rounds). Both `pr-reviewer` and `test-auditor` closed clean.
+
 Next actions, in order:
-1. Run `pr-reviewer` on the latest commit to `fix/codebase-audit-findings`
-   (the `lockCategoryRow` fix), go back and forth until approved, then
-   `test-auditor` until clean, then hand back for human review — same
-   two-stage pattern as every prior PR.
-2. After that merges: Build Order step 8 (seed script) was already the
-   last Build Order item — Phase 1 (backend) is functionally complete.
-   What's left before considering it production-ready: the Production
-   Readiness items `PLAN.md` flags (rate limiting, introspection/depth
-   limits are done — confirmed; `otp_codes`/`refresh_tokens` row
-   cleanup, CI, GDPR export/delete are not), then Phase 2 (mobile app),
-   which needs design references (mockups + Excel structure — now
-   partly in hand) before any screen work begins, per CLAUDE.md.
+1. Hand `chore/auth-row-cleanup` back for human review — PR into `develop`.
+2. Remaining Production Readiness items after that: CI, GDPR export/delete
+   (`otp_codes`/`refresh_tokens` row cleanup is now done). Then Phase 2
+   (mobile app), which needs design references (mockups + Excel structure
+   — now partly in hand) before any screen work begins, per CLAUDE.md.
 3. Small tracked follow-up, not blocking, carried over from step 6: add
    logging on the `onNewBudgetMonth`/`seedNewMonth` swallow path
    (recurring-expenses step) once this service layer has a logger
