@@ -144,6 +144,23 @@ describe('createSavingsMovement', () => {
     ).rejects.toMatchObject({ reason: 'invalid_date' });
   });
 
+  it('rejects a real-looking but nonexistent calendar date (e.g. February 30)', async () => {
+    const { savingsMovementService, savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 10000,
+    });
+
+    await expect(
+      savingsMovementService.createSavingsMovement('user-1', {
+        fundId: fund.id,
+        amountCents: 100,
+        type: 'deposit',
+        date: '2026-02-30',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_date' });
+  });
+
   it('throws fund_not_found for another user\'s fund', async () => {
     const { savingsMovementService, savingsFundService } = setup();
     const fund = await savingsFundService.createSavingsFund('user-1', {

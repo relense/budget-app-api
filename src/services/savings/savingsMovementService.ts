@@ -1,9 +1,8 @@
+import { isValidCalendarDate } from '../../lib/dateFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 
 export type MovementType = 'deposit' | 'withdraw';
-
-const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface CreateSavingsMovementInput {
   fundId: string;
@@ -44,7 +43,7 @@ function assertValidAmount(amountCents: number): void {
 }
 
 function assertValidDate(date: string): void {
-  if (!DATE_REGEX.test(date)) {
+  if (!isValidCalendarDate(date)) {
     throw new SavingsMovementServiceError('invalid_date');
   }
 }
