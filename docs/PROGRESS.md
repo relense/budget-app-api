@@ -1587,10 +1587,33 @@ rows/batchSize 1.
 488 Jest tests total (was 475 before this branch, +13 across both review
 rounds). Both `pr-reviewer` and `test-auditor` closed clean.
 
+`chore/auth-row-cleanup` merged into `develop` via PR #23.
+
+### CI pipeline (2026-08-20)
+
+Grilled before coding, on a fresh `chore/ci-pipeline` branch: confirmed
+with the user this should run on both PRs and direct pushes to
+`develop`/`main` (the latter as a safety net, even though CLAUDE.md's
+branch workflow means it shouldn't normally happen), that "run tests +
+Prisma migrations" from `PLAN.md`'s bullet should include an actual
+ephemeral-Postgres `prisma migrate deploy` (not just the Jest suite, which
+only needs in-memory fakes — confirmed no test file touches a real DB), and
+that the resulting check should be a required, merge-blocking status check
+on `develop`/`main` once it exists.
+
+Built `.github/workflows/ci.yml` — one job, `postgres:17-alpine` service
+container matching `docker-compose.yml`'s credentials, `pnpm`
+install/lint/typecheck/build/test, then `prisma migrate deploy` against the
+service container. Verified locally before pushing: spun up a throwaway
+Postgres container and confirmed all 9 existing migrations replay cleanly
+from empty (`prisma migrate deploy`) — this is exactly what CI will do, so
+worth proving outside CI first rather than debugging it via failed runs.
+
 Next actions, in order:
-1. Hand `chore/auth-row-cleanup` back for human review — PR into `develop`.
-2. Remaining Production Readiness items after that: CI, GDPR export/delete
-   (`otp_codes`/`refresh_tokens` row cleanup is now done). Then Phase 2
+1. Push `chore/ci-pipeline`, open the PR, and once CI has run successfully
+   at least once, enable required status checks on `develop`/`main` via
+   `gh api` (a check can't be required before GitHub has seen it pass).
+2. Remaining Production Readiness item: GDPR export/delete. Then Phase 2
    (mobile app), which needs design references (mockups + Excel structure
    — now partly in hand) before any screen work begins, per CLAUDE.md.
 3. Small tracked follow-up, not blocking, carried over from step 6: add

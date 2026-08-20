@@ -582,7 +582,7 @@ Once the API is solid: **Phase 2** picks up the mobile app plan (screens, design
 - **Secrets management**: env vars via the hosting platform's secret store, never committed `.env` files with real values
 - **GDPR**: this is financial data — once it's public you'll need a privacy policy and a way for a user to export/delete their data (right to erasure). Not needed for solo dev/testing, needed before real signups.
 - **Row cleanup** — **built**: `authCleanupService.cleanupExpiredAuthRecords()` deletes expired `otp_codes`/`refresh_tokens`, plus `used`/`revoked` rows regardless of expiry (a revoked refresh token is dead weight the instant it's revoked — refresh tokens rotate on every use, so waiting for the full TTL would let a large backlog build up well before real scale). Runs in bounded batches (1000/call) against dedicated indexes rather than one unbounded `DELETE`, so a large backlog can't hold locks on these hot-path tables. Triggered two ways, both in-process, no external cron/hosting dependency: piggybacked on every `POST /auth/request-otp`, plus an hourly `setInterval` backstop in `index.ts` for stretches with no login traffic — see `docs/SERVICES.md`.
-- **CI**: run tests + Prisma migrations automatically before any deploy
+- **CI** — **built**: `.github/workflows/ci.yml` (GitHub Actions) runs on every push and PR into `develop`/`main` — `lint`, `typecheck`, `build`, `test` (all against in-memory fakes, no DB needed), then `prisma migrate deploy` against an ephemeral Postgres service container to prove the full migration history still replays cleanly from empty. Required as a merge-blocking status check on `develop`/`main`.
 
 ## Out of scope for Phase 1
 
