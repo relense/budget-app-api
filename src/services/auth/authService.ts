@@ -206,7 +206,7 @@ export function createAuthService({
       // only the request that wins this atomic write proceeds.
       const revokeResult = await tx.refreshToken.updateMany({
         where: { id: existing.id, revoked: false },
-        data: { revoked: true },
+        data: { revoked: true, revokedAt: now() },
       });
 
       if (revokeResult.count === 0) {
@@ -230,11 +230,17 @@ export function createAuthService({
 
   async function logout(token: string): Promise<void> {
     const tokenHash = hashRefreshToken(token);
-    await prisma.refreshToken.updateMany({ where: { tokenHash }, data: { revoked: true } });
+    await prisma.refreshToken.updateMany({
+      where: { tokenHash },
+      data: { revoked: true, revokedAt: now() },
+    });
   }
 
   async function logoutAll(userId: string): Promise<void> {
-    await prisma.refreshToken.updateMany({ where: { userId }, data: { revoked: true } });
+    await prisma.refreshToken.updateMany({
+      where: { userId },
+      data: { revoked: true, revokedAt: now() },
+    });
   }
 
   return { requestOtp, verifyOtp, refreshSession, logout, logoutAll };

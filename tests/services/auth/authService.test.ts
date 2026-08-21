@@ -268,6 +268,7 @@ describe('verifyOtp', () => {
       deviceLabel: null,
       expiresAt: new Date('2026-06-01T00:00:00.000Z'),
       revoked: false,
+      revokedAt: null,
     });
     prisma.otpCodes.push({
       id: 'otp-1',
@@ -418,6 +419,7 @@ describe('refreshSession', () => {
       deviceLabel: null,
       expiresAt: new Date('2026-02-01T00:00:00.000Z'),
       revoked: true,
+      revokedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
 
     await expect(authService.refreshSession('valid-token')).rejects.toMatchObject({
@@ -434,6 +436,7 @@ describe('refreshSession', () => {
       deviceLabel: null,
       expiresAt: new Date('2026-02-01T00:00:00.000Z'),
       revoked: false,
+      revokedAt: null,
     });
 
     await expect(authService.refreshSession('valid-token')).rejects.toMatchObject({
@@ -450,6 +453,7 @@ describe('refreshSession', () => {
       deviceLabel: null,
       expiresAt: new Date('2026-02-01T00:00:00.000Z'),
       revoked: false,
+      revokedAt: null,
     });
 
     // Simulate a concurrent request winning the race: it revokes the row
@@ -480,11 +484,13 @@ describe('refreshSession', () => {
       deviceLabel: "Miguel's iPhone",
       expiresAt: new Date('2026-02-01T00:00:00.000Z'),
       revoked: false,
+      revokedAt: null,
     });
 
     const result = await authService.refreshSession('valid-token');
 
     expect(prisma.refreshTokens[0]!.revoked).toBe(true);
+    expect(prisma.refreshTokens[0]!.revokedAt).toEqual(now());
     expect(prisma.refreshTokens).toHaveLength(2);
 
     const newRow = prisma.refreshTokens[1]!;
@@ -506,7 +512,7 @@ describe('refreshSession', () => {
 
 describe('logout', () => {
   it('revokes only the matching refresh token', async () => {
-    const { prisma, authService } = setup();
+    const { prisma, authService, now } = setup();
     prisma.refreshTokens.push(
       {
         id: 'rt-1',
@@ -515,6 +521,7 @@ describe('logout', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
       {
         id: 'rt-2',
@@ -523,19 +530,22 @@ describe('logout', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
     );
 
     await authService.logout('token-a');
 
     expect(prisma.refreshTokens[0]!.revoked).toBe(true);
+    expect(prisma.refreshTokens[0]!.revokedAt).toEqual(now());
     expect(prisma.refreshTokens[1]!.revoked).toBe(false);
+    expect(prisma.refreshTokens[1]!.revokedAt).toBeNull();
   });
 });
 
 describe('logoutAll', () => {
   it('revokes every refresh token for the user, leaving other users untouched', async () => {
-    const { prisma, authService } = setup();
+    const { prisma, authService, now } = setup();
     prisma.refreshTokens.push(
       {
         id: 'rt-1',
@@ -544,6 +554,7 @@ describe('logoutAll', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
       {
         id: 'rt-2',
@@ -552,6 +563,7 @@ describe('logoutAll', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
       {
         id: 'rt-3',
@@ -560,13 +572,17 @@ describe('logoutAll', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
     );
 
     await authService.logoutAll('user-1');
 
     expect(prisma.refreshTokens[0]!.revoked).toBe(true);
+    expect(prisma.refreshTokens[0]!.revokedAt).toEqual(now());
     expect(prisma.refreshTokens[1]!.revoked).toBe(true);
+    expect(prisma.refreshTokens[1]!.revokedAt).toEqual(now());
     expect(prisma.refreshTokens[2]!.revoked).toBe(false);
+    expect(prisma.refreshTokens[2]!.revokedAt).toBeNull();
   });
 });

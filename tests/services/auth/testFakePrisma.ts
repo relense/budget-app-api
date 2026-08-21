@@ -44,6 +44,7 @@ export interface FakeRefreshToken {
   deviceLabel: string | null;
   expiresAt: Date;
   revoked: boolean;
+  revokedAt: Date | null;
 }
 
 interface FakeDelegates {
@@ -87,14 +88,14 @@ interface FakeDelegates {
     }): Promise<FakeRefreshToken | null>;
     update(args: {
       where: { id: string };
-      data: Partial<Pick<FakeRefreshToken, 'revoked'>>;
+      data: Partial<Pick<FakeRefreshToken, 'revoked' | 'revokedAt'>>;
     }): Promise<FakeRefreshToken>;
     updateMany(args: {
       where: Partial<Pick<FakeRefreshToken, 'id' | 'tokenHash' | 'userId' | 'revoked'>>;
-      data: Partial<Pick<FakeRefreshToken, 'revoked'>>;
+      data: Partial<Pick<FakeRefreshToken, 'revoked' | 'revokedAt'>>;
     }): Promise<{ count: number }>;
     findMany(args: {
-      where: { expiresAt: { lt: Date } } | { revoked: true };
+      where: { expiresAt: { lt: Date } } | { revoked: true; revokedAt: { lt: Date } };
       select: { id: true };
       take: number;
     }): Promise<Array<{ id: string }>>;
@@ -212,6 +213,7 @@ export function createFakePrisma(): FakePrismaClient {
           deviceLabel: data.deviceLabel,
           expiresAt: data.expiresAt,
           revoked: false,
+          revokedAt: null,
         };
         refreshTokens.push(row);
         return row;
@@ -242,7 +244,12 @@ export function createFakePrisma(): FakePrismaClient {
       async findMany({ where, take }) {
         const matches =
           'revoked' in where
-            ? refreshTokens.filter((row) => row.revoked === true)
+            ? refreshTokens.filter(
+                (row) =>
+                  row.revoked === true &&
+                  row.revokedAt !== null &&
+                  row.revokedAt.getTime() < where.revokedAt.lt.getTime(),
+              )
             : refreshTokens.filter(
                 (row) => row.expiresAt.getTime() < where.expiresAt.lt.getTime(),
               );
