@@ -30,6 +30,14 @@ model User {
   bankBalanceCheckpointCents Int      @default(0) @map("bank_balance_checkpoint_cents")
   bankBalanceCheckpointSetAt DateTime @default(now()) @map("bank_balance_checkpoint_set_at")
 
+  // Set once, the moment the default category catalog is seeded for this
+  // user (first signup, or a self-heal retry — see authService.verifyOtp).
+  // Tracked directly rather than inferred from refresh-token existence: the
+  // old "zero refresh tokens" proxy broke whenever a revoked token got
+  // cleaned up before the next login could see it, causing spurious
+  // reseeds. Null means "never seeded yet."
+  defaultCategoriesSeededAt DateTime? @map("default_categories_seeded_at")
+
   refreshTokens     RefreshToken[]
   categories        Category[]
   budgetMonths      BudgetMonth[]

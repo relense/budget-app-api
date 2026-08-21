@@ -13,6 +13,7 @@ export interface FakeOtpCode {
 export interface FakeUser {
   id: string;
   email: string;
+  defaultCategoriesSeededAt: Date | null;
 }
 
 export type FakeBudgetType = 'need' | 'want' | 'savings';
@@ -67,6 +68,10 @@ interface FakeDelegates {
   user: {
     create(args: { data: { email: string } }): Promise<FakeUser>;
     findUnique(args: { where: { email: string } }): Promise<FakeUser | null>;
+    update(args: {
+      where: { id: string };
+      data: Partial<Pick<FakeUser, 'defaultCategoriesSeededAt'>>;
+    }): Promise<FakeUser>;
   };
   category: {
     createMany(args: {
@@ -173,12 +178,22 @@ export function createFakePrisma(): FakePrismaClient {
         if (users.some((u) => u.email === data.email)) {
           throw new FakeUniqueConstraintError();
         }
-        const row: FakeUser = { id: randomUUID(), email: data.email };
+        const row: FakeUser = {
+          id: randomUUID(),
+          email: data.email,
+          defaultCategoriesSeededAt: null,
+        };
         users.push(row);
         return row;
       },
       async findUnique({ where }) {
         return users.find((u) => u.email === where.email) ?? null;
+      },
+      async update({ where, data }) {
+        const row = users.find((u) => u.id === where.id);
+        if (!row) throw new Error('not found');
+        Object.assign(row, data);
+        return row;
       },
     },
     category: {
