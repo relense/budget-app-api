@@ -32,7 +32,14 @@ export class CategoryMonthServiceError extends Error {
 export interface CategoryMonthServiceDeps {
   prisma: Pick<
     PrismaClient,
-    'category' | 'categoryMonth' | 'transaction' | 'budgetMonth' | 'recurringExpense' | '$transaction' | '$queryRaw'
+    | 'category'
+    | 'categoryMonth'
+    | 'transaction'
+    | 'budgetMonth'
+    | 'recurringExpense'
+    | '$transaction'
+    | '$queryRaw'
+    | '$executeRawUnsafe'
   >;
   budgetMonthService: Pick<BudgetMonthService, 'findBudgetMonthId'>;
   now?: () => Date;
@@ -508,21 +515,27 @@ export function createCategoryMonthService({
           where: { categoryId: categoryMonth.categoryId },
         });
         if (!stillActiveElsewhere) {
-          try {
-            await tx.category.delete({ where: { id: categoryMonth.categoryId } });
-          } catch (error) {
-            // A concurrent addCategoryToMonth/createRecurringExpense can
-            // reactivate this category between the check above and this
-            // delete — the onDelete: Restrict FK catches it. Skip the
-            // cascade rather than fail the whole call: the user's actual
-            // request (removing this month, which had no transactions) is
-            // still entirely valid on its own, and the category being
-            // active again by the time this runs is exactly the same
-            // "leave it alone" outcome this check would have produced had
-            // it simply run a moment later.
-            if (!hasPrismaErrorCode(error, 'P2003')) {
-              throw error;
-            }
+          // Under withSavepoint, not a plain try/catch: once any statement
+          // in a Postgres transaction fails, the transaction is marked
+          // aborted, and a later COMMIT on an aborted transaction is
+          // silently turned into a ROLLBACK by Postgres — undoing the
+          // categoryMonth.delete above too, along with everything else,
+          // with no error surfaced. Confirmed against real Postgres, not
+          // just the fake (which can't reproduce this at all — see
+          // withSavepoint's own doc comment). A concurrent
+          // addCategoryToMonth/createRecurringExpense can reactivate this
+          // category between the check above and this delete — the
+          // onDelete: Restrict FK catches it. Skip the cascade rather than
+          // fail the whole call: the user's actual request (removing this
+          // month, which had no transactions) is still entirely valid on
+          // its own, and the category being active again by the time this
+          // runs is exactly the same "leave it alone" outcome this check
+          // would have produced had it simply run a moment later.
+          const attempt = await withSavepoint(tx, 'category_cascade_delete', () =>
+            tx.category.delete({ where: { id: categoryMonth.categoryId } }),
+          );
+          if (!attempt.ok && !hasPrismaErrorCode(attempt.error, 'P2003')) {
+            throw attempt.error;
           }
         }
       });

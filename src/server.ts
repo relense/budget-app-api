@@ -41,6 +41,7 @@ export interface BuildServerOptions {
     PrismaClient,
     | '$queryRaw'
     | '$transaction'
+    | '$executeRawUnsafe'
     | 'category'
     | 'categoryMonth'
     | 'budgetMonth'
