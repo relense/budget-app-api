@@ -133,10 +133,8 @@ export function createAuthService({
     // be recovered from with a findUnique on the same tx — confirmed
     // against real Postgres, not just the fake.
     let user;
-    let isNewUser = false;
     try {
       user = await prisma.user.create({ data: { email } });
-      isNewUser = true;
     } catch (error) {
       if (!hasPrismaErrorCode(error, 'P2002')) throw error;
       const existing = await prisma.user.findUnique({ where: { email } });
@@ -144,26 +142,35 @@ export function createAuthService({
       user = existing;
     }
 
-    // Self-heals the case where a *previous* verifyOtp for this email
+    // defaultCategoriesSeededAt is a direct fact ("has this user's catalog
+    // ever been seeded"), not inferred from another table's state. It also
+    // self-heals the case where a *previous* verifyOtp for this email
     // created the user row above but then failed before the $transaction
     // below committed (crash, DB blip, a future bug in the createMany
-    // call) — that would otherwise permanently and silently skip seeding
-    // on every retry, since isNewUser alone can't see it. Every successful
-    // login always creates a refreshToken in that same transaction, so
-    // "zero refresh tokens ever" reliably means the categories were never
-    // committed either (both writes share one atomic transaction) — a
-    // genuinely returning user always has at least one, even if revoked.
-    const needsSeeding =
-      isNewUser ||
-      (await prisma.refreshToken.findFirst({ where: { userId: user.id } })) === null;
+    // call) — a fresh user row and a half-signed-up one both read as null
+    // here, so both get seeded.
+    const needsSeeding = user.defaultCategoriesSeededAt === null;
 
     await prisma.$transaction(async (tx) => {
       await tx.otpCode.update({ where: { id: otp.id }, data: { used: true } });
 
       if (needsSeeding) {
-        await tx.category.createMany({
-          data: DEFAULT_CATEGORIES.map((category) => ({ ...category, userId: user.id })),
+        // Conditional on defaultCategoriesSeededAt: null so two concurrent
+        // verifyOtp calls for the same not-yet-seeded user (e.g. a
+        // double-submitted login) can't both pass the needsSeeding read
+        // above and both seed — only the transaction that wins this atomic
+        // write proceeds. Same guard shape as refreshSession's
+        // revoke-conditional-on-not-revoked below.
+        const seedClaim = await tx.user.updateMany({
+          where: { id: user.id, defaultCategoriesSeededAt: null },
+          data: { defaultCategoriesSeededAt: now() },
         });
+
+        if (seedClaim.count > 0) {
+          await tx.category.createMany({
+            data: DEFAULT_CATEGORIES.map((category) => ({ ...category, userId: user.id })),
+          });
+        }
       }
 
       await tx.refreshToken.create({
@@ -208,7 +215,7 @@ export function createAuthService({
       // only the request that wins this atomic write proceeds.
       const revokeResult = await tx.refreshToken.updateMany({
         where: { id: existing.id, revoked: false },
-        data: { revoked: true },
+        data: { revoked: true, revokedAt: now() },
       });
 
       if (revokeResult.count === 0) {
@@ -232,11 +239,17 @@ export function createAuthService({
 
   async function logout(token: string): Promise<void> {
     const tokenHash = hashRefreshToken(token);
-    await prisma.refreshToken.updateMany({ where: { tokenHash }, data: { revoked: true } });
+    await prisma.refreshToken.updateMany({
+      where: { tokenHash },
+      data: { revoked: true, revokedAt: now() },
+    });
   }
 
   async function logoutAll(userId: string): Promise<void> {
-    await prisma.refreshToken.updateMany({ where: { userId }, data: { revoked: true } });
+    await prisma.refreshToken.updateMany({
+      where: { userId },
+      data: { revoked: true, revokedAt: now() },
+    });
   }
 
   return { requestOtp, verifyOtp, refreshSession, logout, logoutAll };

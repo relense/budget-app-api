@@ -13,6 +13,7 @@ export interface FakeOtpCode {
 export interface FakeUser {
   id: string;
   email: string;
+  defaultCategoriesSeededAt: Date | null;
 }
 
 export type FakeBudgetType = 'need' | 'want' | 'savings';
@@ -43,6 +44,7 @@ export interface FakeRefreshToken {
   deviceLabel: string | null;
   expiresAt: Date;
   revoked: boolean;
+  revokedAt: Date | null;
 }
 
 interface FakeDelegates {
@@ -67,6 +69,14 @@ interface FakeDelegates {
   user: {
     create(args: { data: { email: string } }): Promise<FakeUser>;
     findUnique(args: { where: { email: string } }): Promise<FakeUser | null>;
+    update(args: {
+      where: { id: string };
+      data: Partial<Pick<FakeUser, 'defaultCategoriesSeededAt'>>;
+    }): Promise<FakeUser>;
+    updateMany(args: {
+      where: { id: string; defaultCategoriesSeededAt: null };
+      data: Partial<Pick<FakeUser, 'defaultCategoriesSeededAt'>>;
+    }): Promise<{ count: number }>;
   };
   category: {
     createMany(args: {
@@ -82,14 +92,14 @@ interface FakeDelegates {
     }): Promise<FakeRefreshToken | null>;
     update(args: {
       where: { id: string };
-      data: Partial<Pick<FakeRefreshToken, 'revoked'>>;
+      data: Partial<Pick<FakeRefreshToken, 'revoked' | 'revokedAt'>>;
     }): Promise<FakeRefreshToken>;
     updateMany(args: {
       where: Partial<Pick<FakeRefreshToken, 'id' | 'tokenHash' | 'userId' | 'revoked'>>;
-      data: Partial<Pick<FakeRefreshToken, 'revoked'>>;
+      data: Partial<Pick<FakeRefreshToken, 'revoked' | 'revokedAt'>>;
     }): Promise<{ count: number }>;
     findMany(args: {
-      where: { expiresAt: { lt: Date } } | { revoked: true };
+      where: { expiresAt: { lt: Date } } | { revoked: true; revokedAt: { lt: Date } };
       select: { id: true };
       take: number;
     }): Promise<Array<{ id: string }>>;
@@ -173,12 +183,29 @@ export function createFakePrisma(): FakePrismaClient {
         if (users.some((u) => u.email === data.email)) {
           throw new FakeUniqueConstraintError();
         }
-        const row: FakeUser = { id: randomUUID(), email: data.email };
+        const row: FakeUser = {
+          id: randomUUID(),
+          email: data.email,
+          defaultCategoriesSeededAt: null,
+        };
         users.push(row);
         return row;
       },
       async findUnique({ where }) {
         return users.find((u) => u.email === where.email) ?? null;
+      },
+      async update({ where, data }) {
+        const row = users.find((u) => u.id === where.id);
+        if (!row) throw new Error('not found');
+        Object.assign(row, data);
+        return row;
+      },
+      async updateMany({ where, data }) {
+        const matches = users.filter(
+          (u) => u.id === where.id && u.defaultCategoriesSeededAt === where.defaultCategoriesSeededAt,
+        );
+        matches.forEach((row) => Object.assign(row, data));
+        return { count: matches.length };
       },
     },
     category: {
@@ -197,6 +224,7 @@ export function createFakePrisma(): FakePrismaClient {
           deviceLabel: data.deviceLabel,
           expiresAt: data.expiresAt,
           revoked: false,
+          revokedAt: null,
         };
         refreshTokens.push(row);
         return row;
@@ -227,7 +255,12 @@ export function createFakePrisma(): FakePrismaClient {
       async findMany({ where, take }) {
         const matches =
           'revoked' in where
-            ? refreshTokens.filter((row) => row.revoked === true)
+            ? refreshTokens.filter(
+                (row) =>
+                  row.revoked === true &&
+                  row.revokedAt !== null &&
+                  row.revokedAt.getTime() < where.revokedAt.lt.getTime(),
+              )
             : refreshTokens.filter(
                 (row) => row.expiresAt.getTime() < where.expiresAt.lt.getTime(),
               );
