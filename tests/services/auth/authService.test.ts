@@ -256,7 +256,11 @@ describe('verifyOtp', () => {
 
   it('reuses the existing user on a second login (no duplicate user row)', async () => {
     const { prisma, authService } = setup();
-    prisma.users.push({ id: 'existing-user', email: 'user@example.com' });
+    prisma.users.push({
+      id: 'existing-user',
+      email: 'user@example.com',
+      defaultCategoriesSeededAt: new Date('2025-01-01T00:00:00.000Z'),
+    });
     prisma.refreshTokens.push({
       id: 'rt-1',
       userId: 'existing-user',
@@ -264,6 +268,7 @@ describe('verifyOtp', () => {
       deviceLabel: null,
       expiresAt: new Date('2026-06-01T00:00:00.000Z'),
       revoked: false,
+      revokedAt: null,
     });
     prisma.otpCodes.push({
       id: 'otp-1',
@@ -304,14 +309,10 @@ describe('verifyOtp', () => {
 
   it('does not reseed default categories on a second login', async () => {
     const { prisma, authService } = setup();
-    prisma.users.push({ id: 'existing-user', email: 'user@example.com' });
-    prisma.refreshTokens.push({
-      id: 'rt-1',
-      userId: 'existing-user',
-      tokenHash: 'prior-login-hash',
-      deviceLabel: null,
-      expiresAt: new Date('2026-06-01T00:00:00.000Z'),
-      revoked: false,
+    prisma.users.push({
+      id: 'existing-user',
+      email: 'user@example.com',
+      defaultCategoriesSeededAt: new Date('2025-01-01T00:00:00.000Z'),
     });
     prisma.categories.push({
       id: 'cat-1',
@@ -337,12 +338,16 @@ describe('verifyOtp', () => {
     expect(prisma.categories).toHaveLength(1);
   });
 
-  it("seeds default categories for an existing user who has never had a refresh token — self-heals a signup whose earlier transaction never committed", async () => {
+  it('seeds default categories for an existing user whose catalog was never marked seeded — self-heals a signup whose earlier transaction never committed', async () => {
     const { prisma, authService } = setup();
     // Simulates the crash-recovery case: a previous verifyOtp call created
     // this user row, then failed before its $transaction (which would have
-    // seeded categories and created a refresh token) ever committed.
-    prisma.users.push({ id: 'half-signed-up-user', email: 'user@example.com' });
+    // seeded categories and set defaultCategoriesSeededAt) ever committed.
+    prisma.users.push({
+      id: 'half-signed-up-user',
+      email: 'user@example.com',
+      defaultCategoriesSeededAt: null,
+    });
     prisma.otpCodes.push({
       id: 'otp-1',
       email: 'user@example.com',
@@ -357,6 +362,74 @@ describe('verifyOtp', () => {
 
     expect(prisma.categories.length).toBe(DEFAULT_CATEGORIES.length);
     expect(prisma.categories.every((c) => c.userId === 'half-signed-up-user')).toBe(true);
+  });
+
+  it('does not reseed a returning user who currently has zero refresh tokens (e.g. the last one was revoked and already cleaned up)', async () => {
+    const { prisma, authService } = setup();
+    // Regression test: seeding used to be inferred from "this user has no
+    // refresh tokens", which also went true for a perfectly normal returning
+    // user right after authCleanupService hard-deleted their one revoked
+    // token — causing a spurious reseed on every logout/login cycle.
+    // defaultCategoriesSeededAt makes seeding a direct fact instead.
+    prisma.users.push({
+      id: 'existing-user',
+      email: 'user@example.com',
+      defaultCategoriesSeededAt: new Date('2025-01-01T00:00:00.000Z'),
+    });
+    prisma.categories.push({
+      id: 'cat-1',
+      userId: 'existing-user',
+      name: 'Custom',
+      icon: 'x',
+      color: '#000',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+    prisma.otpCodes.push({
+      id: 'otp-1',
+      email: 'user@example.com',
+      codeHash: await hashOtpCode('123456'),
+      expiresAt: new Date('2026-01-01T00:10:00.000Z'),
+      used: false,
+      failedAttempts: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    await authService.verifyOtp({ email: 'user@example.com', code: '123456' });
+
+    expect(prisma.categories).toHaveLength(1);
+  });
+
+  it('does not double-seed if a concurrent verifyOtp call claims the seeding first', async () => {
+    const { prisma, authService } = setup();
+    // Simulate a concurrent request winning the race: it claims seeding
+    // (flips defaultCategoriesSeededAt from null) right before this call's
+    // own atomic claim-conditional-on-not-yet-seeded write runs. A naive
+    // check-then-write (reading defaultCategoriesSeededAt once, then
+    // unconditionally seeding) would miss this and seed twice.
+    prisma.otpCodes.push({
+      id: 'otp-1',
+      email: 'user@example.com',
+      codeHash: await hashOtpCode('123456'),
+      expiresAt: new Date('2026-01-01T00:10:00.000Z'),
+      used: false,
+      failedAttempts: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    const originalUpdateMany = prisma.user.updateMany.bind(prisma.user);
+    let firstCall = true;
+    prisma.user.updateMany = (async (args: Parameters<typeof originalUpdateMany>[0]) => {
+      if (firstCall) {
+        firstCall = false;
+        prisma.users[0]!.defaultCategoriesSeededAt = new Date('2026-01-01T00:00:00.000Z');
+      }
+      return originalUpdateMany(args);
+    }) as typeof originalUpdateMany;
+
+    await authService.verifyOtp({ email: 'user@example.com', code: '123456' });
+
+    expect(prisma.categories).toHaveLength(0);
   });
 });
 
@@ -378,6 +451,7 @@ describe('refreshSession', () => {
       deviceLabel: null,
       expiresAt: new Date('2026-02-01T00:00:00.000Z'),
       revoked: true,
+      revokedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
 
     await expect(authService.refreshSession('valid-token')).rejects.toMatchObject({
@@ -394,6 +468,7 @@ describe('refreshSession', () => {
       deviceLabel: null,
       expiresAt: new Date('2026-02-01T00:00:00.000Z'),
       revoked: false,
+      revokedAt: null,
     });
 
     await expect(authService.refreshSession('valid-token')).rejects.toMatchObject({
@@ -410,6 +485,7 @@ describe('refreshSession', () => {
       deviceLabel: null,
       expiresAt: new Date('2026-02-01T00:00:00.000Z'),
       revoked: false,
+      revokedAt: null,
     });
 
     // Simulate a concurrent request winning the race: it revokes the row
@@ -440,11 +516,13 @@ describe('refreshSession', () => {
       deviceLabel: "Miguel's iPhone",
       expiresAt: new Date('2026-02-01T00:00:00.000Z'),
       revoked: false,
+      revokedAt: null,
     });
 
     const result = await authService.refreshSession('valid-token');
 
     expect(prisma.refreshTokens[0]!.revoked).toBe(true);
+    expect(prisma.refreshTokens[0]!.revokedAt).toEqual(now());
     expect(prisma.refreshTokens).toHaveLength(2);
 
     const newRow = prisma.refreshTokens[1]!;
@@ -466,7 +544,7 @@ describe('refreshSession', () => {
 
 describe('logout', () => {
   it('revokes only the matching refresh token', async () => {
-    const { prisma, authService } = setup();
+    const { prisma, authService, now } = setup();
     prisma.refreshTokens.push(
       {
         id: 'rt-1',
@@ -475,6 +553,7 @@ describe('logout', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
       {
         id: 'rt-2',
@@ -483,19 +562,22 @@ describe('logout', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
     );
 
     await authService.logout('token-a');
 
     expect(prisma.refreshTokens[0]!.revoked).toBe(true);
+    expect(prisma.refreshTokens[0]!.revokedAt).toEqual(now());
     expect(prisma.refreshTokens[1]!.revoked).toBe(false);
+    expect(prisma.refreshTokens[1]!.revokedAt).toBeNull();
   });
 });
 
 describe('logoutAll', () => {
   it('revokes every refresh token for the user, leaving other users untouched', async () => {
-    const { prisma, authService } = setup();
+    const { prisma, authService, now } = setup();
     prisma.refreshTokens.push(
       {
         id: 'rt-1',
@@ -504,6 +586,7 @@ describe('logoutAll', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
       {
         id: 'rt-2',
@@ -512,6 +595,7 @@ describe('logoutAll', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
       {
         id: 'rt-3',
@@ -520,13 +604,17 @@ describe('logoutAll', () => {
         deviceLabel: null,
         expiresAt: new Date('2026-02-01T00:00:00.000Z'),
         revoked: false,
+        revokedAt: null,
       },
     );
 
     await authService.logoutAll('user-1');
 
     expect(prisma.refreshTokens[0]!.revoked).toBe(true);
+    expect(prisma.refreshTokens[0]!.revokedAt).toEqual(now());
     expect(prisma.refreshTokens[1]!.revoked).toBe(true);
+    expect(prisma.refreshTokens[1]!.revokedAt).toEqual(now());
     expect(prisma.refreshTokens[2]!.revoked).toBe(false);
+    expect(prisma.refreshTokens[2]!.revokedAt).toBeNull();
   });
 });

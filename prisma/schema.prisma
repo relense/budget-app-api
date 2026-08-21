@@ -30,6 +30,14 @@ model User {
   bankBalanceCheckpointCents Int      @default(0) @map("bank_balance_checkpoint_cents")
   bankBalanceCheckpointSetAt DateTime @default(now()) @map("bank_balance_checkpoint_set_at")
 
+  // Set once, the moment the default category catalog is seeded for this
+  // user (first signup, or a self-heal retry — see authService.verifyOtp).
+  // Tracked directly rather than inferred from refresh-token existence: the
+  // old "zero refresh tokens" proxy broke whenever a revoked token got
+  // cleaned up before the next login could see it, causing spurious
+  // reseeds. Null means "never seeded yet."
+  defaultCategoriesSeededAt DateTime? @map("default_categories_seeded_at")
+
   refreshTokens     RefreshToken[]
   categories        Category[]
   budgetMonths      BudgetMonth[]
@@ -68,6 +76,12 @@ model RefreshToken {
   deviceLabel String?  @map("device_label")
   expiresAt   DateTime @map("expires_at")
   revoked     Boolean  @default(false)
+  // Set explicitly (not inferred from `updatedAt`) the moment `revoked`
+  // flips to true — gives authCleanupService a real cutoff to grace-period
+  // against, instead of hard-deleting a just-revoked token before a
+  // legitimate concurrent request (e.g. a reuse-detection check, or the
+  // next login) can still observe it.
+  revokedAt   DateTime? @map("revoked_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

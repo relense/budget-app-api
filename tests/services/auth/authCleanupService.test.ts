@@ -25,6 +25,7 @@ function refreshToken(overrides: Partial<FakeRefreshToken> = {}): FakeRefreshTok
     deviceLabel: null,
     expiresAt: new Date('2026-02-01T00:00:00.000Z'),
     revoked: false,
+    revokedAt: null,
     ...overrides,
   };
 }
@@ -79,10 +80,14 @@ describe('cleanupExpiredAuthRecords', () => {
     expect(result.refreshTokensDeleted).toBe(1);
   });
 
-  it('deletes revoked refresh tokens even when not yet expired', async () => {
+  it('deletes revoked refresh tokens past the grace period, even when not yet expired', async () => {
     const { prisma, cleanupService } = setup();
     prisma.refreshTokens.push(
-      refreshToken({ id: 'revoked', revoked: true }),
+      refreshToken({
+        id: 'revoked-long-ago',
+        revoked: true,
+        revokedAt: new Date('2025-01-01T00:00:00.000Z'),
+      }),
       refreshToken({ id: 'active', revoked: false }),
     );
 
@@ -90,6 +95,27 @@ describe('cleanupExpiredAuthRecords', () => {
 
     expect(prisma.refreshTokens.map((row) => row.id)).toEqual(['active']);
     expect(result.refreshTokensDeleted).toBe(1);
+  });
+
+  it('does not delete a revoked refresh token still within the grace period', async () => {
+    // Regression test: cleanup used to hard-delete a revoked token the
+    // instant it saw `revoked: true`, with no grace period. That raced a
+    // normal logout -> request-otp -> login sequence, deleting the just-
+    // revoked token before the next login could see it existed, which broke
+    // authService's "has this user ever logged in before" self-heal check.
+    const { prisma, cleanupService } = setup();
+    prisma.refreshTokens.push(
+      refreshToken({
+        id: 'just-revoked',
+        revoked: true,
+        revokedAt: new Date('2026-01-01T00:00:00.000Z'), // same instant as NOW
+      }),
+    );
+
+    const result = await cleanupService.cleanupExpiredAuthRecords();
+
+    expect(prisma.refreshTokens.map((row) => row.id)).toEqual(['just-revoked']);
+    expect(result.refreshTokensDeleted).toBe(0);
   });
 
   it('leaves valid, unused/unrevoked rows alone entirely', async () => {

@@ -42,7 +42,7 @@ Row cleanup for `otp_codes`/`refresh_tokens` (PLAN.md's "Row cleanup" note)
 
 | Function | Does |
 |---|---|
-| `cleanupExpiredAuthRecords()` | Deletes expired `otp_codes`/`refresh_tokens`, plus used `otp_codes` and revoked `refresh_tokens` regardless of expiry (dead weight the moment they're used/revoked, no reason to wait for the TTL). Deletes in bounded batches (`findMany` a page of ids, `deleteMany` by id) rather than one unbounded `DELETE`, so a large backlog can't hold locks on these hot-path tables for one long transaction. Returns `{ otpCodesDeleted, refreshTokensDeleted }`. |
+| `cleanupExpiredAuthRecords()` | Deletes expired `otp_codes`/`refresh_tokens`, plus used `otp_codes` (regardless of expiry — dead weight the moment they're used, no reason to wait for the TTL) and revoked `refresh_tokens` past a 1-hour grace period (`revokedAt` cutoff, comfortably longer than the OTP TTL) — not immediately, so a revoked token stays visible long enough for a concurrent reuse-detection check or the next login's self-heal check to still see it existed. Deletes in bounded batches (`findMany` a page of ids, `deleteMany` by id) rather than one unbounded `DELETE`, so a large backlog can't hold locks on these hot-path tables for one long transaction. Returns `{ otpCodesDeleted, refreshTokensDeleted }`. |
 
 Triggered two ways, both in-process (no external cron/hosting dependency):
 piggybacked on every `POST /auth/request-otp` (see REST Endpoints below;
