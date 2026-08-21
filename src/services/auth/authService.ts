@@ -155,13 +155,22 @@ export function createAuthService({
       await tx.otpCode.update({ where: { id: otp.id }, data: { used: true } });
 
       if (needsSeeding) {
-        await tx.category.createMany({
-          data: DEFAULT_CATEGORIES.map((category) => ({ ...category, userId: user.id })),
-        });
-        await tx.user.update({
-          where: { id: user.id },
+        // Conditional on defaultCategoriesSeededAt: null so two concurrent
+        // verifyOtp calls for the same not-yet-seeded user (e.g. a
+        // double-submitted login) can't both pass the needsSeeding read
+        // above and both seed — only the transaction that wins this atomic
+        // write proceeds. Same guard shape as refreshSession's
+        // revoke-conditional-on-not-revoked below.
+        const seedClaim = await tx.user.updateMany({
+          where: { id: user.id, defaultCategoriesSeededAt: null },
           data: { defaultCategoriesSeededAt: now() },
         });
+
+        if (seedClaim.count > 0) {
+          await tx.category.createMany({
+            data: DEFAULT_CATEGORIES.map((category) => ({ ...category, userId: user.id })),
+          });
+        }
       }
 
       await tx.refreshToken.create({

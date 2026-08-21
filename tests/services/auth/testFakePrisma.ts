@@ -73,6 +73,10 @@ interface FakeDelegates {
       where: { id: string };
       data: Partial<Pick<FakeUser, 'defaultCategoriesSeededAt'>>;
     }): Promise<FakeUser>;
+    updateMany(args: {
+      where: { id: string; defaultCategoriesSeededAt: null };
+      data: Partial<Pick<FakeUser, 'defaultCategoriesSeededAt'>>;
+    }): Promise<{ count: number }>;
   };
   category: {
     createMany(args: {
@@ -195,6 +199,13 @@ export function createFakePrisma(): FakePrismaClient {
         if (!row) throw new Error('not found');
         Object.assign(row, data);
         return row;
+      },
+      async updateMany({ where, data }) {
+        const matches = users.filter(
+          (u) => u.id === where.id && u.defaultCategoriesSeededAt === where.defaultCategoriesSeededAt,
+        );
+        matches.forEach((row) => Object.assign(row, data));
+        return { count: matches.length };
       },
     },
     category: {

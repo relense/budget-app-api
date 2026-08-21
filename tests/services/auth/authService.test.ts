@@ -399,6 +399,38 @@ describe('verifyOtp', () => {
 
     expect(prisma.categories).toHaveLength(1);
   });
+
+  it('does not double-seed if a concurrent verifyOtp call claims the seeding first', async () => {
+    const { prisma, authService } = setup();
+    // Simulate a concurrent request winning the race: it claims seeding
+    // (flips defaultCategoriesSeededAt from null) right before this call's
+    // own atomic claim-conditional-on-not-yet-seeded write runs. A naive
+    // check-then-write (reading defaultCategoriesSeededAt once, then
+    // unconditionally seeding) would miss this and seed twice.
+    prisma.otpCodes.push({
+      id: 'otp-1',
+      email: 'user@example.com',
+      codeHash: await hashOtpCode('123456'),
+      expiresAt: new Date('2026-01-01T00:10:00.000Z'),
+      used: false,
+      failedAttempts: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    const originalUpdateMany = prisma.user.updateMany.bind(prisma.user);
+    let firstCall = true;
+    prisma.user.updateMany = (async (args: Parameters<typeof originalUpdateMany>[0]) => {
+      if (firstCall) {
+        firstCall = false;
+        prisma.users[0]!.defaultCategoriesSeededAt = new Date('2026-01-01T00:00:00.000Z');
+      }
+      return originalUpdateMany(args);
+    }) as typeof originalUpdateMany;
+
+    await authService.verifyOtp({ email: 'user@example.com', code: '123456' });
+
+    expect(prisma.categories).toHaveLength(0);
+  });
 });
 
 describe('refreshSession', () => {
