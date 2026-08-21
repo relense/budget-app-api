@@ -15,6 +15,7 @@ export type CategoryMonthServiceErrorReason =
   | 'category_month_already_active'
   | 'category_month_has_transactions'
   | 'category_month_has_recurring_expenses'
+  | 'category_has_active_months'
   | 'category_month_budget_required'
   | 'category_month_beyond_planning_horizon'
   | 'month_locked'
@@ -471,6 +472,35 @@ export function createCategoryMonthService({
         }
 
         await tx.categoryMonth.delete({ where: { id: categoryMonthId } });
+
+        // A Category is meant to be a reusable, dormant-when-inactive
+        // catalog entry, but the mobile client never manages it directly —
+        // the only user-facing way to remove one is from a month's budget
+        // screen (see docs/PLAN.md). So if this was its last remaining
+        // CategoryMonth anywhere, also delete the underlying Category here,
+        // reusing categoryService.deleteCategory's own "any CategoryMonth
+        // left, past or future" check — otherwise a fully dormant category
+        // becomes permanent, invisible clutter with no UI that could ever
+        // reach it again to clean it up.
+        const stillActiveElsewhere = await tx.categoryMonth.findFirst({
+          where: { categoryId: categoryMonth.categoryId },
+        });
+        if (!stillActiveElsewhere) {
+          try {
+            await tx.category.delete({ where: { id: categoryMonth.categoryId } });
+          } catch (error) {
+            // A concurrent addCategoryToMonth/createRecurringExpense can
+            // reactivate this category between the check above and this
+            // delete — the onDelete: Restrict FK catches it. Thrown here
+            // (not left to the outer catch) so it isn't mislabeled as
+            // category_month_has_transactions, which is about this month
+            // specifically, not the category as a whole.
+            if (hasPrismaErrorCode(error, 'P2003')) {
+              throw new CategoryMonthServiceError('category_has_active_months');
+            }
+            throw error;
+          }
+        }
       });
     } catch (error) {
       if (error instanceof CategoryMonthServiceError) {

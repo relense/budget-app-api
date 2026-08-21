@@ -227,8 +227,8 @@ describe('addCategoryToMonth', () => {
     ).rejects.toMatchObject({ reason: 'category_month_already_active' });
   });
 
-  it('allows re-adding a category to a month after it was previously removed', async () => {
-    const { prisma, categoryMonthService, categoryA } = await setup();
+  it('does not allow re-adding the same category after removing its last month — it was cascade-deleted, so a fresh createCategory is needed instead', async () => {
+    const { prisma, categoryService, categoryMonthService, categoryA } = await setup();
     const first = await categoryMonthService.addCategoryToMonth(
       'user-1',
       categoryA.id,
@@ -237,9 +237,20 @@ describe('addCategoryToMonth', () => {
     );
     await categoryMonthService.removeCategoryFromMonth('user-1', first.id);
 
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 8000),
+    ).rejects.toMatchObject({ reason: 'category_not_found' });
+
+    const recreated = await categoryService.createCategory('user-1', {
+      name: categoryA.name,
+      icon: categoryA.icon,
+      color: categoryA.color,
+      budgetType: categoryA.budgetType ?? undefined,
+      direction: categoryA.direction,
+    });
     const second = await categoryMonthService.addCategoryToMonth(
       'user-1',
-      categoryA.id,
+      recreated.id,
       '2026-08',
       8000,
     );
@@ -605,7 +616,8 @@ describe('lockMonth/deleteBudgetMonth cannot skip more than one month (pr-review
     // the next-earliest unlocked row become current. Same induction
     // argument applies: a row two months out can only exist once current
     // has already reached one month out, so this can't skip further either.
-    const { categoryMonthService, budgetMonthService, categoryA, categoryB } = await setup();
+    const { categoryService, categoryMonthService, budgetMonthService, categoryA, categoryB } =
+      await setup();
 
     const augustActivation = await categoryMonthService.addCategoryToMonth(
       'user-1',
@@ -624,10 +636,21 @@ describe('lockMonth/deleteBudgetMonth cannot skip more than one month (pr-review
     await budgetMonthService.deleteBudgetMonth('user-1', '2026-08');
     expect((await budgetMonthService.findCurrentMonth('user-1')).month).toBe('2026-09');
 
+    // categoryA no longer exists — removing its only month cascade-deleted
+    // it — so a fresh category stands in for it here; this test is about
+    // month advancement, not category reuse.
+    const categoryC = await categoryService.createCategory('user-1', {
+      name: 'October Category',
+      icon: 'x',
+      color: '#123456',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
     // Only reachable now that current has advanced to 2026-09.
     const octoberActivation = await categoryMonthService.addCategoryToMonth(
       'user-1',
-      categoryA.id,
+      categoryC.id,
       '2026-10',
       10000,
     );
@@ -806,7 +829,7 @@ describe('ensureActiveForCategoryOnClient', () => {
 });
 
 describe('removeCategoryFromMonth', () => {
-  it('hard-deletes the row when no transactions reference it', async () => {
+  it('hard-deletes the row when no transactions reference it, and also deletes the underlying category since this was its last month', async () => {
     const { prisma, categoryMonthService, categoryA } = await setup();
     const categoryMonth = await categoryMonthService.addCategoryToMonth(
       'user-1',
@@ -818,6 +841,61 @@ describe('removeCategoryFromMonth', () => {
     await categoryMonthService.removeCategoryFromMonth('user-1', categoryMonth.id);
 
     expect(prisma.categoryMonths).toHaveLength(0);
+    // The mobile client never manages the global catalog directly — the
+    // only user-facing way to remove a category is from a month's budget
+    // screen — so a category that's dormant everywhere would otherwise
+    // become permanent, invisible clutter with no UI that could ever
+    // reach it again.
+    expect(prisma.categories.some((c) => c.id === categoryA.id)).toBe(false);
+  });
+
+  it('does not delete the underlying category if it is still active in another month', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    const augustActivation = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      10000,
+    );
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 10000);
+
+    await categoryMonthService.removeCategoryFromMonth('user-1', augustActivation.id);
+
+    expect(prisma.categoryMonths).toHaveLength(1);
+    expect(prisma.categories.some((c) => c.id === categoryA.id)).toBe(true);
+  });
+
+  it('throws category_has_active_months (not a raw FK error) when the category is concurrently reactivated between the check and the cascade delete', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      10000,
+    );
+
+    // Simulate the race: the "still active elsewhere" check reports none
+    // (as if it ran a moment before a concurrent reactivation), but a new
+    // CategoryMonth lands right after — the fake's category.delete()
+    // enforces onDelete: Restrict just like the real DB.
+    prisma.categoryMonth.findFirst = (async () => {
+      prisma.categoryMonths.push({
+        id: 'racing-activation',
+        userId: 'user-1',
+        categoryId: categoryA.id,
+        monthId: 'some-other-month-id',
+        monthlyBudgetCents: 10000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return null;
+    }) as typeof prisma.categoryMonth.findFirst;
+
+    await expect(
+      categoryMonthService.removeCategoryFromMonth('user-1', categoryMonth.id),
+    ).rejects.toMatchObject({ reason: 'category_has_active_months' });
+    expect(prisma.categoryMonths).toHaveLength(1);
+    expect(prisma.categories.some((c) => c.id === categoryA.id)).toBe(true);
   });
 
   it('throws category_month_has_transactions when a transaction references it', async () => {
