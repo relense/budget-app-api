@@ -5,6 +5,7 @@ import {
   ensureActiveForCategoryOnClient,
 } from '../../../src/services/categories/categoryMonthService.js';
 import { createCategoryService } from '../../../src/services/categories/categoryService.js';
+import { FakeForeignKeyConstraintError } from '../budgetMonths/testFakePrisma.js';
 import { createFakePrisma } from './testFakePrisma.js';
 
 /**
@@ -494,6 +495,35 @@ describe('addCategoryToMonth', () => {
     expect(prisma.categoryMonths).toHaveLength(0);
   });
 
+  it('throws category_not_found (not budget_month_not_found) when the category is concurrently deleted between the ownership check and the insert', async () => {
+    // Simulates a concurrent removeCategoryFromMonth's cascade delete (see
+    // categoryMonthService.removeCategoryFromMonth) winning the race for
+    // categoryA — assertOwnedCategory's re-checks pass (it existed when
+    // both ran), but is gone by the time the disambiguation check in the
+    // outer catch runs. Modeled with a flag flipped at the moment the
+    // insert fails, not an actual array mutation: this fake's
+    // $transaction snapshots and rolls back on throw, so a real delete
+    // performed inside the doomed transaction would be undone along with
+    // everything else — unlike the real concurrent transaction this
+    // simulates, which has already independently committed.
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    let categoryDeletedConcurrently = false;
+    const originalFindUnique = prisma.category.findUnique.bind(prisma.category);
+    prisma.category.findUnique = (async (args: Parameters<typeof originalFindUnique>[0]) => {
+      if (categoryDeletedConcurrently && args.where.id === categoryA.id) return null;
+      return originalFindUnique(args);
+    }) as typeof originalFindUnique;
+    prisma.categoryMonth.create = (async () => {
+      categoryDeletedConcurrently = true;
+      throw new FakeForeignKeyConstraintError();
+    }) as typeof prisma.categoryMonth.create;
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 10000),
+    ).rejects.toMatchObject({ reason: 'category_not_found' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
   it("inherits the category's most recent monthlyBudgetCents when omitted", async () => {
     const { categoryMonthService, categoryA } = await setup();
     // Prior activation at the current month (2026-08), inheriting into the
@@ -739,6 +769,30 @@ describe('ensureActiveForCategoryOnClient', () => {
     ).rejects.toMatchObject({ reason: 'category_not_found' });
   });
 
+  it('throws category_not_found (not budget_month_not_found) when the category is concurrently deleted between the check and the insert', async () => {
+    // Same race as addCategoryToMonth's identical test above, simulated the
+    // same way (a flag, not an actual array mutation — see that test's
+    // comment for why: this fake's $transaction rolls back a real delete
+    // performed inside the doomed attempt, unlike the already-committed
+    // concurrent transaction this is meant to represent).
+    const { prisma, now, categoryA } = await setup();
+    let categoryDeletedConcurrently = false;
+    const originalFindUnique = prisma.category.findUnique.bind(prisma.category);
+    prisma.category.findUnique = (async (args: Parameters<typeof originalFindUnique>[0]) => {
+      if (categoryDeletedConcurrently && args.where.id === categoryA.id) return null;
+      return originalFindUnique(args);
+    }) as typeof originalFindUnique;
+    prisma.categoryMonth.create = (async () => {
+      categoryDeletedConcurrently = true;
+      throw new FakeForeignKeyConstraintError();
+    }) as typeof prisma.categoryMonth.create;
+
+    await expect(
+      ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-08', 50000),
+    ).rejects.toMatchObject({ reason: 'category_not_found' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
   it('throws month_locked when the target month is already locked', async () => {
     const { prisma, now, categoryA } = await setup();
     // Locked at the current month (2026-08, under the fixed clock) rather
@@ -865,7 +919,7 @@ describe('removeCategoryFromMonth', () => {
     expect(prisma.categories.some((c) => c.id === categoryA.id)).toBe(true);
   });
 
-  it('throws category_has_active_months (not a raw FK error) when the category is concurrently reactivated between the check and the cascade delete', async () => {
+  it('succeeds without the cascade (leaving the category active) when it is concurrently reactivated between the check and the cascade delete', async () => {
     const { prisma, categoryMonthService, categoryA } = await setup();
     const categoryMonth = await categoryMonthService.addCategoryToMonth(
       'user-1',
@@ -877,7 +931,10 @@ describe('removeCategoryFromMonth', () => {
     // Simulate the race: the "still active elsewhere" check reports none
     // (as if it ran a moment before a concurrent reactivation), but a new
     // CategoryMonth lands right after — the fake's category.delete()
-    // enforces onDelete: Restrict just like the real DB.
+    // enforces onDelete: Restrict just like the real DB. The user's actual
+    // request (removing the August activation) should still succeed; only
+    // the bonus cascade cleanup is skipped, since the category is
+    // legitimately active again by the time it would run.
     prisma.categoryMonth.findFirst = (async () => {
       prisma.categoryMonths.push({
         id: 'racing-activation',
@@ -891,10 +948,10 @@ describe('removeCategoryFromMonth', () => {
       return null;
     }) as typeof prisma.categoryMonth.findFirst;
 
-    await expect(
-      categoryMonthService.removeCategoryFromMonth('user-1', categoryMonth.id),
-    ).rejects.toMatchObject({ reason: 'category_has_active_months' });
+    await categoryMonthService.removeCategoryFromMonth('user-1', categoryMonth.id);
+
     expect(prisma.categoryMonths).toHaveLength(1);
+    expect(prisma.categoryMonths[0]!.id).toBe('racing-activation');
     expect(prisma.categories.some((c) => c.id === categoryA.id)).toBe(true);
   });
 
