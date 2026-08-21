@@ -32,7 +32,14 @@ export class CategoryMonthServiceError extends Error {
 export interface CategoryMonthServiceDeps {
   prisma: Pick<
     PrismaClient,
-    'category' | 'categoryMonth' | 'transaction' | 'budgetMonth' | 'recurringExpense' | '$transaction' | '$queryRaw'
+    | 'category'
+    | 'categoryMonth'
+    | 'transaction'
+    | 'budgetMonth'
+    | 'recurringExpense'
+    | '$transaction'
+    | '$queryRaw'
+    | '$executeRawUnsafe'
   >;
   budgetMonthService: Pick<BudgetMonthService, 'findBudgetMonthId'>;
   now?: () => Date;
@@ -63,6 +70,29 @@ function assertValidMonth(month: string): void {
   if (!isValidMonthFormat(month)) {
     throw new CategoryMonthServiceError('invalid_month');
   }
+}
+
+/**
+ * A categoryMonth insert's composite FK (categoryId + monthId) can fail on
+ * either half — a concurrent removeCategoryFromMonth's category cascade
+ * (see its own doc comment) deleting categoryId, or a concurrent
+ * deleteBudgetMonth deleting monthId. Both call sites below used to assume
+ * it was always the month half; that stopped being a safe assumption once
+ * a category delete became a routine side effect of removing it from any
+ * *other* month, not just an explicit (and, in practice, never-called by
+ * the client) deleteCategory. Distinguishes the two with a follow-up read
+ * rather than guessing, so the caller gets category_not_found — the same
+ * reason assertOwnedCategory already throws for this category earlier in
+ * both call sites — instead of a confusing budget_month_not_found.
+ */
+async function categoryMonthCreateFkError(
+  client: Pick<PrismaClient, 'category'>,
+  categoryId: string,
+): Promise<CategoryServiceError | CategoryMonthServiceError> {
+  const categoryStillExists = await client.category.findUnique({ where: { id: categoryId } });
+  return categoryStillExists
+    ? new CategoryMonthServiceError('budget_month_not_found')
+    : new CategoryServiceError('category_not_found');
 }
 
 /**
@@ -251,15 +281,15 @@ export async function ensureActiveForCategoryOnClient(
     const winner = await client.categoryMonth.findFirst({ where: { categoryId, monthId } });
     if (winner) return { categoryMonth: winner, monthWasCreated };
   }
-  // Belt-and-suspenders, not expected to actually trigger: once
-  // assertMonthNotLockedOnClient above passes, this transaction holds the
-  // row lock on budget_months for its own remaining lifetime, so a
-  // concurrent deleteBudgetMonth can't win the row and delete out from
-  // under this insert. Kept anyway, matching this file's established
-  // pre-check-plus-FK-catch pattern elsewhere, in case that ordering ever
-  // changes.
+  // The monthId half is belt-and-suspenders, not expected to actually
+  // trigger: once assertMonthNotLockedOnClient above passes, this
+  // transaction holds the row lock on budget_months for its own remaining
+  // lifetime, so a concurrent deleteBudgetMonth can't win the row and
+  // delete out from under this insert. The categoryId half is a real,
+  // routine possibility though — see categoryMonthCreateFkError's doc
+  // comment.
   if (hasPrismaErrorCode(attempt.error, 'P2003')) {
-    throw new CategoryMonthServiceError('budget_month_not_found');
+    throw await categoryMonthCreateFkError(client, categoryId);
   }
   throw attempt.error;
 }
@@ -409,12 +439,12 @@ export function createCategoryMonthService({
       if (hasPrismaErrorCode(error, 'P2002')) {
         throw new CategoryMonthServiceError('category_month_already_active');
       }
-      // Belt-and-suspenders, same reasoning as ensureActiveForCategoryOnClient's
-      // identical catch — not expected to actually trigger once
-      // assertMonthNotLockedOnClient holds the row lock for the rest of
-      // this transaction.
+      // Same disambiguation as ensureActiveForCategoryOnClient's identical
+      // catch — see categoryMonthCreateFkError's doc comment. Checked
+      // against the outer prisma client, not tx: the transaction that
+      // failed has already rolled back by this point.
       if (hasPrismaErrorCode(error, 'P2003')) {
-        throw new CategoryMonthServiceError('budget_month_not_found');
+        throw await categoryMonthCreateFkError(prisma, categoryId);
       }
       throw error;
     }
@@ -471,6 +501,43 @@ export function createCategoryMonthService({
         }
 
         await tx.categoryMonth.delete({ where: { id: categoryMonthId } });
+
+        // A Category is meant to be a reusable, dormant-when-inactive
+        // catalog entry, but the mobile client never manages it directly —
+        // the only user-facing way to remove one is from a month's budget
+        // screen (see docs/PLAN.md). So if this was its last remaining
+        // CategoryMonth anywhere, also delete the underlying Category here,
+        // reusing categoryService.deleteCategory's own "any CategoryMonth
+        // left, past or future" check — otherwise a fully dormant category
+        // becomes permanent, invisible clutter with no UI that could ever
+        // reach it again to clean it up.
+        const stillActiveElsewhere = await tx.categoryMonth.findFirst({
+          where: { categoryId: categoryMonth.categoryId },
+        });
+        if (!stillActiveElsewhere) {
+          // Under withSavepoint, not a plain try/catch: once any statement
+          // in a Postgres transaction fails, the transaction is marked
+          // aborted, and a later COMMIT on an aborted transaction is
+          // silently turned into a ROLLBACK by Postgres — undoing the
+          // categoryMonth.delete above too, along with everything else,
+          // with no error surfaced. Confirmed against real Postgres, not
+          // just the fake (which can't reproduce this at all — see
+          // withSavepoint's own doc comment). A concurrent
+          // addCategoryToMonth/createRecurringExpense can reactivate this
+          // category between the check above and this delete — the
+          // onDelete: Restrict FK catches it. Skip the cascade rather than
+          // fail the whole call: the user's actual request (removing this
+          // month, which had no transactions) is still entirely valid on
+          // its own, and the category being active again by the time this
+          // runs is exactly the same "leave it alone" outcome this check
+          // would have produced had it simply run a moment later.
+          const attempt = await withSavepoint(tx, 'category_cascade_delete', () =>
+            tx.category.delete({ where: { id: categoryMonth.categoryId } }),
+          );
+          if (!attempt.ok && !hasPrismaErrorCode(attempt.error, 'P2003')) {
+            throw attempt.error;
+          }
+        }
       });
     } catch (error) {
       if (error instanceof CategoryMonthServiceError) {
