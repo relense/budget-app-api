@@ -5,6 +5,7 @@ import {
   ensureActiveForCategoryOnClient,
 } from '../../../src/services/categories/categoryMonthService.js';
 import { createCategoryService } from '../../../src/services/categories/categoryService.js';
+import { FakeForeignKeyConstraintError } from '../budgetMonths/testFakePrisma.js';
 import { createFakePrisma } from './testFakePrisma.js';
 
 /**
@@ -227,8 +228,8 @@ describe('addCategoryToMonth', () => {
     ).rejects.toMatchObject({ reason: 'category_month_already_active' });
   });
 
-  it('allows re-adding a category to a month after it was previously removed', async () => {
-    const { prisma, categoryMonthService, categoryA } = await setup();
+  it('does not allow re-adding the same category after removing its last month — it was cascade-deleted, so a fresh createCategory is needed instead', async () => {
+    const { prisma, categoryService, categoryMonthService, categoryA } = await setup();
     const first = await categoryMonthService.addCategoryToMonth(
       'user-1',
       categoryA.id,
@@ -237,9 +238,20 @@ describe('addCategoryToMonth', () => {
     );
     await categoryMonthService.removeCategoryFromMonth('user-1', first.id);
 
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 8000),
+    ).rejects.toMatchObject({ reason: 'category_not_found' });
+
+    const recreated = await categoryService.createCategory('user-1', {
+      name: categoryA.name,
+      icon: categoryA.icon,
+      color: categoryA.color,
+      budgetType: categoryA.budgetType ?? undefined,
+      direction: categoryA.direction,
+    });
     const second = await categoryMonthService.addCategoryToMonth(
       'user-1',
-      categoryA.id,
+      recreated.id,
       '2026-08',
       8000,
     );
@@ -483,6 +495,35 @@ describe('addCategoryToMonth', () => {
     expect(prisma.categoryMonths).toHaveLength(0);
   });
 
+  it('throws category_not_found (not budget_month_not_found) when the category is concurrently deleted between the ownership check and the insert', async () => {
+    // Simulates a concurrent removeCategoryFromMonth's cascade delete (see
+    // categoryMonthService.removeCategoryFromMonth) winning the race for
+    // categoryA — assertOwnedCategory's re-checks pass (it existed when
+    // both ran), but is gone by the time the disambiguation check in the
+    // outer catch runs. Modeled with a flag flipped at the moment the
+    // insert fails, not an actual array mutation: this fake's
+    // $transaction snapshots and rolls back on throw, so a real delete
+    // performed inside the doomed transaction would be undone along with
+    // everything else — unlike the real concurrent transaction this
+    // simulates, which has already independently committed.
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    let categoryDeletedConcurrently = false;
+    const originalFindUnique = prisma.category.findUnique.bind(prisma.category);
+    prisma.category.findUnique = (async (args: Parameters<typeof originalFindUnique>[0]) => {
+      if (categoryDeletedConcurrently && args.where.id === categoryA.id) return null;
+      return originalFindUnique(args);
+    }) as typeof originalFindUnique;
+    prisma.categoryMonth.create = (async () => {
+      categoryDeletedConcurrently = true;
+      throw new FakeForeignKeyConstraintError();
+    }) as typeof prisma.categoryMonth.create;
+
+    await expect(
+      categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-08', 10000),
+    ).rejects.toMatchObject({ reason: 'category_not_found' });
+    expect(prisma.categoryMonths).toHaveLength(0);
+  });
+
   it("inherits the category's most recent monthlyBudgetCents when omitted", async () => {
     const { categoryMonthService, categoryA } = await setup();
     // Prior activation at the current month (2026-08), inheriting into the
@@ -605,7 +646,8 @@ describe('lockMonth/deleteBudgetMonth cannot skip more than one month (pr-review
     // the next-earliest unlocked row become current. Same induction
     // argument applies: a row two months out can only exist once current
     // has already reached one month out, so this can't skip further either.
-    const { categoryMonthService, budgetMonthService, categoryA, categoryB } = await setup();
+    const { categoryService, categoryMonthService, budgetMonthService, categoryA, categoryB } =
+      await setup();
 
     const augustActivation = await categoryMonthService.addCategoryToMonth(
       'user-1',
@@ -624,10 +666,21 @@ describe('lockMonth/deleteBudgetMonth cannot skip more than one month (pr-review
     await budgetMonthService.deleteBudgetMonth('user-1', '2026-08');
     expect((await budgetMonthService.findCurrentMonth('user-1')).month).toBe('2026-09');
 
+    // categoryA no longer exists — removing its only month cascade-deleted
+    // it — so a fresh category stands in for it here; this test is about
+    // month advancement, not category reuse.
+    const categoryC = await categoryService.createCategory('user-1', {
+      name: 'October Category',
+      icon: 'x',
+      color: '#123456',
+      budgetType: 'need',
+      direction: 'expense',
+    });
+
     // Only reachable now that current has advanced to 2026-09.
     const octoberActivation = await categoryMonthService.addCategoryToMonth(
       'user-1',
-      categoryA.id,
+      categoryC.id,
       '2026-10',
       10000,
     );
@@ -714,6 +767,30 @@ describe('ensureActiveForCategoryOnClient', () => {
     await expect(
       ensureActiveForCategory(prisma, now, 'user-1', otherUsersCategory.id, '2026-08', 50000),
     ).rejects.toMatchObject({ reason: 'category_not_found' });
+  });
+
+  it('throws category_not_found (not budget_month_not_found) when the category is concurrently deleted between the check and the insert', async () => {
+    // Same race as addCategoryToMonth's identical test above, simulated the
+    // same way (a flag, not an actual array mutation — see that test's
+    // comment for why: this fake's $transaction rolls back a real delete
+    // performed inside the doomed attempt, unlike the already-committed
+    // concurrent transaction this is meant to represent).
+    const { prisma, now, categoryA } = await setup();
+    let categoryDeletedConcurrently = false;
+    const originalFindUnique = prisma.category.findUnique.bind(prisma.category);
+    prisma.category.findUnique = (async (args: Parameters<typeof originalFindUnique>[0]) => {
+      if (categoryDeletedConcurrently && args.where.id === categoryA.id) return null;
+      return originalFindUnique(args);
+    }) as typeof originalFindUnique;
+    prisma.categoryMonth.create = (async () => {
+      categoryDeletedConcurrently = true;
+      throw new FakeForeignKeyConstraintError();
+    }) as typeof prisma.categoryMonth.create;
+
+    await expect(
+      ensureActiveForCategory(prisma, now, 'user-1', categoryA.id, '2026-08', 50000),
+    ).rejects.toMatchObject({ reason: 'category_not_found' });
+    expect(prisma.categoryMonths).toHaveLength(0);
   });
 
   it('throws month_locked when the target month is already locked', async () => {
@@ -806,7 +883,7 @@ describe('ensureActiveForCategoryOnClient', () => {
 });
 
 describe('removeCategoryFromMonth', () => {
-  it('hard-deletes the row when no transactions reference it', async () => {
+  it('hard-deletes the row when no transactions reference it, and also deletes the underlying category since this was its last month', async () => {
     const { prisma, categoryMonthService, categoryA } = await setup();
     const categoryMonth = await categoryMonthService.addCategoryToMonth(
       'user-1',
@@ -818,6 +895,64 @@ describe('removeCategoryFromMonth', () => {
     await categoryMonthService.removeCategoryFromMonth('user-1', categoryMonth.id);
 
     expect(prisma.categoryMonths).toHaveLength(0);
+    // The mobile client never manages the global catalog directly — the
+    // only user-facing way to remove a category is from a month's budget
+    // screen — so a category that's dormant everywhere would otherwise
+    // become permanent, invisible clutter with no UI that could ever
+    // reach it again.
+    expect(prisma.categories.some((c) => c.id === categoryA.id)).toBe(false);
+  });
+
+  it('does not delete the underlying category if it is still active in another month', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    const augustActivation = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      10000,
+    );
+    await categoryMonthService.addCategoryToMonth('user-1', categoryA.id, '2026-09', 10000);
+
+    await categoryMonthService.removeCategoryFromMonth('user-1', augustActivation.id);
+
+    expect(prisma.categoryMonths).toHaveLength(1);
+    expect(prisma.categories.some((c) => c.id === categoryA.id)).toBe(true);
+  });
+
+  it('succeeds without the cascade (leaving the category active) when it is concurrently reactivated between the check and the cascade delete', async () => {
+    const { prisma, categoryMonthService, categoryA } = await setup();
+    const categoryMonth = await categoryMonthService.addCategoryToMonth(
+      'user-1',
+      categoryA.id,
+      '2026-08',
+      10000,
+    );
+
+    // Simulate the race: the "still active elsewhere" check reports none
+    // (as if it ran a moment before a concurrent reactivation), but a new
+    // CategoryMonth lands right after — the fake's category.delete()
+    // enforces onDelete: Restrict just like the real DB. The user's actual
+    // request (removing the August activation) should still succeed; only
+    // the bonus cascade cleanup is skipped, since the category is
+    // legitimately active again by the time it would run.
+    prisma.categoryMonth.findFirst = (async () => {
+      prisma.categoryMonths.push({
+        id: 'racing-activation',
+        userId: 'user-1',
+        categoryId: categoryA.id,
+        monthId: 'some-other-month-id',
+        monthlyBudgetCents: 10000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return null;
+    }) as typeof prisma.categoryMonth.findFirst;
+
+    await categoryMonthService.removeCategoryFromMonth('user-1', categoryMonth.id);
+
+    expect(prisma.categoryMonths).toHaveLength(1);
+    expect(prisma.categoryMonths[0]!.id).toBe('racing-activation');
+    expect(prisma.categories.some((c) => c.id === categoryA.id)).toBe(true);
   });
 
   it('throws category_month_has_transactions when a transaction references it', async () => {
