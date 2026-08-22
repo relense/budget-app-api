@@ -1,4 +1,4 @@
-import { addMonths } from '../../lib/monthFormat.js';
+import { addMonths, isValidMonthFormat } from '../../lib/monthFormat.js';
 import type { PrismaClient } from '../../lib/prisma.js';
 import { hasPrismaErrorCode } from '../../lib/prismaErrors.js';
 import { withSavepoint } from '../../lib/prismaSavepoint.js';
@@ -36,7 +36,8 @@ export type RecurringExpenseServiceErrorReason =
   | 'recurring_expense_not_found'
   | 'duplicate_name'
   | 'recurring_expense_has_transactions'
-  | 'month_locked';
+  | 'month_locked'
+  | 'invalid_month';
 
 export class RecurringExpenseServiceError extends Error {
   constructor(public readonly reason: RecurringExpenseServiceErrorReason) {
@@ -64,6 +65,12 @@ export interface RecurringExpenseServiceDeps {
 function assertValidAmount(amountCents: number): void {
   if (!Number.isInteger(amountCents) || amountCents <= 0) {
     throw new RecurringExpenseServiceError('invalid_amount');
+  }
+}
+
+function assertValidMonth(month: string): void {
+  if (!isValidMonthFormat(month)) {
+    throw new RecurringExpenseServiceError('invalid_month');
   }
 }
 
@@ -380,6 +387,7 @@ export function createRecurringExpenseService({
   }
 
   async function listByMonth(userId: string, month: string) {
+    assertValidMonth(month);
     const monthId = await budgetMonthService.findBudgetMonthId(userId, month);
     if (!monthId) return [];
     return prisma.recurringExpense.findMany({ where: { userId, monthId } });

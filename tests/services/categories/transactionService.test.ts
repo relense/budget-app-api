@@ -122,6 +122,18 @@ describe('create', () => {
     ).rejects.toMatchObject({ reason: 'invalid_amount' });
   });
 
+  it('rejects a non-integer amountCents', async () => {
+    const { transactionService, expenseCategoryMonth } = await setup();
+
+    await expect(
+      transactionService.create('user-1', {
+        categoryMonthId: expenseCategoryMonth.id,
+        amountCents: 100.5,
+        date: '2026-08-15',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_amount' });
+  });
+
   it('rejects a malformed date', async () => {
     const { transactionService, expenseCategoryMonth } = await setup();
 
