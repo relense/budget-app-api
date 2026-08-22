@@ -790,6 +790,14 @@ describe('sumCommittedCentsForCategoryMonth', () => {
 });
 
 describe('listByMonth', () => {
+  it('rejects a malformed month string', async () => {
+    const { recurringExpenseService } = await setup();
+
+    await expect(recurringExpenseService.listByMonth('user-1', 'banana')).rejects.toMatchObject({
+      reason: 'invalid_month',
+    });
+  });
+
   it('never returns another user\'s recurring expenses for the same month string', async () => {
     const { recurringExpenseService, housing, otherUsersCategory } = await setup();
     const mine = await recurringExpenseService.createRecurringExpense(
