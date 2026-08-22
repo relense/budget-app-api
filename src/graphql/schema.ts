@@ -288,35 +288,63 @@ export const queryResolvers: QueryResolvers<GraphQLContext> = {
   ping: () => 'pong',
   currentMonth: async (_parent, _args, context) => {
     const userId = requireUserId(context.userId);
-    return context.budgetMonthService.findCurrentMonth(userId);
+    try {
+      return await context.budgetMonthService.findCurrentMonth(userId);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   categories: async (_parent, _args, context) => {
     const userId = requireUserId(context.userId);
-    return context.categoryService.listCatalog(userId);
+    try {
+      return await context.categoryService.listCatalog(userId);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   categoryMonths: async (_parent, args, context) => {
     const userId = requireUserId(context.userId);
-    return context.categoryMonthService.listByMonth(
-      userId,
-      args.month,
-      args.direction ? directionToDb(args.direction) : undefined,
-    );
+    try {
+      return await context.categoryMonthService.listByMonth(
+        userId,
+        args.month,
+        args.direction ? directionToDb(args.direction) : undefined,
+      );
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   transactions: async (_parent, args, context) => {
     const userId = requireUserId(context.userId);
-    return context.transactionService.list(userId, args.month, args.categoryId ?? undefined);
+    try {
+      return await context.transactionService.list(userId, args.month, args.categoryId ?? undefined);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   recurringExpenses: async (_parent, args, context) => {
     const userId = requireUserId(context.userId);
-    return context.recurringExpenseService.listByMonth(userId, args.month);
+    try {
+      return await context.recurringExpenseService.listByMonth(userId, args.month);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   savingsFunds: async (_parent, _args, context) => {
     const userId = requireUserId(context.userId);
-    return context.savingsFundService.listCatalog(userId);
+    try {
+      return await context.savingsFundService.listCatalog(userId);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   bankBalance: async (_parent, _args, context) => {
     const userId = requireUserId(context.userId);
-    return context.bankBalanceService.getBankBalance(userId);
+    try {
+      return await context.bankBalanceService.getBankBalance(userId);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
 };
 
