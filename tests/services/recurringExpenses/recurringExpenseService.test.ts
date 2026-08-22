@@ -119,6 +119,19 @@ describe('createRecurringExpense', () => {
     ).rejects.toMatchObject({ reason: 'invalid_amount' });
   });
 
+  it('rejects a non-integer amount', async () => {
+    const { recurringExpenseService, housing } = await setup();
+
+    await expect(
+      recurringExpenseService.createRecurringExpense(
+        'user-1',
+        { name: 'Rent', amountCents: 100.5, categoryId: housing.id, budgetType: 'need', dueDay: 1 },
+        '2026-08',
+        90000,
+      ),
+    ).rejects.toMatchObject({ reason: 'invalid_amount' });
+  });
+
   it('rejects an invalid due day', async () => {
     const { recurringExpenseService, housing } = await setup();
 

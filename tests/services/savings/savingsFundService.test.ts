@@ -60,6 +60,26 @@ describe('createSavingsFund', () => {
     ).rejects.toMatchObject({ reason: 'invalid_amount' });
   });
 
+  it('rejects a non-integer initialBalanceCents', async () => {
+    const { savingsFundService } = setup();
+
+    await expect(
+      savingsFundService.createSavingsFund('user-1', { name: 'X', initialBalanceCents: 100.5 }),
+    ).rejects.toMatchObject({ reason: 'invalid_amount' });
+  });
+
+  it('rejects a non-integer targetAmountCents', async () => {
+    const { savingsFundService } = setup();
+
+    await expect(
+      savingsFundService.createSavingsFund('user-1', {
+        name: 'X',
+        initialBalanceCents: 0,
+        targetAmountCents: 100.5,
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_amount' });
+  });
+
   it('rejects a malformed startDate', async () => {
     const { savingsFundService } = setup();
 
