@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { addMonths, formatMonth, isValidMonthFormat } from '../../src/lib/monthFormat.js';
+import { addMonths, formatMonth, isValidMonthFormat, resolveDueDate } from '../../src/lib/monthFormat.js';
 
 describe('isValidMonthFormat', () => {
   it('accepts a well-formed YYYY-MM string', () => {
@@ -53,5 +53,24 @@ describe('addMonths', () => {
 
   it('a delta of 0 returns the same month', () => {
     expect(addMonths('2026-08', 0)).toBe('2026-08');
+  });
+});
+
+describe('resolveDueDate', () => {
+  it('combines a month and day into a UTC date', () => {
+    expect(resolveDueDate('2026-08', 15)).toEqual(new Date('2026-08-15T00:00:00.000Z'));
+  });
+
+  it('clamps a day past the end of a short month to that month\'s last day', () => {
+    expect(resolveDueDate('2026-02', 31)).toEqual(new Date('2026-02-28T00:00:00.000Z'));
+  });
+
+  it('clamps into a leap-year February correctly', () => {
+    expect(resolveDueDate('2028-02', 30)).toEqual(new Date('2028-02-29T00:00:00.000Z'));
+  });
+
+  it('does not clamp a day that fits within the month', () => {
+    expect(resolveDueDate('2026-04', 30)).toEqual(new Date('2026-04-30T00:00:00.000Z'));
+    expect(resolveDueDate('2026-01', 31)).toEqual(new Date('2026-01-31T00:00:00.000Z'));
   });
 });

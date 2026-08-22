@@ -127,6 +127,23 @@ describe('createSavingsMovement', () => {
     ).rejects.toMatchObject({ reason: 'invalid_amount' });
   });
 
+  it('rejects a non-integer amount', async () => {
+    const { savingsMovementService, savingsFundService } = setup();
+    const fund = await savingsFundService.createSavingsFund('user-1', {
+      name: 'Wedding',
+      initialBalanceCents: 10000,
+    });
+
+    await expect(
+      savingsMovementService.createSavingsMovement('user-1', {
+        fundId: fund.id,
+        amountCents: 100.5,
+        type: 'deposit',
+        date: '2026-08-01',
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid_amount' });
+  });
+
   it('rejects a malformed date', async () => {
     const { savingsMovementService, savingsFundService } = setup();
     const fund = await savingsFundService.createSavingsFund('user-1', {

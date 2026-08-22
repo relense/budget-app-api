@@ -327,8 +327,8 @@ All bodies are Zod-validated; a validation failure returns `400 { error: "valida
 | `POST /auth/refresh` | `{ refreshToken }` | `200 { accessToken, refreshToken }` | Mandatory rotation — old token is revoked, reusing it fails. `401 { error: "refresh_token_invalid" }` on failure. |
 | `POST /auth/logout` | `{ refreshToken }` | `204` | Revokes one refresh token. |
 | `POST /auth/logout-all` | — (Bearer access token) | `204` | Revokes every refresh token for the authenticated user. `401` if the access token is missing/invalid. |
-| `GET /account/export` | — (Bearer access token) | `200` — full JSON export | GDPR export (see `accountService` above). `401` if unauthenticated, `404 { error: "account_not_found" }` if the account no longer exists. |
-| `DELETE /account` | `{ confirm: true }` (Bearer access token) | `204` | GDPR right-to-erasure (see `accountService` above) — permanent, no undo. `confirm: true` is required in the body as a deliberate extra guard beyond just a valid token, given this is the single most destructive action in the app. `401` if unauthenticated, `400` if `confirm` isn't `true`, `404 { error: "account_not_found" }` if the account no longer exists. |
+| `GET /account/export` | — (Bearer access token) | `200` — full JSON export | GDPR export (see `accountService` above). Rate-limited 5/15min (defense-in-depth against a leaked token, not the primary defense). `401` if unauthenticated, `404 { error: "account_not_found" }` if the account no longer exists. |
+| `DELETE /account` | `{ confirm: true }` (Bearer access token) | `204` | GDPR right-to-erasure (see `accountService` above) — permanent, no undo. `confirm: true` is required in the body as a deliberate extra guard beyond just a valid token, given this is the single most destructive action in the app. Rate-limited 5/1hour. `401` if unauthenticated, `400` if `confirm` isn't `true`, `404 { error: "account_not_found" }` if the account no longer exists. |
 | `GET /health` | — | `200 { status: "ok" }` | Real DB check (`SELECT 1`); `503` on failure. |
 
 ### GraphQL — `POST/GET /graphql` (`src/graphql/schema.ts`)
@@ -395,7 +395,9 @@ safety" note for why (and the residual gap that leaves).
 
 **Types**: `Category`, `CategoryMonth` (+ computed `actualAmountCents`,
 `recurringCommittedCents`), `Transaction` (+ nullable `recurringExpense`),
-`RecurringExpense` (+ computed `paidThisMonth`), `SavingsFund` (+ computed
+`RecurringExpense` (+ computed `paidThisMonth`, `dueDate` — combines the
+stored `dueDay` (1-31) with this row's own month, clamped to that month's
+last day if `dueDay` doesn't fit), `SavingsFund` (+ computed
 `currentAmountCents`/`achieved`), `SavingsMovement` (+ `fund` back-reference,
 mirroring `Transaction.categoryMonth`), `BankBalance` (+ computed
 `amountCents`; the only type not tied to a month or another entity — tied

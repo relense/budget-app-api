@@ -10,6 +10,7 @@ import {
   movementTypeToGraphQL,
 } from './enumMapping.js';
 import { requireUserId, toGraphQLError } from './errors.js';
+import { resolveDueDate } from '../lib/monthFormat.js';
 import type { MutationResolvers, QueryResolvers } from '../generated/graphql.js';
 
 function formatDate(date: Date): string {
@@ -94,7 +95,12 @@ const typeDefs = /* GraphQL */ `
   One flat row per recurring expense per month it exists in — no separate
   template, unlike the superseded design (see docs/PLAN.md). Editing one
   only ever touches this row; carrying it into a new month is automatic
-  (see Query.recurringExpenses / Month Lifecycle in docs/PLAN.md).
+  (see Query.recurringExpenses / Month Lifecycle in docs/PLAN.md). dueDay
+  (1-31) is the stored/editable field so carry-forward can reuse it
+  unchanged month to month; dueDate is computed at read time by combining
+  dueDay with this row's own month, clamped to that month's last day if
+  dueDay doesn't fit (e.g. 31 in February) — never stored, so it can't
+  drift out of sync with dueDay.
   """
   type RecurringExpense {
     id: ID!
@@ -103,6 +109,7 @@ const typeDefs = /* GraphQL */ `
     amountCents: Int!
     budgetType: BudgetType!
     dueDay: Int!
+    dueDate: String!
     category: Category!
     paidThisMonth: Boolean!
     transactions: [Transaction!]!
@@ -288,35 +295,63 @@ export const queryResolvers: QueryResolvers<GraphQLContext> = {
   ping: () => 'pong',
   currentMonth: async (_parent, _args, context) => {
     const userId = requireUserId(context.userId);
-    return context.budgetMonthService.findCurrentMonth(userId);
+    try {
+      return await context.budgetMonthService.findCurrentMonth(userId);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   categories: async (_parent, _args, context) => {
     const userId = requireUserId(context.userId);
-    return context.categoryService.listCatalog(userId);
+    try {
+      return await context.categoryService.listCatalog(userId);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   categoryMonths: async (_parent, args, context) => {
     const userId = requireUserId(context.userId);
-    return context.categoryMonthService.listByMonth(
-      userId,
-      args.month,
-      args.direction ? directionToDb(args.direction) : undefined,
-    );
+    try {
+      return await context.categoryMonthService.listByMonth(
+        userId,
+        args.month,
+        args.direction ? directionToDb(args.direction) : undefined,
+      );
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   transactions: async (_parent, args, context) => {
     const userId = requireUserId(context.userId);
-    return context.transactionService.list(userId, args.month, args.categoryId ?? undefined);
+    try {
+      return await context.transactionService.list(userId, args.month, args.categoryId ?? undefined);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   recurringExpenses: async (_parent, args, context) => {
     const userId = requireUserId(context.userId);
-    return context.recurringExpenseService.listByMonth(userId, args.month);
+    try {
+      return await context.recurringExpenseService.listByMonth(userId, args.month);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   savingsFunds: async (_parent, _args, context) => {
     const userId = requireUserId(context.userId);
-    return context.savingsFundService.listCatalog(userId);
+    try {
+      return await context.savingsFundService.listCatalog(userId);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
   bankBalance: async (_parent, _args, context) => {
     const userId = requireUserId(context.userId);
-    return context.bankBalanceService.getBankBalance(userId);
+    try {
+      return await context.bankBalanceService.getBankBalance(userId);
+    } catch (error) {
+      toGraphQLError(error);
+    }
   },
 };
 
@@ -638,6 +673,13 @@ export const schema = createSchema<GraphQLContext>({
           throw new Error(`Data integrity error: BudgetMonth ${parent.monthId} not found`);
         }
         return budgetMonth.month;
+      },
+      dueDate: async (parent: { monthId: string; dueDay: number }, _args: unknown, context) => {
+        const budgetMonth = await context.loaders.budgetMonthById.load(parent.monthId);
+        if (!budgetMonth) {
+          throw new Error(`Data integrity error: BudgetMonth ${parent.monthId} not found`);
+        }
+        return formatDate(resolveDueDate(budgetMonth.month, parent.dueDay));
       },
       category: async (parent: { categoryId: string }, _args: unknown, context) => {
         return context.loaders.categoryById.load(parent.categoryId);

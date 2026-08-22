@@ -68,6 +68,17 @@ describe('Query.transactions', () => {
     expect(result.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
     expect(context.transactionService.list).not.toHaveBeenCalled();
   });
+
+  it('maps a service error to a GraphQLError with a matching extensions.code', async () => {
+    const context = buildContext('user-1');
+    (context.transactionService.list as jest.Mock).mockImplementation(async () => {
+      throw new TransactionServiceError('invalid_month');
+    });
+
+    const result = await run(query, context);
+
+    expect(result.errors?.[0]?.extensions?.code).toBe('INVALID_MONTH');
+  });
 });
 
 describe('Mutation.createTransaction', () => {
