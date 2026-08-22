@@ -395,7 +395,9 @@ safety" note for why (and the residual gap that leaves).
 
 **Types**: `Category`, `CategoryMonth` (+ computed `actualAmountCents`,
 `recurringCommittedCents`), `Transaction` (+ nullable `recurringExpense`),
-`RecurringExpense` (+ computed `paidThisMonth`), `SavingsFund` (+ computed
+`RecurringExpense` (+ computed `paidThisMonth`, `dueDate` — combines the
+stored `dueDay` (1-31) with this row's own month, clamped to that month's
+last day if `dueDay` doesn't fit), `SavingsFund` (+ computed
 `currentAmountCents`/`achieved`), `SavingsMovement` (+ `fund` back-reference,
 mirroring `Transaction.categoryMonth`), `BankBalance` (+ computed
 `amountCents`; the only type not tied to a month or another entity — tied

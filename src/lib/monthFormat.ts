@@ -20,3 +20,15 @@ export function addMonths(month: string, delta: number): string {
   const newMonth = (totalMonths % 12) + 1;
   return `${newYear}-${String(newMonth).padStart(2, '0')}`;
 }
+
+/**
+ * Combines a "YYYY-MM" month with a day-of-month (1-31) into the actual UTC
+ * calendar date, clamping to that month's last day if it's too short (e.g.
+ * day 31 in February). Assumes an already-validated month string.
+ */
+export function resolveDueDate(month: string, dueDay: number): Date {
+  const [year, mon] = month.split('-').map(Number) as [number, number];
+  const lastDayOfMonth = new Date(Date.UTC(year, mon, 0)).getUTCDate();
+  const day = Math.min(dueDay, lastDayOfMonth);
+  return new Date(Date.UTC(year, mon - 1, day));
+}
