@@ -100,6 +100,7 @@ describe('RecurringExpense nested fields', () => {
       recurringExpenses(month: "2026-08") {
         id
         month
+        dueDate
         category { id name }
         transactions { id amountCents }
         paidThisMonth
@@ -118,12 +119,46 @@ describe('RecurringExpense nested fields', () => {
         {
           id: 'recurring-1',
           month: '2026-08',
+          dueDate: '2026-08-01',
           category: { id: 'cat-1', name: 'Housing' },
           transactions: [{ id: 'tx-1', amountCents: 80000 }],
           paidThisMonth: true,
         },
       ],
     });
+  });
+
+  it("dueDate clamps dueDay to the row's month's last day when it doesn't fit (e.g. day 31 in a 28-day month)", async () => {
+    const shortMonth = { id: 'month-2', month: '2026-02' };
+    const context = buildContext();
+    context.recurringExpenseService = {
+      listByMonth: jest.fn(async () => [{ ...recurringExpense, monthId: shortMonth.id, dueDay: 31 }]),
+    } as never;
+    context.loaders = createGraphQLLoaders({
+      categoryService: {
+        findManyByIds: jest.fn(async (ids: string[]) => (ids.includes(category.id) ? [category] : [])),
+      },
+      categoryMonthService: { findManyByIds: jest.fn(async () => []) },
+      budgetMonthService: {
+        findManyByIds: jest.fn(async (ids: string[]) =>
+          ids.includes(shortMonth.id) ? [shortMonth] : [],
+        ),
+      },
+      transactionService: {
+        listByCategoryMonthIds: jest.fn(async () => []),
+        listByRecurringExpenseIds: jest.fn(async () => []),
+      },
+      recurringExpenseService: {
+        findManyByIds: jest.fn(async () => []),
+        sumCommittedCentsForCategoryMonth: jest.fn(async () => 0),
+      },
+    } as unknown as GraphQLLoaderDeps);
+
+    const result = await graphql({ schema, source: query, contextValue: context });
+
+    expect(result.errors).toBeUndefined();
+    expect((result.data as { recurringExpenses: Array<{ dueDate: string }> })
+      .recurringExpenses[0]?.dueDate).toBe('2026-02-28');
   });
 
   it('paidThisMonth is false when the sum of linked transactions is below amountCents', async () => {
